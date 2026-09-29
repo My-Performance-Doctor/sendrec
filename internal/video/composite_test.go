@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v5"
 )
@@ -37,7 +39,7 @@ func TestCompositeWithWebcam_ScreenDownloadError(t *testing.T) {
 
 	// On error, should still set status to "ready" (fallback to screen-only)
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL`).
-		WithArgs("video-123").
+		WithArgs("video-123", webcamDroppedWarning).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	CompositeWithWebcam(context.Background(), mock, s, "video-123",
@@ -60,7 +62,7 @@ func TestCompositeWithWebcam_FFmpegFailsFallsBackToReady(t *testing.T) {
 
 	// On error, should still set status to "ready"
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL`).
-		WithArgs("video-123").
+		WithArgs("video-123", webcamDroppedWarning).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	CompositeWithWebcam(context.Background(), mock, s, "video-123",
@@ -164,6 +166,34 @@ func TestCompositeWithWebcam_MP4KeepsItsKey(t *testing.T) {
 	for k := range s.deleteCalled {
 		if k == "recordings/user/video.mp4" {
 			t.Error("deleted the composite it just uploaded")
+		}
+	}
+}
+
+// A composite that has to give up publishes the screen alone, and says so on
+// the video page rather than leaving the owner to notice the webcam is gone.
+// #283.
+func TestWebcamDroppedWarning_NamesTheLoss(t *testing.T) {
+	if !strings.Contains(webcamDroppedWarning, "webcam") || !strings.Contains(webcamDroppedWarning, "screen") {
+		t.Errorf("want the warning to say the webcam was dropped and the screen kept, got %q", webcamDroppedWarning)
+	}
+}
+
+// The composite deadline grows with the recording, so a long one is not cut
+// off at a flat ten minutes, but a bogus duration cannot hold a slot forever.
+func TestCompositeTimeout(t *testing.T) {
+	for _, c := range []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{0, 10 * time.Minute},
+		{60, 12 * time.Minute},
+		{300, 20 * time.Minute},
+		{1 << 30, 10*time.Minute + compositeExtraCapSeconds*time.Second},
+		{-5, 10 * time.Minute},
+	} {
+		if got := compositeTimeout(c.seconds); got != c.want {
+			t.Errorf("compositeTimeout(%d) = %v, want %v", c.seconds, got, c.want)
 		}
 	}
 }

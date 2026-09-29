@@ -16,6 +16,7 @@ func TestResetStuckProcessing_ResetsAbandonedRows(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
 	resetStuckProcessing(context.Background(), mock)
@@ -37,6 +38,7 @@ func TestResetStuckProcessing_ClearsWebcamKeyAndStartedAt(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec(`webcam_key = NULL`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	resetStuckProcessing(context.Background(), mock)
@@ -56,6 +58,7 @@ func TestResetStuckProcessing_KeysOffProcessingStartedAt(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec(`processing_started_at < now\(\) - INTERVAL '15 minutes'`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 	resetStuckProcessing(context.Background(), mock)
@@ -75,6 +78,7 @@ func TestResetStuckProcessing_SweepsRowsWithNullStartedAt(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec(`processing_started_at IS NULL`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	resetStuckProcessing(context.Background(), mock)
@@ -92,7 +96,29 @@ func TestResetStuckProcessing_SurvivesQueryFailure(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnError(errors.New("connection refused"))
+
+	resetStuckProcessing(context.Background(), mock)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A composite may legitimately run past the flat deadline: its own timeout
+// grows with the recording. The sweep waits as long for rows that still have
+// a webcam to composite, and tells the owner when it drops one. #283.
+func TestResetStuckProcessing_GivesCompositesTheirLongerDeadline(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`CASE WHEN webcam_key IS NOT NULL THEN make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
+		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 	resetStuckProcessing(context.Background(), mock)
 

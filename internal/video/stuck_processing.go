@@ -9,9 +9,10 @@ import (
 )
 
 // stuckProcessingAfter is how long a video may sit in status='processing'
-// before the owning job is presumed dead. Composite, trim and remove-segments
-// all run under a 10 minute context, so anything past this bound belongs to a
-// process that can no longer finish it.
+// before the owning job is presumed dead. Trim and remove-segments run under a
+// 10 minute context, so anything past this bound belongs to a process that can
+// no longer finish it. Composite runs longer on long recordings and gets the
+// same extra allowance here as its own timeout.
 const stuckProcessingAfter = "15 minutes"
 
 // resetStuckProcessing does what the in-process setReadyFallback would have
@@ -39,10 +40,21 @@ const stuckProcessingAfter = "15 minutes"
 // leaves a webcam object that will never be composited, and leaving the key set
 // would keep the watch page waiting on it.
 func resetStuckProcessing(ctx context.Context, db database.DBTX) {
+	// A composite's own deadline grows with the recording (compositeTimeout),
+	// so rows still holding a webcam get the same allowance before they are
+	// presumed dead, and the owner is told the webcam was dropped.
 	tag, err := db.Exec(ctx,
-		`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, updated_at = now()
+		`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL,
+		        capture_warning = CASE
+		            WHEN webcam_key IS NULL THEN capture_warning
+		            WHEN capture_warning IS NULL THEN $1
+		            ELSE capture_warning || ' ' || $1 END,
+		        updated_at = now()
 		 WHERE status = 'processing'
-		   AND (processing_started_at < now() - INTERVAL '`+stuckProcessingAfter+`' OR processing_started_at IS NULL)`,
+		   AND (processing_started_at < now() - INTERVAL '`+stuckProcessingAfter+`'
+		            - CASE WHEN webcam_key IS NOT NULL THEN make_interval(secs => LEAST(2 * duration, $2)) ELSE INTERVAL '0 seconds' END
+		        OR processing_started_at IS NULL)`,
+		webcamDroppedWarning, compositeExtraCapSeconds,
 	)
 	if err != nil {
 		slog.Error("stuck-processing: failed to reset abandoned jobs", "error", err)
