@@ -12,7 +12,8 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 )
 
-func probeVideoInfo(ctx context.Context, path string) (frames int, info string, err error) {
+// Package-level vars so tests can reach the steps around ffmpeg without a binary.
+var probeVideoInfo = func(ctx context.Context, path string) (frames int, info string, err error) {
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
@@ -34,60 +35,47 @@ func probeVideoInfo(ctx context.Context, path string) (frames int, info string, 
 	return frames, info, nil
 }
 
-func buildCompositeArgs(screenPath, webcamPath, outputPath, contentType string) []string {
+// buildCompositeArgs encodes every composite to H.264 and AAC, whatever the
+// screen recording's container. A WebM screen used to go to VP9, which libvpx
+// encodes on about one core, only for the transcode worker to re-encode it to
+// MP4 afterwards; long recordings ran past the job timeout and were published
+// without the webcam. #279.
+func buildCompositeArgs(screenPath, webcamPath, outputPath string) []string {
 	// PiP filter: scale webcam, add border, normalize timestamps.
 	// setpts=PTS-STARTPTS normalizes webcam timestamps to start at 0.
 	pipSetup := "[1:v]setpts=PTS-STARTPTS,scale=240:-1,pad=iw+8:ih+8:(ow-iw)/2:(oh-ih)/2:color=black@0.3[pip]"
 
-	var args []string
-	if contentType == "video/mp4" || contentType == "video/quicktime" {
-		// Scale the screen DOWN first, then overlay PiP on top.
-		// This ensures the PiP is sized relative to the output resolution,
-		// not the original (which may be high-DPI, e.g. 3242x2626).
-		filterComplex := "[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[screen];" +
-			pipSetup + ";[screen][pip]overlay=W-w-20:H-h-20[vout]"
-		args = append(globalThreads(), inputThreads()...)
-		args = append(args, "-i", screenPath)
-		args = append(args, inputThreads()...)
-		args = append(args,
-			"-i", webcamPath,
-			"-filter_complex", filterComplex,
-			"-map", "[vout]",
-			"-map", "0:a?",
-			"-c:v", "libx264",
-			"-profile:v", "high",
-			"-level:v", "5.1",
-			"-preset", "fast",
-			"-crf", "23",
-			"-r", "60",
-			"-c:a", "aac",
-			"-movflags", "+faststart",
-		)
-	} else {
-		// For WebM, also scale down high-DPI screens before overlay
-		filterComplex := "[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[screen];" +
-			pipSetup + ";[screen][pip]overlay=W-w-20:H-h-20[vout]"
-		args = append(globalThreads(), inputThreads()...)
-		args = append(args, "-i", screenPath)
-		args = append(args, inputThreads()...)
-		args = append(args,
-			"-i", webcamPath,
-			"-filter_complex", filterComplex,
-			"-map", "[vout]",
-			"-map", "0:a?",
-			"-c:a", "copy",
-			"-c:v", "libvpx-vp9",
-		)
-	}
+	// Scale the screen DOWN first, then overlay PiP on top.
+	// This ensures the PiP is sized relative to the output resolution,
+	// not the original (which may be high-DPI, e.g. 3242x2626).
+	filterComplex := "[0:v]scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[screen];" +
+		pipSetup + ";[screen][pip]overlay=W-w-20:H-h-20[vout]"
+	args := append(globalThreads(), inputThreads()...)
+	args = append(args, "-i", screenPath)
+	args = append(args, inputThreads()...)
+	args = append(args,
+		"-i", webcamPath,
+		"-filter_complex", filterComplex,
+		"-map", "[vout]",
+		"-map", "0:a?",
+		"-c:v", "libx264",
+		"-profile:v", "high",
+		"-level:v", "5.1",
+		"-preset", "fast",
+		"-crf", "23",
+		"-r", "60",
+		"-c:a", "aac",
+		"-movflags", "+faststart",
+	)
 
 	// The bounds have to precede the output: ffmpeg applies options to the output
 	// that follows them and discards anything after the last one.
-	args = appendEncoderBounds(args, contentType)
+	args = appendEncoderBounds(args, "video/mp4")
 	return append(args, "-y", outputPath)
 }
 
-func compositeOverlay(ctx context.Context, screenPath, webcamPath, outputPath, contentType string) (string, error) {
-	args := buildCompositeArgs(screenPath, webcamPath, outputPath, contentType)
+var compositeOverlay = func(ctx context.Context, screenPath, webcamPath, outputPath string) (string, error) {
+	args := buildCompositeArgs(screenPath, webcamPath, outputPath)
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.
@@ -191,7 +179,13 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 	slog.Info("composite: webcam validated", "video_id", videoID, "webcam_frames", webcamFrames, "webcam_info", webcamProbeInfo)
 
-	tmpOutput, err := os.CreateTemp("", "sendrec-composite-output-*"+ext)
+	// A WebM screen comes out as MP4 under a new key; MP4 and QuickTime keep
+	// theirs.
+	outputKey, outputType, outputExt := screenKey, contentType, ext
+	if contentType == "video/webm" {
+		outputKey, outputType, outputExt = strings.TrimSuffix(screenKey, ".webm")+".mp4", "video/mp4", ".mp4"
+	}
+	tmpOutput, err := os.CreateTemp("", "sendrec-composite-output-*"+outputExt)
 	if err != nil {
 		slog.Error("composite: failed to create temp output file", "error", err)
 		setReadyFallback()
@@ -201,7 +195,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	_ = tmpOutput.Close()
 	defer func() { _ = os.Remove(tmpOutputPath) }()
 
-	ffmpegOutput, err := compositeOverlay(ctx, tmpScreenPath, tmpWebcamPath, tmpOutputPath, contentType)
+	ffmpegOutput, err := compositeOverlay(ctx, tmpScreenPath, tmpWebcamPath, tmpOutputPath)
 	if err != nil {
 		slog.Error("composite: ffmpeg failed", "video_id", videoID, "error", err, "ffmpeg_output", ffmpegOutput)
 		setReadyFallback()
@@ -209,7 +203,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 	slog.Info("composite: ffmpeg succeeded", "video_id", videoID, "ffmpeg_output", ffmpegOutput)
 
-	if err := storage.UploadFile(ctx, screenKey, tmpOutputPath, contentType); err != nil {
+	if err := storage.UploadFile(ctx, outputKey, tmpOutputPath, outputType); err != nil {
 		slog.Error("composite: failed to upload composited video", "video_id", videoID, "error", err)
 		setReadyFallback()
 		return
@@ -219,15 +213,34 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		slog.Error("composite: failed to delete webcam file", "key", webcamKey, "error", err)
 	}
 
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, updated_at = now() WHERE id = $1`,
-		videoID,
-	); err != nil {
-		slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
-		return
+	if outputKey == screenKey {
+		if _, err := db.Exec(ctx,
+			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, updated_at = now() WHERE id = $1`,
+			videoID,
+		); err != nil {
+			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
+			return
+		}
+	} else {
+		var fileSize int64
+		if info, err := os.Stat(tmpOutputPath); err == nil {
+			fileSize = info.Size()
+		}
+		// Marked as the transcode worker marks its own MP4s, so the worker
+		// does not encode this one a second time.
+		if _, err := db.Exec(ctx,
+			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, file_key = $2, content_type = 'video/mp4', file_size = $3, cues_fixed = true, ios_normalized = true, updated_at = now() WHERE id = $1`,
+			videoID, outputKey, fileSize,
+		); err != nil {
+			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
+			return
+		}
+		if err := storage.DeleteObject(ctx, screenKey); err != nil {
+			slog.Warn("composite: failed to delete original webm", "video_id", videoID, "key", screenKey, "error", err)
+		}
 	}
 
-	GenerateThumbnail(ctx, db, storage, videoID, screenKey, thumbnailKey)
+	GenerateThumbnail(ctx, db, storage, videoID, outputKey, thumbnailKey)
 	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
 		slog.Error("composite: failed to enqueue transcription", "video_id", videoID, "error", err)
 	}

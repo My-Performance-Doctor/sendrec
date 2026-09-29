@@ -30,8 +30,8 @@ func allBuilders() []struct {
 		{"trim mp4", buildTrimArgs("in.mp4", "out.mp4", "video/mp4", 1, 5), 1, "libx264", "out.mp4"},
 		{"trim quicktime", buildTrimArgs("in.mov", "out.mov", "video/quicktime", 1, 5), 1, "libx264", "out.mov"},
 		{"trim webm", buildTrimArgs("in.webm", "out.webm", "video/webm", 1, 5), 1, "libvpx-vp9", "out.webm"},
-		{"composite mp4", buildCompositeArgs("s.mp4", "w.mp4", "out.mp4", "video/mp4"), 2, "libx264", "out.mp4"},
-		{"composite webm", buildCompositeArgs("s.webm", "w.webm", "out.webm", "video/webm"), 2, "libvpx-vp9", "out.webm"},
+		{"composite mp4", buildCompositeArgs("s.mp4", "w.mp4", "out.mp4"), 2, "libx264", "out.mp4"},
+		{"composite webm", buildCompositeArgs("s.webm", "w.webm", "out.mp4"), 2, "libx264", "out.mp4"},
 		{"remove-segments mp4", buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true), 1, "libx264", "out.mp4"},
 		{"remove-segments quicktime", buildRemoveSegmentsArgs("in.mov", "out.mov", "video/quicktime", []segmentRange{{Start: 1, End: 2}}, true), 1, "libx264", "out.mov"},
 		{"remove-segments webm", buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, true), 1, "libvpx-vp9", "out.webm"},
@@ -192,7 +192,7 @@ func TestFFmpegHonoursTheBounds(t *testing.T) {
 	})
 
 	t.Run("both composite decoders are capped", func(t *testing.T) {
-		args := buildCompositeArgs(src, src, dir+"/comp.mp4", "video/mp4")
+		args := buildCompositeArgs(src, src, dir+"/comp.mp4")
 		out, err := exec.Command("ffmpeg", append([]string{"-nostdin", "-loglevel", "info"}, args...)...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("ffmpeg failed: %v: %s", err, out)
