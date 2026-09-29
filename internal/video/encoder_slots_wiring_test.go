@@ -34,7 +34,7 @@ func TestEveryEncodePathAcquiresASlot(t *testing.T) {
 			return removeSegmentsFromVideo(ctx, "in.mp4", dir+"/o.mp4", "video/mp4", []segmentRange{{Start: 0, End: 1}}, false)
 		}},
 		{"composite", func(ctx context.Context) error {
-			_, err := compositeOverlay(ctx, "s.mp4", "w.mp4", dir+"/o.mp4", "video/mp4")
+			_, err := compositeOverlay(ctx, "s.mp4", "w.mp4", dir+"/o.mp4")
 			return err
 		}},
 	} {
