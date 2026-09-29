@@ -4305,6 +4305,36 @@ func TestSetLinkExpiry_SevenDays(t *testing.T) {
 	}
 }
 
+// The link stops working right away; Extend or Remove expiry brings it
+// back. #280.
+func TestSetLinkExpiry_ExpireNow(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+	videoID := "video-456"
+
+	mock.ExpectExec(`UPDATE videos SET share_expires_at = now\(\), updated_at = now\(\) WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
+		WithArgs(videoID, testUserID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware()).Put("/api/videos/{id}/link-expiry", handler.SetLinkExpiry)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPut, "/api/videos/"+videoID+"/link-expiry", []byte(`{"expireNow":true}`)))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestSetLinkExpiry_NotFound(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
