@@ -101,6 +101,15 @@ export function SharingSection({
     await onRefetchVideo();
   }
 
+  async function expireNow() {
+    await apiFetch(`/api/videos/${video.id}/link-expiry`, {
+      method: "PUT",
+      body: JSON.stringify({ expireNow: true }),
+    });
+    await onRefetchVideo();
+    toast.show("Link expired");
+  }
+
   async function extendVideo() {
     await apiFetch(`/api/videos/${video.id}/extend`, { method: "POST" });
     await onRefetchVideo();
@@ -370,6 +379,11 @@ export function SharingSection({
                 {video.shareExpiresAt !== null && (
                   <button onClick={extendVideo} className="detail-btn">
                     Extend
+                  </button>
+                )}
+                {!expiry.expired && (
+                  <button onClick={expireNow} className="detail-btn">
+                    Expire now
                   </button>
                 )}
               </div>

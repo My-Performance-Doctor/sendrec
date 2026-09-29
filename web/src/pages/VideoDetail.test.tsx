@@ -625,6 +625,43 @@ describe("VideoDetail", () => {
     expect(screen.queryByText("Extend")).not.toBeInTheDocument();
   });
 
+  // #280: a link can be cut off right away, and brought back with Extend or
+  // Remove expiry.
+  it.each([
+    ["an expiring", new Date(Date.now() + 5 * 86400000).toISOString()],
+    ["a never-expiring", null],
+  ])("expires %s link now", async (_label, shareExpiresAt) => {
+    const video = makeVideo({ shareExpiresAt });
+    setupDefaultMocks({ video });
+    mockApiFetch.mockResolvedValueOnce(undefined);
+
+    renderVideoDetail("v1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Expire now")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Expire now"));
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/v1/link-expiry", {
+        method: "PUT",
+        body: JSON.stringify({ expireNow: true }),
+      });
+    });
+  });
+
+  it("offers no expire now on a link that has already expired", async () => {
+    const video = makeVideo({ shareExpiresAt: new Date(Date.now() - 86400000).toISOString() });
+    setupDefaultMocks({ video });
+
+    renderVideoDetail("v1");
+
+    await waitFor(() => {
+      expect(screen.getByText("Extend")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Expire now")).not.toBeInTheDocument();
+  });
+
   it("shows CTA 'None' and 'Add CTA' when no CTA set", async () => {
     const video = makeVideo({ ctaText: null, ctaUrl: null });
     setupDefaultMocks();

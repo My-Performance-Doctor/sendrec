@@ -1007,11 +1007,13 @@ components:
 
     SetLinkExpiryRequest:
       type: object
-      required: [neverExpires]
       properties:
         neverExpires:
           type: boolean
           description: 'true sets share_expires_at to NULL, false resets to 7 days from now'
+        expireNow:
+          type: boolean
+          description: 'true sets share_expires_at to now, so the link stops working immediately; takes precedence over neverExpires'
 
     ThumbnailUploadRequest:
       type: object

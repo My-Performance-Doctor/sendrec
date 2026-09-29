@@ -25,6 +25,8 @@ type setEmailGateRequest struct {
 
 type setLinkExpiryRequest struct {
 	NeverExpires bool `json:"neverExpires"`
+	// Cuts the link off now; Extend or Remove expiry brings it back. #280.
+	ExpireNow bool `json:"expireNow"`
 }
 
 type setCTARequest struct {
@@ -101,9 +103,12 @@ func (h *Handler) SetLinkExpiry(w http.ResponseWriter, r *http.Request) {
 
 	where, args := orgRowFilter(r.Context(), videoID, nil, "AND status != 'deleted'")
 	var query string
-	if req.NeverExpires {
+	switch {
+	case req.ExpireNow:
+		query = `UPDATE videos SET share_expires_at = now(), updated_at = now() WHERE ` + where
+	case req.NeverExpires:
 		query = `UPDATE videos SET share_expires_at = NULL, updated_at = now() WHERE ` + where
-	} else {
+	default:
 		query = `UPDATE videos SET share_expires_at = now() + INTERVAL '7 days', updated_at = now() WHERE ` + where
 	}
 
