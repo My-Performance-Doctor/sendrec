@@ -82,6 +82,9 @@ func generateSlug(name string) string {
 	return slug
 }
 
+// maxSlugSuffixAttempts bounds the suffixed retries after a taken slug.
+const maxSlugSuffixAttempts = 5
+
 func randomHexSuffix() (string, error) {
 	b := make([]byte, 2)
 	if _, err := rand.Read(b); err != nil {
@@ -143,31 +146,35 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var resp orgResponse
 	var createdAt, updatedAt time.Time
-	err := h.db.QueryRow(r.Context(),
-		`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, slug, created_at, updated_at`,
-		name, slug,
-	).Scan(&resp.ID, &resp.Slug, &createdAt, &updatedAt)
-	if err != nil {
+	insert := func(slug string) error {
+		return h.db.QueryRow(r.Context(),
+			`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, slug, created_at, updated_at`,
+			name, slug,
+		).Scan(&resp.ID, &resp.Slug, &createdAt, &updatedAt)
+	}
+	isSlugClash := func(err error) bool {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			suffix, suffixErr := randomHexSuffix()
-			if suffixErr != nil {
-				httputil.WriteError(w, http.StatusInternalServerError, "failed to create organization")
-				return
-			}
-			slug = slug + "-" + suffix
-			err = h.db.QueryRow(r.Context(),
-				`INSERT INTO organizations (name, slug) VALUES ($1, $2) RETURNING id, slug, created_at, updated_at`,
-				name, slug,
-			).Scan(&resp.ID, &resp.Slug, &createdAt, &updatedAt)
-			if err != nil {
-				httputil.WriteError(w, http.StatusInternalServerError, "failed to create organization")
-				return
-			}
-		} else {
+		return errors.As(err, &pgErr) && pgErr.Code == "23505"
+	}
+
+	// A taken slug gets a random suffix; a suffix can be taken too, so each
+	// retry draws a fresh one, a bounded number of times. #284.
+	err := insert(slug)
+	for attempt := 0; attempt < maxSlugSuffixAttempts && isSlugClash(err); attempt++ {
+		suffix, suffixErr := randomHexSuffix()
+		if suffixErr != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to create organization")
 			return
 		}
+		err = insert(slug + "-" + suffix)
+	}
+	if isSlugClash(err) {
+		httputil.WriteError(w, http.StatusConflict, "too many workspaces share this name; try a different one")
+		return
+	}
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create organization")
+		return
 	}
 
 	if _, err := h.db.Exec(r.Context(),

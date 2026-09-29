@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/validate"
@@ -840,4 +842,86 @@ func TestGenerateSlug_FitsTheSlugLimit(t *testing.T) {
 			t.Errorf("generateSlug(%d chars) = %q, ends in a hyphen", len(name), slug)
 		}
 	}
+}
+
+// suffixedSlug matches the base slug plus one "-xxxx" suffix: never two stacked.
+type suffixedSlug string
+
+func (b suffixedSlug) Match(v any) bool {
+	s, ok := v.(string)
+	return ok && regexp.MustCompile(`^`+regexp.QuoteMeta(string(b))+`-[0-9a-f]{4}$`).MatchString(s)
+}
+
+func expectSlugClash(mock pgxmock.PgxPoolIface, slug any) {
+	mock.ExpectQuery(`INSERT INTO organizations`).
+		WithArgs("Marketing", slug).
+		WillReturnError(&pgconn.PgError{Code: "23505"})
+}
+
+// A suffix can clash too; each retry draws a fresh one. #284.
+func TestCreate_RetriesSlugClashes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	mock.ExpectQuery(`SELECT subscription_plan FROM users WHERE id = \$1`).
+		WithArgs(testUserID).
+		WillReturnRows(pgxmock.NewRows([]string{"subscription_plan"}).AddRow("pro"))
+	expectSlugClash(mock, "marketing")
+	expectSlugClash(mock, suffixedSlug("marketing"))
+	expectSlugClash(mock, suffixedSlug("marketing"))
+	mock.ExpectQuery(`INSERT INTO organizations`).
+		WithArgs("Marketing", suffixedSlug("marketing")).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "slug", "created_at", "updated_at"}).
+			AddRow("org-1", "marketing-3f2a", now, now))
+	mock.ExpectExec(`INSERT INTO organization_members`).
+		WithArgs("org-1", testUserID).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rec := createOrg(t, NewHandler(mock, testBaseURL), "Marketing")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Bounded: after the last attempt the caller gets a conflict it can act on,
+// not a 500.
+func TestCreate_GivesUpOnSlugClashesWithConflict(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT subscription_plan FROM users WHERE id = \$1`).
+		WithArgs(testUserID).
+		WillReturnRows(pgxmock.NewRows([]string{"subscription_plan"}).AddRow("pro"))
+	expectSlugClash(mock, "marketing")
+	for i := 0; i < maxSlugSuffixAttempts; i++ {
+		expectSlugClash(mock, suffixedSlug("marketing"))
+	}
+
+	rec := createOrg(t, NewHandler(mock, testBaseURL), "Marketing")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func createOrg(t *testing.T, h *Handler, name string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(createOrgRequest{Name: name})
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware()).Post("/api/organizations", h.Create)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPost, "/api/organizations", body))
+	return rec
 }
