@@ -407,6 +407,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 				"webcamKey":    *webcamKey,
 				"thumbnailKey": thumbnailFileKey(userID, shareToken),
 				"contentType":  expectedContentType,
+				"duration":     duration,
 			})
 		} else {
 			h.EnqueueJob(r.Context(), JobTypeThumbnail, videoID, map[string]any{

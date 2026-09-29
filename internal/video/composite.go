@@ -74,6 +74,22 @@ func buildCompositeArgs(screenPath, webcamPath, outputPath string) []string {
 	return append(args, "-y", outputPath)
 }
 
+// webcamDroppedWarning is shown on the video page when the overlay could not
+// be added and the screen recording was published on its own. #283.
+const webcamDroppedWarning = "The webcam overlay could not be added, so this video shows the screen recording only."
+
+// compositeExtraCapSeconds bounds how far a long recording can stretch the
+// composite deadline, so a bogus duration cannot hold an encoder slot for hours.
+const compositeExtraCapSeconds = 110 * 60
+
+// compositeTimeout is ten minutes plus twice the recording's length: H.264 runs
+// at about real time on a hard 1080p source with four CPUs, so this leaves
+// room for smaller hosts. resetStuckProcessing applies the same allowance.
+func compositeTimeout(durationSeconds int) time.Duration {
+	extra := min(max(2*durationSeconds, 0), compositeExtraCapSeconds)
+	return 10*time.Minute + time.Duration(extra)*time.Second
+}
+
 var compositeOverlay = func(ctx context.Context, screenPath, webcamPath, outputPath string) (string, error) {
 	args := buildCompositeArgs(screenPath, webcamPath, outputPath)
 
@@ -99,9 +115,14 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	setReadyFallback := func() {
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
+		// The screen goes out alone, and the video page says so. Appended to,
+		// not replacing, a capture warning the screen recording already has.
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, updated_at = now() WHERE id = $1 AND status = 'processing'`,
-			videoID,
+			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL,
+			        capture_warning = CASE WHEN capture_warning IS NULL THEN $2 ELSE capture_warning || ' ' || $2 END,
+			        updated_at = now()
+			 WHERE id = $1 AND status = 'processing'`,
+			videoID, webcamDroppedWarning,
 		); err != nil {
 			slog.Error("composite: failed to set fallback ready status", "video_id", videoID, "error", err)
 		}
