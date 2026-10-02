@@ -155,7 +155,7 @@ export function BillingSection({ billing: initialBilling }: BillingSectionProps)
 
         {billing.subscriptionStatus === "canceled" && (
           <p className="card-description">
-            Your subscription has been canceled. You have access to Pro features until the end of your billing period.
+            Your subscription has been canceled. You have access to {billing.plan === "business" ? "Business" : "Pro"} features until the end of your billing period.
           </p>
         )}
 
