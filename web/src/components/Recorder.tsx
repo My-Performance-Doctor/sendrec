@@ -555,13 +555,13 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       </div>
 
       {isActive && micLabel && (
-        <p data-testid="mic-label" style={{ margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>
+        <p data-testid="mic-label" style={{ order: -1, margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>
           Microphone: {micLabel}
         </p>
       )}
 
       {isActive && micFailed && (
-        <p role="note" data-testid="mic-note" className="recorder-capture-warning">
+        <p role="note" data-testid="mic-note" className="recorder-capture-warning" style={{ order: -1 }}>
           Microphone unavailable — recording without your voice. Check your
           browser&apos;s microphone setting.
         </p>
