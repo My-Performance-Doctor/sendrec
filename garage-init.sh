@@ -19,13 +19,15 @@ garage layout assign -z dc1 -c 1G "${NODE_ID}" 2>/dev/null || true
 echo "Applying layout..."
 garage layout apply --version 1 2>/dev/null || true
 
-# Create or reuse API key
-echo "Creating API key..."
-KEY_INFO=$(garage key create sendrec-key 2>/dev/null || true)
-
-# If key already exists, list and find it
-if [ -z "${KEY_INFO}" ]; then
-  KEY_INFO=$(garage key info sendrec-key 2>/dev/null || true)
+# Reuse the existing API key; Garage allows duplicate names, so creating on
+# every run would add a new sendrec-key each time.
+EXISTING_KEY_ID=$(garage key list 2>/dev/null | awk '$3 == "sendrec-key" { print $1; exit }')
+if [ -n "${EXISTING_KEY_ID}" ]; then
+  echo "Reusing API key..."
+  KEY_INFO=$(garage key info --show-secret "${EXISTING_KEY_ID}" 2>/dev/null || true)
+else
+  echo "Creating API key..."
+  KEY_INFO=$(garage key create sendrec-key 2>/dev/null || true)
 fi
 
 # Extract key ID from output (GK... format)
