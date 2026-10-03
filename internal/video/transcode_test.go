@@ -385,9 +385,9 @@ func TestTranscodeWebMAsync_UploadFailureConsumesBudget(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`UPDATE retired_objects SET delete_after = now\(\)`).
+	mock.ExpectExec(`INSERT INTO retired_objects \(key, delete_after\) VALUES \(\$1, now\(\)\)`).
 		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
@@ -418,7 +418,7 @@ func TestTranscodeWebMAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH switched AS \(UPDATE videos SET file_key`).
+	mock.ExpectQuery(`WITH attempt AS`).
 		WithArgs("video-1", "recordings/user/video.webm", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).
@@ -457,9 +457,9 @@ func TestNormalizeVideoAsync_UploadFailureConsumesBudget(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec(`UPDATE retired_objects SET delete_after = now\(\)`).
+	mock.ExpectExec(`INSERT INTO retired_objects \(key, delete_after\) VALUES \(\$1, now\(\)\)`).
 		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
@@ -518,7 +518,7 @@ func TestNormalizeVideoAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH switched AS \(UPDATE videos SET file_key`).
+	mock.ExpectQuery(`WITH attempt AS`).
 		WithArgs("video-1", "recordings/user/video.mp4", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).
