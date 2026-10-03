@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sendrec/sendrec/internal/database"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v5"
 )
@@ -499,5 +503,71 @@ func TestNormalizeVideoAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// ctxDB fails on an expired context the way a real pgx pool does; pgxmock
+// alone ignores the context.
+type ctxDB struct{ database.DBTX }
+
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }
+
+func (d ctxDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if err := ctx.Err(); err != nil {
+		return errRow{err}
+	}
+	return d.DBTX.QueryRow(ctx, sql, args...)
+}
+
+func (d ctxDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if err := ctx.Err(); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return d.DBTX.Exec(ctx, sql, args...)
+}
+
+// The commonest failure is the job's own deadline. By then its context has
+// expired, and writing the failure on it fails too, so the attempt never
+// counted and the job retried forever on the only encoder slot.
+func TestRecordTranscodeFailure_CountsAfterTheJobTimedOut(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`UPDATE videos`).
+		WithArgs("video-1", pgxmock.AnyArg(), false, maxTranscodeAttempts).
+		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	recordTranscodeFailure(ctx, ctxDB{mock}, "video-1", ctx.Err())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the failure was not recorded after the timeout: %v", err)
+	}
+}
+
+func TestClearTranscodeFailure_WorksAfterTheJobTimedOut(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`UPDATE videos SET transcode_attempts = 0`).
+		WithArgs("video-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	clearTranscodeFailure(ctx, ctxDB{mock}, "video-1")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the reset was not written on a cancelled context: %v", err)
 	}
 }
