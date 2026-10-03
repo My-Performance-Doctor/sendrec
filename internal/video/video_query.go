@@ -242,7 +242,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		    v.thumbnail_key, v.share_password, v.comment_mode,
 		    (SELECT COUNT(*) FROM video_comments vc WHERE vc.video_id = v.id) AS comment_count,
 		    v.transcript_status, v.view_notification, v.download_enabled, v.cta_text, v.cta_url, v.email_gate_enabled, v.summary_status, v.document_status,
-		    v.suggested_title, v.folder_id, v.transcription_language, v.noise_reduction, v.pinned, v.capture_warning,
+		    v.suggested_title, v.folder_id, v.transcription_language, v.noise_reduction, v.pinned, NULLIF(concat_ws(' ', v.capture_warning, v.processing_error), ''),
 		    COALESCE((SELECT json_agg(json_build_object('id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.name)
 		      FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
 		      WHERE vt.video_id = v.id), '[]'::json) AS tags_json,

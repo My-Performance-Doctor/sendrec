@@ -17,8 +17,9 @@ func TestTrimVideoAsync_DownloadError(t *testing.T) {
 
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
 
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id =`).
-		WithArgs("video-123").
+	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
+	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
+		WithArgs("video-123", editFailedMessage).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
@@ -39,8 +40,9 @@ func TestTrimVideoAsync_FFmpegFailsFallsBackToReady(t *testing.T) {
 
 	s := &mockStorage{}
 
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id =`).
-		WithArgs("video-123").
+	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
+	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
+		WithArgs("video-123", editFailedMessage).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
@@ -61,8 +63,9 @@ func TestTrimVideoAsync_UploadError(t *testing.T) {
 
 	s := &mockStorage{uploadFileErr: fmt.Errorf("upload failed")}
 
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id =`).
-		WithArgs("video-123").
+	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
+	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
+		WithArgs("video-123", editFailedMessage).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
