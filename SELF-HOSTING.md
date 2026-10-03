@@ -13,6 +13,8 @@ docker compose -f docker-compose.dev.yml up --build
 
 Open http://localhost:8080, register an account, and start recording or uploading videos.
 
+Compose hands the app only the variables listed under `environment` in `docker-compose.dev.yml`; a variable you add to `.env` that is not listed there never reaches the app.
+
 ## Kubernetes with Helm
 
 SendRec includes a Helm chart at `helm/sendrec` for Kubernetes deployments.
@@ -86,9 +88,21 @@ helm template sendrec ./helm/sendrec -f values-prod.yaml
 
 ## Standalone binary
 
-SendRec is a single ~32 MB executable with the React frontend, database migrations, and HTML templates all embedded. No Docker required — just a PostgreSQL database and S3-compatible storage.
+SendRec builds to a single executable with the React frontend, database migrations, and HTML templates all embedded. No Docker required, but it needs more than the executable:
 
-Download the binary from the [releases page](https://github.com/sendrec/sendrec/releases), set the required environment variables, and run:
+- a PostgreSQL database and S3-compatible storage;
+- `ffmpeg` and `ffprobe` on `PATH`, for probing, thumbnails, transcoding and edits (the Docker image ships them);
+- for local transcription only, `whisper-cli` on `PATH` and a model at `WHISPER_MODEL_PATH` (see [Enabling transcription](#enabling-transcription)).
+
+Releases publish container images, not binaries, so build it from source. This needs Go and pnpm:
+
+```bash
+git clone https://github.com/sendrec/sendrec.git
+cd sendrec
+make build   # builds the frontend, then the Go binary at bin/sendrec
+```
+
+Set the required environment variables and run it:
 
 ```bash
 export DATABASE_URL=postgres://sendrec:secret@localhost:5432/sendrec?sslmode=disable
@@ -99,19 +113,10 @@ export S3_ACCESS_KEY=your-key
 export S3_SECRET_KEY=your-secret
 export S3_BUCKET=recordings
 
-./sendrec
+./bin/sendrec
 ```
 
 Migrations run automatically on startup. See the [environment variables](#environment-variables) section for all configuration options.
-
-To build from source:
-
-```bash
-git clone https://github.com/sendrec/sendrec.git
-cd sendrec
-make build   # builds frontend + Go binary
-./sendrec
-```
 
 ## Production setup
 
@@ -140,24 +145,7 @@ api_bind_addr = "[::]:3903"
 admin_token = "<generate with: openssl rand -base64 32>"
 ```
 
-After starting Garage, initialize it by running a few commands inside the container:
-
-```bash
-# Start Garage
-docker compose up -d garage
-
-# Initialize the cluster layout
-NODE_ID=$(docker compose exec garage /garage status 2>/dev/null | grep -oE '[a-f0-9]{16}' | head -1)
-docker compose exec garage /garage layout assign -z dc1 -c 1G "$NODE_ID"
-docker compose exec garage /garage layout apply --version 1
-
-# Create an API key and bucket
-docker compose exec garage /garage key create sendrec-key
-docker compose exec garage /garage bucket create recordings
-docker compose exec garage /garage bucket allow --read --write --owner recordings --key sendrec-key
-```
-
-Copy the `Key ID` (starts with `GK`) and `Secret key` from the output — you'll need them for `S3_ACCESS_KEY` and `S3_SECRET_KEY` below.
+Next, create `docker-compose.yml`. The `S3_ACCESS_KEY` and `S3_SECRET_KEY` placeholders are filled in after Garage is initialized below:
 
 ```yaml
 # docker-compose.yml
@@ -166,7 +154,7 @@ services:
     image: ghcr.io/sendrec/sendrec:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"  # reached through your reverse proxy
     environment:
       - DATABASE_URL=postgres://sendrec:secret@postgres:5432/sendrec?sslmode=disable
       - JWT_SECRET=change-me-to-a-long-random-string
@@ -178,6 +166,7 @@ services:
       - S3_SECRET_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
       - AWS_REQUEST_CHECKSUM_CALCULATION=when_required
       - AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+      - TRUSTED_PROXY=true  # the app is only reachable through the proxy; see below
     depends_on:
       postgres:
         condition: service_healthy
@@ -203,6 +192,8 @@ services:
       - ./garage.toml:/etc/garage.toml:ro
       - s3-meta:/var/lib/garage/meta
       - s3-data:/var/lib/garage/data
+    ports:
+      - "127.0.0.1:3900:3900"  # S3 API; browsers reach it through your proxy at S3_PUBLIC_ENDPOINT
 
 volumes:
   db-data:
@@ -210,7 +201,30 @@ volumes:
   s3-data:
 ```
 
-Put a reverse proxy (Caddy, nginx, Traefik) in front to handle TLS. The proxy should route your app domain to port 8080 and your storage domain to Garage port 3900.
+Put a reverse proxy (Caddy, nginx, Traefik) in front to handle TLS. It routes your app domain to port 8080 and your storage domain (`S3_PUBLIC_ENDPOINT`) to Garage port 3900. Browsers upload to and play from that storage domain directly, so it must be reachable. Both ports are published on `127.0.0.1` for a proxy on the host; a proxy running in the same Compose project can use `sendrec:8080` and `garage:3900` instead (see the [Caddy example](#reverse-proxy-example-caddy)).
+
+Start Garage on its own and initialize it by running a few commands inside the container:
+
+```bash
+# Start Garage
+docker compose up -d garage
+
+# Initialize the cluster layout
+NODE_ID=$(docker compose exec garage /garage status 2>/dev/null | grep -oE '[a-f0-9]{16}' | head -1)
+docker compose exec garage /garage layout assign -z dc1 -c 1G "$NODE_ID"
+docker compose exec garage /garage layout apply --version 1
+
+# Create an API key and bucket
+docker compose exec garage /garage key create sendrec-key
+docker compose exec garage /garage bucket create recordings
+docker compose exec garage /garage bucket allow --read --write --owner recordings --key sendrec-key
+```
+
+Copy the `Key ID` (starts with `GK`) and `Secret key` from the output — put them in `S3_ACCESS_KEY` and `S3_SECRET_KEY` in `docker-compose.yml`, then start everything:
+
+```bash
+docker compose up -d
+```
 
 ### Rate limiting behind a proxy (`TRUSTED_PROXY`)
 
