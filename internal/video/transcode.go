@@ -140,29 +140,42 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 	slog.Warn("transcode: will retry", "video_id", videoID, "attempts", attempts, "error", cause)
 }
 
-// switchConvertedFile points the row at a converted copy of the video, with
-// update setting $3 as file_key. The update must only match while the row is
-// 'ready' and still on fileKey ($2): an edit sets the row to 'processing' and
-// commits under a new key, so a conversion that would otherwise land during or
-// after it, putting pre-edit footage back, yields instead. Its upload is
-// deleted, no attempt is spent, and the worker converts the edited file later.
+// publishConversion uploads a converted copy of the video to newFileKey and
+// points the row at it with update, which sets $3 as file_key and $4 as
+// file_size. The update must only match while the row is 'ready' and still on
+// fileKey ($2): an edit sets the row to 'processing' and commits under a new
+// key, so a conversion that would otherwise land during or after it, putting
+// pre-edit footage back, yields instead. Its upload is discarded, no attempt
+// is spent, and the worker converts the edited file later.
 //
-// It reports whether the row was switched. On a database error the caller
-// counts an attempt; the upload is kept, since the switch may have landed.
-func switchConvertedFile(ctx context.Context, db database.DBTX, storage ObjectStorage, job, videoID, fileKey, newFileKey, update string, newFileSize int64) (bool, error) {
-	tag, err := db.Exec(ctx, update, videoID, fileKey, newFileKey, newFileSize)
+// The upload is recorded before it starts and the original is retired by the
+// switch, like an edit's (see replaceWithEdit), so neither a crash nor an
+// issued URL is a problem.
+//
+// It reports whether the row was switched. On an error the caller counts an
+// attempt.
+func publishConversion(ctx context.Context, db database.DBTX, storage ObjectStorage, job, videoID, fileKey, newFileKey, outputPath, update string, newFileSize int64) (bool, error) {
+	if err := recordReplacementAttempt(ctx, db, newFileKey); err != nil {
+		slog.Error(job+": failed to record output", "video_id", videoID, "error", err)
+		return false, err
+	}
+	if err := storage.UploadFile(ctx, newFileKey, outputPath, "video/mp4"); err != nil {
+		slog.Error(job+": failed to upload", "video_id", videoID, "error", err)
+		discardReplacement(ctx, db, newFileKey)
+		return false, err
+	}
+
+	switched, err := switchFileKey(ctx, db, update, videoID, fileKey, newFileKey, newFileSize)
 	if err != nil {
+		// The switch may have landed; the sweep won't delete a key in use.
 		slog.Error(job+": failed to update db", "video_id", videoID, "error", err)
 		return false, err
 	}
-	if tag.RowsAffected() == 0 {
+	if !switched {
 		slog.Info(job+": video is being edited or changed meanwhile, leaving it to the edit", "video_id", videoID)
-		if err := deleteWithRetry(ctx, storage, newFileKey, 3); err != nil {
-			slog.Error(job+": failed to delete unused conversion", "video_id", videoID, "key", newFileKey, "error", err)
-		}
-		return false, nil
+		discardReplacement(ctx, db, newFileKey)
 	}
-	return true, nil
+	return switched, nil
 }
 
 func clearTranscodeFailure(ctx context.Context, db database.DBTX, videoID string) {
@@ -243,13 +256,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	// switched the row to.
 	newFileKey := replacementFileKey(fileKey, ".mp4")
 
-	if err := storage.UploadFile(ctx, newFileKey, tmpOutputPath, "video/mp4"); err != nil {
-		slog.Error("transcode: failed to upload", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
-		return
-	}
-
-	switched, err := switchConvertedFile(ctx, db, storage, "transcode", videoID, fileKey, newFileKey,
+	switched, err := publishConversion(ctx, db, storage, "transcode", videoID, fileKey, newFileKey, tmpOutputPath,
 		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
@@ -259,10 +266,6 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	}
 	if !switched {
 		return
-	}
-
-	if err := storage.DeleteObject(ctx, fileKey); err != nil {
-		slog.Warn("transcode: failed to delete old webm", "video_id", videoID, "key", fileKey, "error", err)
 	}
 
 	clearTranscodeFailure(ctx, db, videoID)

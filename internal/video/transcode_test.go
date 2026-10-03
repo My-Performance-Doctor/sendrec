@@ -382,6 +382,12 @@ func TestTranscodeWebMAsync_UploadFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1").
 		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
 			AddRow("video/webm", 0, 120))
+	mock.ExpectExec(`INSERT INTO retired_objects`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`UPDATE retired_objects SET delete_after = now\(\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
@@ -409,7 +415,10 @@ func TestTranscodeWebMAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1").
 		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
 			AddRow("video/webm", 0, 120))
-	mock.ExpectExec(`UPDATE videos SET file_key`).
+	mock.ExpectExec(`INSERT INTO retired_objects`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`WITH switched AS \(UPDATE videos SET file_key`).
 		WithArgs("video-1", "recordings/user/video.webm", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).
@@ -445,6 +454,12 @@ func TestNormalizeVideoAsync_UploadFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1").
 		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
 			AddRow(false, 0, 120))
+	mock.ExpectExec(`INSERT INTO retired_objects`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`UPDATE retired_objects SET delete_after = now\(\)`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
@@ -500,7 +515,10 @@ func TestNormalizeVideoAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1").
 		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
 			AddRow(false, 0, 120))
-	mock.ExpectExec(`UPDATE videos SET file_key`).
+	mock.ExpectExec(`INSERT INTO retired_objects`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`WITH switched AS \(UPDATE videos SET file_key`).
 		WithArgs("video-1", "recordings/user/video.mp4", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).

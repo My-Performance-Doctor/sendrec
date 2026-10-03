@@ -234,13 +234,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	// Written next to the original, never over it: an edit may be reading it.
 	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
-	if err := storage.UploadFile(ctx, newFileKey, tmpOutputPath, "video/mp4"); err != nil {
-		slog.Error("normalize: failed to upload", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
-		return
-	}
-
-	switched, err := switchConvertedFile(ctx, db, storage, "normalize", videoID, fileKey, newFileKey,
+	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
 		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
@@ -252,20 +246,16 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		return
 	}
 
-	if err := deleteWithRetry(ctx, storage, fileKey, 3); err != nil {
-		slog.Warn("normalize: failed to delete the original", "video_id", videoID, "key", fileKey, "error", err)
-	}
-
 	clearTranscodeFailure(ctx, db, videoID)
 
 	slog.Info("normalize: completed", "video_id", videoID, "new_size", newFileSize)
 }
 
 // The verdict is about the file that was probed, so it only lands while the
-// row still points at it.
+// row still points at it and no edit is replacing it.
 func markIOSNormalized(ctx context.Context, db database.DBTX, videoID, fileKey string) {
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1 AND file_key = $2`,
+		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		videoID, fileKey,
 	); err != nil {
 		slog.Error("normalize: failed to mark normalized", "video_id", videoID, "error", err)
