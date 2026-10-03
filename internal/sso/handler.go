@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,9 @@ type Handler struct {
 	secureCookies bool
 	providers     map[string]Provider
 	encryptionKey []byte
+	// registrationEnabled mirrors REGISTRATION_ENABLED. Off, social sign-in
+	// only creates accounts for people with a pending workspace invite.
+	registrationEnabled bool
 }
 
 // NewHandler creates a new SSO handler with the given dependencies.
@@ -41,8 +45,19 @@ func NewHandler(db database.DBTX, jwtSecret, baseURL string, secureCookies bool,
 		secureCookies: secureCookies,
 		providers:     make(map[string]Provider),
 		encryptionKey: encryptionKey,
+
+		registrationEnabled: true,
 	}
 }
+
+// SetRegistrationEnabled applies REGISTRATION_ENABLED to social sign-in.
+func (h *Handler) SetRegistrationEnabled(enabled bool) {
+	h.registrationEnabled = enabled
+}
+
+// errRegistrationClosed is shown on the login page when social sign-in would
+// create an account on an invite-only install.
+var errRegistrationClosed = errors.New("registration is closed on this server; ask an admin for an invite")
 
 // RegisterProvider adds an SSO provider under the given name.
 func (h *Handler) RegisterProvider(name string, provider Provider) {
@@ -79,7 +94,11 @@ func clampName(name string) string {
 
 // resolveUser maps an external identity to a local user account, creating
 // new users and identity links as needed.
-func (h *Handler) resolveUser(ctx context.Context, providerName string, info *UserInfo) (string, error) {
+//
+// selfSignup is true for social sign-in (Google, GitHub, Microsoft), which
+// anyone can attempt, and false for a workspace's own SSO, which its admins
+// configured to provision their people.
+func (h *Handler) resolveUser(ctx context.Context, providerName string, info *UserInfo, selfSignup bool) (string, error) {
 	// 1. Check for an existing external identity link.
 	var userID string
 	err := h.db.QueryRow(ctx,
@@ -112,7 +131,22 @@ func (h *Handler) resolveUser(ctx context.Context, providerName string, info *Us
 		return userID, nil
 	}
 
-	// 3. No existing user -- create one.
+	// 3. No existing user -- create one, unless the install is invite-only and
+	// nobody invited them.
+	if selfSignup && !h.registrationEnabled {
+		var invited bool
+		if err := h.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM organization_invites
+			 WHERE lower(email) = lower($1) AND accepted_at IS NULL AND expires_at > now())`,
+			info.Email,
+		).Scan(&invited); err != nil {
+			return "", fmt.Errorf("check invite: %w", err)
+		}
+		if !invited {
+			return "", errRegistrationClosed
+		}
+	}
+
 	err = h.db.QueryRow(ctx,
 		"INSERT INTO users (email, password, name, email_verified) VALUES ($1, $2, $3, true) ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id",
 		info.Email, "", clampName(info.Name),

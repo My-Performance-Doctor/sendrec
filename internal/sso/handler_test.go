@@ -279,7 +279,7 @@ func TestResolveUser_ClampsOverlongName(t *testing.T) {
 		ExternalID: "gh-1",
 		Email:      "big@example.com",
 		Name:       longName,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("resolveUser: %v", err)
 	}
@@ -1759,5 +1759,77 @@ func TestGetSCIMToken_QueryErrorReturns500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("got status %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// With registration off, an install is invite-only: social sign-in must not
+// open a back door by creating accounts for anyone with a GitHub or
+// Microsoft account. Existing users still sign in, and invited people can
+// still join this way.
+func expectUnknownSocialUser(t *testing.T, handler *Handler, mock pgxmock.PgxPoolIface) {
+	t.Helper()
+	handler.RegisterProvider("github", &mockProvider{
+		authURL:  "https://github.com/login",
+		userInfo: &UserInfo{ExternalID: "gh-777", Email: "stranger@example.com", Name: "Stranger"},
+	})
+	mock.ExpectQuery(`SELECT user_id FROM external_identities`).
+		WithArgs("github", "gh-777").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`SELECT id, email_verified FROM users WHERE email = \$1`).
+		WithArgs("stranger@example.com").
+		WillReturnError(pgx.ErrNoRows)
+}
+
+func runSocialCallback(handler *Handler) *httptest.ResponseRecorder {
+	state := "valid-state-777"
+	req := httptest.NewRequest(http.MethodGet, "/api/sso/github/callback?code=c&state="+state, nil)
+	req.AddCookie(&http.Cookie{Name: "sso_state", Value: state})
+	return callWithChiParam(handler.Callback, http.MethodGet, "/api/sso/{provider}/callback", "provider", "github", req)
+}
+
+func TestCallback_RegistrationOff_RefusesNewAccount(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+	handler.SetRegistrationEnabled(false)
+	expectUnknownSocialUser(t, handler, mock)
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM organization_invites`).
+		WithArgs("stranger@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+	rec := runSocialCallback(handler)
+
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "sso_error=") || !strings.Contains(loc, "registration") {
+		t.Fatalf("want a registration-closed error, got %d %q", rec.Code, loc)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected database work (an account may have been created): %v", err)
+	}
+}
+
+func TestCallback_RegistrationOff_InvitedPersonCanJoin(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+	handler.SetRegistrationEnabled(false)
+	expectUnknownSocialUser(t, handler, mock)
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM organization_invites`).
+		WithArgs("stranger@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(`INSERT INTO users`).
+		WithArgs("stranger@example.com", "", "Stranger").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("user-777"))
+	mock.ExpectExec(`INSERT INTO external_identities`).
+		WithArgs("user-777", "github", "gh-777", "stranger@example.com").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`INSERT INTO refresh_tokens`).
+		WithArgs(pgxmock.AnyArg(), "user-777", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rec := runSocialCallback(handler)
+
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "sso_token=") {
+		t.Fatalf("want the invited person signed in, got %d %q", rec.Code, loc)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }

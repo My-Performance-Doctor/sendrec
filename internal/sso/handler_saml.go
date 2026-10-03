@@ -155,7 +155,7 @@ func (h *Handler) OrgSAMLCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.resolveUser(r.Context(), orgID, info)
+	userID, err := h.resolveUser(r.Context(), orgID, info, false)
 	if err != nil {
 		slog.Error("sso: SAML resolve user failed", "orgID", orgID, "error", err)
 		h.redirectWithError(w, r, err.Error())
