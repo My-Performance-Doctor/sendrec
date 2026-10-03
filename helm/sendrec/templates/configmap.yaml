@@ -22,6 +22,13 @@ data:
   MAX_CONCURRENT_ENCODES: {{ .Values.sendrec.env.maxConcurrentEncodes | quote }}
   API_DOCS_ENABLED: {{ .Values.sendrec.env.apiDocsEnabled | quote }}
   BRANDING_ENABLED: {{ .Values.sendrec.env.brandingEnabled | quote }}
+  BRANDING_DEFAULT_NAME: {{ .Values.sendrec.env.brandingDefaultName | quote }}
+  BRANDING_DEFAULT_LOGO_URL: {{ .Values.sendrec.env.brandingDefaultLogoUrl | quote }}
+  BRANDING_DEFAULT_COLOR_BACKGROUND: {{ .Values.sendrec.env.brandingDefaultColorBackground | quote }}
+  BRANDING_DEFAULT_COLOR_SURFACE: {{ .Values.sendrec.env.brandingDefaultColorSurface | quote }}
+  BRANDING_DEFAULT_COLOR_TEXT: {{ .Values.sendrec.env.brandingDefaultColorText | quote }}
+  BRANDING_DEFAULT_COLOR_ACCENT: {{ .Values.sendrec.env.brandingDefaultColorAccent | quote }}
+  BRANDING_DEFAULT_FOOTER_TEXT: {{ .Values.sendrec.env.brandingDefaultFooterText | quote }}
   REGISTRATION_ENABLED: {{ .Values.sendrec.env.registrationEnabled | quote }}
   PLAN_BADGE_ENABLED: {{ .Values.sendrec.env.planBadgeEnabled | quote }}
   TRUSTED_PROXY: {{ .Values.sendrec.env.trustedProxy | quote }}
