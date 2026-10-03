@@ -11,9 +11,9 @@ vi.mock("react-router-dom", async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-function renderCheckEmail(email?: string) {
+function renderCheckEmail(email?: string, deliveryFailed?: boolean) {
   return render(
-    <MemoryRouter initialEntries={[{ pathname: "/check-email", state: email ? { email } : undefined }]}>
+    <MemoryRouter initialEntries={[{ pathname: "/check-email", state: email ? { email, deliveryFailed } : undefined }]}>
       <CheckEmail />
     </MemoryRouter>
   );
@@ -33,6 +33,13 @@ describe("CheckEmail", () => {
     renderCheckEmail("alice@example.com");
     expect(screen.getByRole("heading", { name: "Check your email" })).toBeInTheDocument();
     expect(screen.getByText(/alice@example\.com/)).toBeInTheDocument();
+  });
+
+  it("says the email was not sent when delivery failed", () => {
+    renderCheckEmail("alice@example.com", true);
+    expect(screen.getByRole("heading", { name: "We couldn't send your confirmation email" })).toBeInTheDocument();
+    expect(screen.queryByText(/We've sent a confirmation link/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resend confirmation email" })).toBeInTheDocument();
   });
 
   it("renders resend button and sign in link", () => {

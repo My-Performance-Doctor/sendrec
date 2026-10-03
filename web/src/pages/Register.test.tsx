@@ -74,6 +74,27 @@ describe("Register", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/check-email", { state: { email: "alice@example.com" } });
   });
 
+  it("tells check-email when the confirmation email could not be sent", async () => {
+    mockHealthResponse(true);
+    const user = userEvent.setup();
+    mockApiFetch.mockResolvedValueOnce({
+      message: "Account created, but the confirmation email couldn't be sent.",
+      requiresEmailConfirmation: true,
+      emailDeliveryFailed: true,
+    });
+    renderRegister();
+
+    await user.type(await screen.findByLabelText("Name"), "Alice");
+    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await user.type(screen.getByLabelText(/^Password/), "password123");
+    await user.type(screen.getByLabelText("Confirm password"), "password123");
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(mockNavigate).toHaveBeenCalledWith("/check-email", {
+      state: { email: "alice@example.com", deliveryFailed: true },
+    });
+  });
+
   it("registers and navigates to login when no email backend is configured", async () => {
     mockHealthResponse(true);
     const user = userEvent.setup();
