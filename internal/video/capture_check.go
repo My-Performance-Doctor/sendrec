@@ -124,7 +124,11 @@ func recordingLength(d streamDurations, clientSeconds int) float64 {
 // the file. Every job that writes the file calls it with the copy it already
 // has: probing from here costs nothing extra, and re-checking after a trim or a
 // transcode is what clears a warning the edit fixed.
-func CheckCapture(ctx context.Context, db database.DBTX, videoID, path string, clientSeconds int) {
+//
+// fileKey is the object the copy came from. The verdict is only stored while
+// the video is live and still on that object: a job that lost to an edit
+// would otherwise describe a file the video no longer plays. #328.
+func CheckCapture(ctx context.Context, db database.DBTX, videoID, fileKey, path string, clientSeconds int) {
 	durations, err := probeStreamDurations(ctx, path)
 	if err != nil {
 		slog.Warn("capture-check: stream durations unavailable", "video_id", videoID, "error", err)
@@ -152,8 +156,8 @@ func CheckCapture(ctx context.Context, db database.DBTX, videoID, path string, c
 		`UPDATE videos SET capture_warning = NULLIF(concat_ws(' ', $2::text,
 		        CASE WHEN position($3 IN COALESCE(capture_warning, '')) > 0 THEN $3 END), ''),
 		        updated_at = now()
-		 WHERE id = $1`,
-		videoID, warning, webcamDroppedWarning,
+		 WHERE id = $1 AND file_key = $4 AND status != 'deleted'`,
+		videoID, warning, webcamDroppedWarning, fileKey,
 	); err != nil {
 		slog.Error("capture-check: failed to store verdict", "video_id", videoID, "error", err)
 	}

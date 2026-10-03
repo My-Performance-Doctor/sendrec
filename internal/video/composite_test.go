@@ -149,7 +149,7 @@ func TestCompositeWithWebcam_WebMComesOutAsMP4(t *testing.T) {
 	defer mock.Close()
 	s := &mockStorage{deleteCalled: make(chan string, 4)}
 
-	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning).
+	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// Recorded as the MP4 the transcode worker would have produced, so it
 	// does not pick the video up and encode it a second time.
@@ -189,7 +189,7 @@ func TestCompositeWithWebcam_MP4KeepsItsKey(t *testing.T) {
 	defer mock.Close()
 	s := &mockStorage{deleteCalled: make(chan string, 4)}
 
-	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning).
+	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id = \$1`).
 		WithArgs("video-123").
