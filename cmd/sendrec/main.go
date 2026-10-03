@@ -91,6 +91,12 @@ func main() {
 
 	baseURL := getEnv("BASE_URL", "http://localhost:8080")
 
+	// Browsers upload straight to the bucket, so it needs CORS for this origin.
+	// Not fatal: some providers manage CORS elsewhere.
+	if err := store.EnsureCORS(ctx, strings.TrimRight(baseURL, "/")); err != nil {
+		slog.Warn("storage CORS not set; browser uploads will fail unless the bucket allows "+baseURL, "error", err)
+	}
+
 	slog.Info("storage bucket ready")
 
 	var webFS fs.FS

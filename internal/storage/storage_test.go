@@ -585,3 +585,105 @@ func TestUploadFile_Success(t *testing.T) {
 		t.Fatalf("expected body %q, got %q", expectedContent, receivedBody)
 	}
 }
+
+// fakeS3 answers the bucket-CORS calls EnsureCORS makes and records any
+// configuration it is sent.
+func fakeS3(t *testing.T, getCORS func(w http.ResponseWriter)) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var puts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["cors"]; !ok {
+			http.Error(w, "unexpected request "+r.Method+" "+r.URL.String(), http.StatusTeapot)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			getCORS(w)
+		case http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			puts = append(puts, string(body))
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected method", http.StatusTeapot)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &puts
+}
+
+// Browsers upload straight to the bucket, so without CORS every upload on a
+// fresh install fails. Garage ignores the admin-API setting garage-init used,
+// so the app sets it itself through the S3 API.
+func TestEnsureCORS_SetsRulesWhenBucketHasNone(t *testing.T) {
+	srv, puts := fakeS3(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>NoSuchCORSConfiguration</Code><Message>none</Message></Error>`)
+	})
+	store := newTestStorage(t, storage.Config{Endpoint: srv.URL})
+
+	if err := store.EnsureCORS(context.Background(), "https://videos.example.com"); err != nil {
+		t.Fatalf("EnsureCORS: %v", err)
+	}
+	if len(*puts) != 1 {
+		t.Fatalf("want one CORS configuration sent, got %d", len(*puts))
+	}
+	for _, want := range []string{"<AllowedOrigin>https://videos.example.com</AllowedOrigin>", "<AllowedMethod>PUT</AllowedMethod>", "<AllowedMethod>GET</AllowedMethod>", "<AllowedHeader>*</AllowedHeader>", "<ExposeHeader>ETag</ExposeHeader>"} {
+		if !strings.Contains((*puts)[0], want) {
+			t.Errorf("want %s in the CORS configuration, got %s", want, (*puts)[0])
+		}
+	}
+}
+
+// An operator's own CORS rules are theirs: leave them alone.
+func TestEnsureCORS_KeepsExistingRules(t *testing.T) {
+	srv, puts := fakeS3(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><CORSConfiguration><CORSRule><AllowedOrigin>https://other.example</AllowedOrigin><AllowedMethod>GET</AllowedMethod></CORSRule></CORSConfiguration>`)
+	})
+	store := newTestStorage(t, storage.Config{Endpoint: srv.URL})
+
+	if err := store.EnsureCORS(context.Background(), "https://videos.example.com"); err != nil {
+		t.Fatalf("EnsureCORS: %v", err)
+	}
+	if len(*puts) != 0 {
+		t.Errorf("existing CORS rules were overwritten: %v", *puts)
+	}
+}
+
+// A provider without the CORS API reports an error for the caller to warn
+// about; it is not a reason to refuse to start.
+func TestEnsureCORS_ReportsUnsupportedProvider(t *testing.T) {
+	srv, puts := fakeS3(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotImplemented)
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>NotImplemented</Code><Message>no</Message></Error>`)
+	})
+	store := newTestStorage(t, storage.Config{Endpoint: srv.URL})
+
+	if err := store.EnsureCORS(context.Background(), "https://videos.example.com"); err == nil {
+		t.Error("want an error from a provider without the CORS API")
+	}
+	if len(*puts) != 0 {
+		t.Errorf("sent a CORS configuration anyway: %v", *puts)
+	}
+}
+
+// Garage answers a bucket with no CORS rules with a bare 404 NotFound rather
+// than S3's NoSuchCORSConfiguration.
+func TestEnsureCORS_SetsRulesOnGaragesNotFound(t *testing.T) {
+	srv, puts := fakeS3(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	store := newTestStorage(t, storage.Config{Endpoint: srv.URL})
+
+	if err := store.EnsureCORS(context.Background(), "http://localhost:38080"); err != nil {
+		t.Fatalf("EnsureCORS: %v", err)
+	}
+	if len(*puts) != 1 {
+		t.Fatalf("want one CORS configuration sent, got %d", len(*puts))
+	}
+}

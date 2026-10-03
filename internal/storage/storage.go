@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type Storage struct {
@@ -180,6 +183,41 @@ func (s *Storage) EnsureBucket(ctx context.Context) error {
 		return fmt.Errorf("create bucket: %w", err)
 	}
 
+	return nil
+}
+
+// EnsureCORS lets browsers on origin upload to and read from the bucket, which
+// they do directly through presigned URLs. It only adds rules to a bucket that
+// has none: an operator's own CORS configuration is left as it is. Garage
+// ignores the admin-API CORS setting that garage-init used to rely on, so a
+// fresh install had no rules and every browser upload failed.
+func (s *Storage) EnsureCORS(ctx context.Context, origin string) error {
+	_, err := s.client.GetBucketCors(ctx, &s3.GetBucketCorsInput{Bucket: aws.String(s.bucket)})
+	if err == nil {
+		return nil
+	}
+	// "No rules yet" is NoSuchCORSConfiguration on S3 and a bare 404 NotFound
+	// on Garage.
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || (apiErr.ErrorCode() != "NoSuchCORSConfiguration" && apiErr.ErrorCode() != "NotFound") {
+		return fmt.Errorf("get bucket cors: %w", err)
+	}
+
+	_, err = s.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
+		Bucket: aws.String(s.bucket),
+		CORSConfiguration: &types.CORSConfiguration{
+			CORSRules: []types.CORSRule{{
+				AllowedOrigins: []string{origin},
+				AllowedMethods: []string{"GET", "PUT", "HEAD"},
+				AllowedHeaders: []string{"*"},
+				ExposeHeaders:  []string{"ETag"},
+				MaxAgeSeconds:  aws.Int32(3600),
+			}},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("put bucket cors: %w", err)
+	}
 	return nil
 }
 
