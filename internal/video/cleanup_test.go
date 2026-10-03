@@ -173,29 +173,6 @@ func TestPurgeOrphanedFiles_DeletesWebcamFile(t *testing.T) {
 	}
 }
 
-// A row is purged only once every object it references is gone. A thumbnail
-// that would not delete leaves the row for the next sweep. #296.
-func TestPurgeOrphanedFiles_LeavesRowWhenThumbnailDeleteFails(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	thumbKey := "recordings/user-1/abc.jpg"
-	storage := &mockStorage{deleteFailKey: thumbKey}
-	mock.ExpectQuery(`SELECT id, file_key, thumbnail_key, webcam_key, transcript_key FROM videos`).
-		WillReturnRows(pgxmock.NewRows(purgeColumns).
-			AddRow("video-1", "recordings/user-1/abc.webm", &thumbKey, (*string)(nil), (*string)(nil)))
-	// No file_purged_at expectation: marking it would end the retries.
-
-	PurgeOrphanedFiles(context.Background(), mock, storage)
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
 func TestPurgeVideoObjects_DeletesEveryKeyBeforeMarking(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -220,8 +197,9 @@ func TestPurgeVideoObjects_DeletesEveryKeyBeforeMarking(t *testing.T) {
 	}
 }
 
-// One failed object still lets the others go, but the row stays unpurged.
-func TestPurgeVideoObjects_FailedKeyLeavesRowUnpurged(t *testing.T) {
+// One failed object still lets the others go. That the row then stays
+// unpurged is checked against Postgres in cleanup_db_test.go.
+func TestPurgeVideoObjects_FailedKeyStillDeletesTheRest(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)

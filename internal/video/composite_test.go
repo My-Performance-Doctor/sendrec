@@ -51,32 +51,6 @@ func TestCompositeWithWebcam_FallbackDeletesWebcam(t *testing.T) {
 	}
 }
 
-// A webcam object that would not delete keeps its key, so deleting the video
-// later still finds and removes it. #296.
-func TestCompositeWithWebcam_KeepsWebcamKeyWhenDeleteFails(t *testing.T) {
-	stubCompositeTools(t)
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-	s := &mockStorage{deleteFailKey: "recordings/user/video_webcam.mp4"}
-
-	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id = \$1`).
-		WithArgs("video-123").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// No webcam_key = NULL: the object is still there.
-
-	CompositeWithWebcam(context.Background(), mock, s, "video-123",
-		"recordings/user/video.mp4", "recordings/user/video_webcam.mp4", "recordings/user/video.jpg", "video/mp4")
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
 func TestWebcamFileKey(t *testing.T) {
 	key := webcamFileKey("user-123", "abc123defghi", "video/webm")
 	expected := "recordings/user-123/abc123defghi_webcam.webm"

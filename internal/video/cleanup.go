@@ -11,11 +11,14 @@ import (
 )
 
 // PurgeOrphanedFiles retries the storage cleanup of deleted videos whose
-// objects are not all gone yet.
+// objects are not all gone yet, oldest attempt first. A row that fails goes to
+// the back of the queue, so a few undeletable objects cannot hold the batch
+// and starve the rest.
 func PurgeOrphanedFiles(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
 		`SELECT id, file_key, thumbnail_key, webcam_key, transcript_key FROM videos
 		 WHERE status = 'deleted' AND file_purged_at IS NULL
+		 ORDER BY updated_at
 		 LIMIT 50`)
 	if err != nil {
 		slog.Error("cleanup: failed to query orphaned files", "error", err)
@@ -32,6 +35,9 @@ func PurgeOrphanedFiles(ctx context.Context, db database.DBTX, storage ObjectSto
 		}
 		if err := purgeVideoObjects(ctx, db, storage, videoID, &fileKey, thumbnailKey, webcamKey, transcriptKey); err != nil {
 			slog.Error("cleanup: video objects not purged", "video_id", videoID, "error", err)
+			if _, err := db.Exec(ctx, `UPDATE videos SET updated_at = now() WHERE id = $1`, videoID); err != nil {
+				slog.Error("cleanup: failed to requeue video", "video_id", videoID, "error", err)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
