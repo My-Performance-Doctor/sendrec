@@ -88,34 +88,70 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keys, err := h.queryStrings(ctx,
-		`SELECT k FROM videos v
-		 CROSS JOIN LATERAL unnest(ARRAY[v.file_key, v.thumbnail_key, v.transcript_key, v.webcam_key, v.branding_logo_key]) AS k
-		 WHERE (v.user_id = $1 OR v.organization_id = ANY($2::uuid[])) AND v.file_purged_at IS NULL AND k IS NOT NULL
-		 UNION
-		 SELECT logo_key FROM user_branding
-		 WHERE ((user_id = $1 AND organization_id IS NULL) OR organization_id = ANY($2::uuid[])) AND logo_key IS NOT NULL`,
+	purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+
+	// One statement fences the account's videos and collects what they store.
+	// Marking them deleted makes every job's "publish only while live" guard
+	// refuse them from here on, and a job that published first has its key
+	// read here, because the update waits for its row lock and sees its
+	// result. Every key then goes to the retired-objects sweep, which deletes
+	// it again once nothing references it: that retries a failed delete and
+	// catches an upload through a URL issued before the deletion. Without
+	// that record nothing would find these objects once the rows are gone,
+	// so nothing is deleted if this fails. #325, #326.
+	keys, err := h.queryStrings(purgeCtx,
+		`WITH fenced AS (
+		     UPDATE videos SET status = 'deleted', updated_at = now()
+		     WHERE user_id = $1 OR organization_id = ANY($2::uuid[])
+		     RETURNING file_key, thumbnail_key, transcript_key, webcam_key, branding_logo_key
+		 ),
+		 collected AS (
+		     SELECT k FROM fenced
+		     CROSS JOIN LATERAL unnest(ARRAY[file_key, thumbnail_key, transcript_key, webcam_key, branding_logo_key]) AS k
+		     WHERE k IS NOT NULL
+		     UNION
+		     SELECT logo_key FROM user_branding
+		     WHERE ((user_id = $1 AND organization_id IS NULL) OR organization_id = ANY($2::uuid[])) AND logo_key IS NOT NULL
+		 ),
+		 scheduled AS (
+		     INSERT INTO retired_objects (key, delete_after)
+		     SELECT k, now() + INTERVAL '`+uploadURLGrace+`' FROM collected
+		     ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)
+		 )
+		 SELECT k FROM collected`,
 		userID, ownOrgs)
 	if err != nil {
-		slog.Error("delete-account: failed to list stored files", "user_id", userID, "error", err)
+		slog.Error("delete-account: failed to fence videos and schedule the final purge", "user_id", userID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+
+	// Logos are shared: a workspace's branding and every video in it name the
+	// same object, so a key someone staying still uses is left to the sweep,
+	// which keeps it. Media keys belong to one video each. IS NOT TRUE, not
+	// NOT: organization_id is NULL on personal videos.
+	deletable, err := h.queryStrings(purgeCtx,
+		`SELECT k FROM unnest($1::text[]) AS k
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM videos v
+		     WHERE (v.user_id = $2 OR v.organization_id = ANY($3::uuid[])) IS NOT TRUE AND v.status != 'deleted'
+		       AND k IN (v.file_key, v.thumbnail_key, v.transcript_key, v.webcam_key, v.branding_logo_key))
+		   AND NOT EXISTS (
+		     SELECT 1 FROM user_branding b
+		     WHERE b.logo_key = k
+		       AND ((b.user_id = $2 AND b.organization_id IS NULL) OR b.organization_id = ANY($3::uuid[])) IS NOT TRUE)`,
+		keys, userID, ownOrgs)
+	if err != nil {
+		slog.Error("delete-account: failed to check shared files", "user_id", userID, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
 		return
 	}
 	// The account is deleted as the user asked even when an object will not
-	// go; that object is recorded for the retired-objects sweep instead.
-	purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-	defer cancel()
-	for _, key := range keys {
+	// go; the record above retries it.
+	for _, key := range deletable {
 		if err := deleteWithRetry(purgeCtx, h.storage, key, 3); err != nil {
-			// The rows naming this object go below, so hand it to the
-			// retired-objects sweep, which retries it once nothing references it.
 			slog.Error("delete-account: failed to delete object, leaving it to the sweep", "user_id", userID, "key", key, "error", err)
-			if _, err := h.db.Exec(purgeCtx,
-				`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')
-				 ON CONFLICT (key) DO UPDATE SET delete_after = EXCLUDED.delete_after`, key,
-			); err != nil {
-				slog.Error("delete-account: failed to record object for retry", "user_id", userID, "key", key, "error", err)
-			}
 		}
 	}
 

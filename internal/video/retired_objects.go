@@ -14,6 +14,11 @@ import (
 // before the switch keeps range-requesting that URL until it expires.
 const retiredObjectGrace = "2 hours"
 
+// uploadURLGrace is how long after a purge its keys are deleted once more. The
+// longest presigned upload URL (recording and webcam) lasts 30 minutes, so an
+// upload through one issued before the deletion lands within it. #326.
+const uploadURLGrace = "1 hour"
+
 // replacementAttemptGrace bounds an upload whose job never reaches the switch.
 // It is far past every job deadline, so the sweep can't take an object a live
 // job is about to switch the row to.
@@ -33,8 +38,9 @@ func recordReplacementAttempt(ctx context.Context, db database.DBTX, newKey stri
 // the next try, so it falls behind keys that are deletable now.
 const retryDeleteAfter = "1 hour"
 
-// referenced matches a retired_objects row r whose key any video still uses,
-// in any of the columns that hold object keys. Only file_key is indexed; the
+// referenced matches a retired_objects row r whose key any video or branding
+// still uses, in any of the columns that hold object keys. Logos are shared:
+// a workspace's branding and every video in it name the same object. Only file_key is indexed; the
 // others are a scan per candidate.
 // ponytail: fine at hundreds of thousands of videos; index the other three
 // columns if the sweep shows up in slow-query logs.
@@ -44,7 +50,9 @@ const retryDeleteAfter = "1 hour"
 const referenced = `(EXISTS (SELECT 1 FROM videos v WHERE v.file_key = r.key AND v.status != 'deleted')
 	OR EXISTS (SELECT 1 FROM videos v WHERE v.thumbnail_key = r.key AND v.status != 'deleted')
 	OR EXISTS (SELECT 1 FROM videos v WHERE v.transcript_key = r.key AND v.status != 'deleted')
-	OR EXISTS (SELECT 1 FROM videos v WHERE v.webcam_key = r.key AND v.status != 'deleted'))`
+	OR EXISTS (SELECT 1 FROM videos v WHERE v.webcam_key = r.key AND v.status != 'deleted')
+	OR EXISTS (SELECT 1 FROM videos v WHERE v.branding_logo_key = r.key AND v.status != 'deleted')
+	OR EXISTS (SELECT 1 FROM user_branding b WHERE b.logo_key = r.key))`
 
 // discardReplacement makes an upload that will never be used due for deletion
 // on the next sweep. The record may already be gone, consumed by a switch
