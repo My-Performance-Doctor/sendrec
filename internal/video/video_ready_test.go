@@ -82,7 +82,7 @@ func TestCompositeJob_DispatchesVideoReadyWhenDone(t *testing.T) {
 	wm := webhookMock(t, handler)
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
-		WithArgs("video-123", webcamDroppedWarning).
+		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	expectWebcamCleared(mock)
 	mock.ExpectQuery(`SELECT user_id, share_token, duration FROM videos WHERE id = \$1 AND status = 'ready'`).

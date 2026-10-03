@@ -64,7 +64,8 @@ func buildAudioExtractArgs(inputPath, outputPath string) []string {
 	)
 }
 
-func extractAudioAt(ctx context.Context, inputPath, outputPath string) error {
+// See transcodeToMP4 for why this is a var.
+var extractAudioAt = func(ctx context.Context, inputPath, outputPath string) error {
 	if !hasAudioStream(ctx, inputPath) {
 		// hasAudioStream collapses the probe's error into a bool, so a cancelled
 		// context is indistinguishable from a silent input at this level. Report
@@ -219,12 +220,6 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		return
 	}
 	_ = tmpVTT.Close()
-	if err := storage.UploadFile(ctx, transcriptKey, tmpVTTPath, "text/vtt"); err != nil {
-		slog.Error("transcribe: failed to upload VTT", "video_id", videoID, "error", err)
-		setFailed()
-		return
-	}
-
 	segmentsJSON, err := json.Marshal(segments)
 	if err != nil {
 		slog.Error("transcribe: failed to marshal segments", "video_id", videoID, "error", err)
@@ -232,12 +227,32 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		return
 	}
 
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET transcript_key = $1, transcript_json = $2, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now() WHERE id = $3`,
-		transcriptKey, string(segmentsJSON), videoID,
-	); err != nil {
+	// Published only while the video is live; anything else is reclaimed by
+	// the sweep. #325.
+	if err := recordReplacementAttempt(ctx, db, transcriptKey); err != nil {
+		slog.Error("transcribe: failed to record upload", "video_id", videoID, "error", err)
+		setFailed()
+		return
+	}
+	if err := storage.UploadFile(ctx, transcriptKey, tmpVTTPath, "text/vtt"); err != nil {
+		slog.Error("transcribe: failed to upload VTT", "video_id", videoID, "error", err)
+		discardReplacement(ctx, db, transcriptKey)
+		setFailed()
+		return
+	}
+
+	published, err := publishUpload(ctx, db,
+		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now()
+		 WHERE id = $1 AND status != 'deleted'`,
+		videoID, transcriptKey, string(segmentsJSON))
+	if err != nil {
 		slog.Error("transcribe: failed to update transcript data", "video_id", videoID, "error", err)
 		setFailed()
+		return
+	}
+	if !published {
+		slog.Info("transcribe: video deleted meanwhile, discarding", "video_id", videoID)
+		discardReplacement(ctx, db, transcriptKey)
 		return
 	}
 

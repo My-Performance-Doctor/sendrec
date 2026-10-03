@@ -29,7 +29,7 @@ func TestCompositeWithWebcam_FallbackDeletesWebcam(t *testing.T) {
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down"), deleteCalled: make(chan string, 4)}
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL`).
-		WithArgs("video-123", webcamDroppedWarning).
+		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE videos SET webcam_key = NULL WHERE id = \$1 AND webcam_key = \$2`).
 		WithArgs("video-123", "recordings/user/video_webcam.webm").
@@ -78,7 +78,7 @@ func TestCompositeWithWebcam_ScreenDownloadError(t *testing.T) {
 
 	// On error, should still set status to "ready" (fallback to screen-only)
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL`).
-		WithArgs("video-123", webcamDroppedWarning).
+		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	expectWebcamCleared(mock)
 
@@ -102,7 +102,7 @@ func TestCompositeWithWebcam_FFmpegFailsFallsBackToReady(t *testing.T) {
 
 	// On error, should still set status to "ready"
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL`).
-		WithArgs("video-123", webcamDroppedWarning).
+		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	expectWebcamCleared(mock)
 
@@ -153,9 +153,11 @@ func TestCompositeWithWebcam_WebMComesOutAsMP4(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	// Recorded as the MP4 the transcode worker would have produced, so it
 	// does not pick the video up and encode it a second time.
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = \$2, content_type = 'video/mp4', file_size = \$3, cues_fixed = true, ios_normalized = true`).
-		WithArgs("video-123", "recordings/user/video.mp4", int64(len("mp4 bytes"))).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`WITH held AS .*file_key = \$3, content_type = 'video/mp4', file_size = \$4, cues_fixed = true, ios_normalized = true`).
+		WithArgs("video-123", "recordings/user/video.webm", pgxmock.AnyArg(), int64(len("mp4 bytes"))).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	expectWebcamCleared(mock)
 
 	CompositeWithWebcam(context.Background(), mock, s, "video-123",
@@ -164,23 +166,23 @@ func TestCompositeWithWebcam_WebMComesOutAsMP4(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
-	if len(s.uploadFileKeys) == 0 || s.uploadFileKeys[0] != "recordings/user/video.mp4" || s.uploadFileContentTypes[0] != "video/mp4" {
-		t.Errorf("want the composite uploaded as recordings/user/video.mp4 video/mp4, got %v %v", s.uploadFileKeys, s.uploadFileContentTypes)
+	if len(s.uploadFileKeys) == 0 || !strings.HasPrefix(s.uploadFileKeys[0], "recordings/user/video.") || !strings.HasSuffix(s.uploadFileKeys[0], ".mp4") || s.uploadFileContentTypes[0] != "video/mp4" {
+		t.Errorf("want the composite uploaded next to the screen as video/mp4, got %v %v", s.uploadFileKeys, s.uploadFileContentTypes)
 	}
 	close(s.deleteCalled)
 	var deleted []string
 	for k := range s.deleteCalled {
 		deleted = append(deleted, k)
 	}
-	for _, want := range []string{"recordings/user/video_webcam.webm", "recordings/user/video.webm"} {
-		if !slices.Contains(deleted, want) {
-			t.Errorf("want %s deleted, deleted %v", want, deleted)
-		}
+	// The screen recording is retired by the switch, not deleted on the spot.
+	if !slices.Equal(deleted, []string{"recordings/user/video_webcam.webm"}) {
+		t.Errorf("want only the webcam deleted, deleted %v", deleted)
 	}
 }
 
-// An MP4 screen recording keeps its key; only the overlay changes.
-func TestCompositeWithWebcam_MP4KeepsItsKey(t *testing.T) {
+// An MP4 screen recording keeps its type; the composite goes to a key of its
+// own, so the screen recording stays intact until the switch.
+func TestCompositeWithWebcam_MP4KeepsItsType(t *testing.T) {
 	stubCompositeTools(t)
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -191,9 +193,11 @@ func TestCompositeWithWebcam_MP4KeepsItsKey(t *testing.T) {
 
 	mock.ExpectExec(`UPDATE videos SET capture_warning`).WithArgs("video-123", pgxmock.AnyArg(), webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now\(\) WHERE id = \$1`).
-		WithArgs("video-123").
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`WITH held AS .*file_key = \$3, file_size = \$4, updated_at`).
+		WithArgs("video-123", "recordings/user/video.mp4", pgxmock.AnyArg(), int64(len("mp4 bytes"))).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	expectWebcamCleared(mock)
 
 	CompositeWithWebcam(context.Background(), mock, s, "video-123",
@@ -202,13 +206,13 @@ func TestCompositeWithWebcam_MP4KeepsItsKey(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
-	if len(s.uploadFileKeys) == 0 || s.uploadFileKeys[0] != "recordings/user/video.mp4" {
-		t.Errorf("want the composite at its original key, got %v", s.uploadFileKeys)
+	if len(s.uploadFileKeys) == 0 || s.uploadFileKeys[0] == "recordings/user/video.mp4" || !strings.HasSuffix(s.uploadFileKeys[0], ".mp4") || s.uploadFileContentTypes[0] != "video/mp4" {
+		t.Errorf("want the composite under a new .mp4 key, got %v %v", s.uploadFileKeys, s.uploadFileContentTypes)
 	}
 	close(s.deleteCalled)
 	for k := range s.deleteCalled {
 		if k == "recordings/user/video.mp4" {
-			t.Error("deleted the composite it just uploaded")
+			t.Error("deleted the screen recording instead of retiring it")
 		}
 	}
 }
@@ -255,7 +259,7 @@ func TestCompositeWithWebcam_FallbackStillGetsThumbnailAndTranscript(t *testing.
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL`).
-		WithArgs("video-123", webcamDroppedWarning).
+		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	expectWebcamCleared(mock)
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).

@@ -115,7 +115,8 @@ func buildThumbnailArgs(inputPath, outputPath string, seekSeconds int) []string 
 	)
 }
 
-func extractFrameAt(ctx context.Context, inputPath, outputPath string, seekSeconds int) error {
+// See transcodeToMP4 for why this is a var.
+var extractFrameAt = func(ctx context.Context, inputPath, outputPath string, seekSeconds int) error {
 	cmd := exec.CommandContext(ctx, "ffmpeg", buildThumbnailArgs(inputPath, outputPath, seekSeconds)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -172,15 +173,28 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 		return
 	}
 
+	// Published only while the video is live; anything else is reclaimed by
+	// the sweep. #325.
+	if err := recordReplacementAttempt(ctx, db, thumbnailKey); err != nil {
+		slog.Error("thumbnail: failed to record upload", "video_id", videoID, "error", err)
+		return
+	}
 	if err := storage.UploadFile(ctx, thumbnailKey, tmpThumbPath, "image/jpeg"); err != nil {
 		slog.Error("thumbnail: failed to upload", "video_id", videoID, "error", err)
+		discardReplacement(ctx, db, thumbnailKey)
 		return
 	}
 
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET thumbnail_key = $1, updated_at = now() WHERE id = $2`,
-		thumbnailKey, videoID,
-	); err != nil {
+	published, err := publishUpload(ctx, db,
+		`UPDATE videos SET thumbnail_key = $2, updated_at = now()
+		 WHERE id = $1 AND status != 'deleted'`,
+		videoID, thumbnailKey)
+	if err != nil {
 		slog.Error("thumbnail: failed to update thumbnail_key", "video_id", videoID, "error", err)
+		return
+	}
+	if !published {
+		slog.Info("thumbnail: video deleted meanwhile, discarding", "video_id", videoID)
+		discardReplacement(ctx, db, thumbnailKey)
 	}
 }
