@@ -49,6 +49,35 @@ func deleteWithRetry(ctx context.Context, storage ObjectStorage, key string, max
 	return fmt.Errorf("all %d delete attempts failed for %s: %w", maxAttempts, key, lastErr)
 }
 
+func (h *Handler) dispatchVideoReady(userID, videoID, shareToken string, duration int) {
+	h.dispatchWebhook(userID, webhook.Event{
+		Name:      "video.ready",
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"videoId":    videoID,
+			"duration":   duration,
+			"shareToken": shareToken,
+			"watchUrl":   h.baseURL + "/watch/" + shareToken,
+		},
+	})
+}
+
+// dispatchVideoReadyIfReady sends video.ready for a video a background job
+// has just finished, provided the job left it watchable.
+func (h *Handler) dispatchVideoReadyIfReady(ctx context.Context, videoID string) {
+	if h.webhookClient == nil {
+		return
+	}
+	var userID, shareToken string
+	var duration int
+	if err := h.db.QueryRow(ctx,
+		`SELECT user_id, share_token, duration FROM videos WHERE id = $1 AND status = 'ready'`, videoID,
+	).Scan(&userID, &shareToken, &duration); err != nil {
+		return
+	}
+	h.dispatchVideoReady(userID, videoID, shareToken, duration)
+}
+
 func viewerHash(ip, userAgent string) string {
 	h := sha256.Sum256([]byte(ip + "|" + userAgent))
 	return fmt.Sprintf("%x", h[:8])

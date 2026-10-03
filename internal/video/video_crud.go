@@ -372,16 +372,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.dispatchWebhook(userID, webhook.Event{
-			Name:      "video.ready",
-			Timestamp: time.Now().UTC(),
-			Data: map[string]any{
-				"videoId":    videoID,
-				"duration":   duration,
-				"shareToken": shareToken,
-				"watchUrl":   h.baseURL + "/watch/" + shareToken,
-			},
-		})
+		// A webcam video is watchable only once its composite job is done,
+		// and the job sends video.ready then.
+		if newStatus == "ready" {
+			h.dispatchVideoReady(userID, videoID, shareToken, duration)
+		}
 
 		audioFilter := ""
 		if h.noiseReductionFilter != "" {

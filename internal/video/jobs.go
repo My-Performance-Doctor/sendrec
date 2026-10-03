@@ -68,6 +68,11 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 			ctx, cancel := context.WithTimeout(context.Background(), compositeTimeout(duration))
 			defer cancel()
 			CompositeWithWebcam(ctx, h.db, h.storage, videoID, fileKey, webcamKey, thumbKey, contentType)
+			// Overlaid or fallen back, the video is watchable now. On a context
+			// of its own: the composite may have used up the job's.
+			readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer readyCancel()
+			h.dispatchVideoReadyIfReady(readyCtx, videoID)
 		}()
 	}
 }
