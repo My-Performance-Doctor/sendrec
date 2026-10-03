@@ -6691,6 +6691,7 @@ func TestRetranscribe_NoBody(t *testing.T) {
 }
 
 func TestRetranscribe_InvalidLanguage(t *testing.T) {
+	t.Setenv("TRANSCRIPTION_ENABLED", "true")
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -7180,5 +7181,31 @@ func TestUploadTranscript_RejectsOversized_OverRouteCeiling(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet pgxmock expectations: %v", err)
+	}
+}
+
+// With transcription off nothing can ever run the job: the request used to
+// return 202 and the status stayed "none" for good. Audit 1.6.
+func TestRetranscribe_RefusedWhenTranscriptionIsOff(t *testing.T) {
+	t.Setenv("TRANSCRIPTION_ENABLED", "false")
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware()).Post("/api/videos/{id}/retranscribe", handler.Retranscribe)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPost, "/api/videos/video-123/retranscribe", nil))
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("expected status %d, got %d: %s", http.StatusConflict, rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected database work: %v", err)
 	}
 }

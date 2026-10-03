@@ -133,7 +133,8 @@ export function TranscriptSection({
           <span className="detail-setting-label">Transcript</span>
           <div className="detail-setting-value">
             <span>
-              {video.transcriptStatus === "none" && "Not started"}
+              {video.transcriptStatus === "none" &&
+                (limits?.transcriptionEnabled ? "Not started" : "Not available")}
               {video.transcriptStatus === "pending" && "Pending..."}
               {video.transcriptStatus === "processing" && "Transcribing..."}
               {video.transcriptStatus === "ready" && "Ready"}
@@ -162,13 +163,16 @@ export function TranscriptSection({
                       ))}
                     </select>
                   )}
-                  <button onClick={retranscribe} className="detail-btn">
-                    {video.transcriptStatus === "none"
-                      ? "Transcribe"
-                      : video.transcriptStatus === "ready"
-                        ? "Redo transcript"
-                        : "Retry transcript"}
-                  </button>
+                  {/* The server refuses it when transcription is off. */}
+                  {limits?.transcriptionEnabled && (
+                    <button onClick={retranscribe} className="detail-btn">
+                      {video.transcriptStatus === "none"
+                        ? "Transcribe"
+                        : video.transcriptStatus === "ready"
+                          ? "Redo transcript"
+                          : "Retry transcript"}
+                    </button>
+                  )}
                   <button
                     onClick={() => uploadInputRef.current?.click()}
                     disabled={uploadingTranscript}

@@ -880,7 +880,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
 ` + playerJS + `
             })();
         </script>
-        {{if ne .TranscriptStatus "no_audio"}}
+        {{if and (ne .TranscriptStatus "no_audio") (ne .TranscriptStatus "none")}}
         <div class="transcript-section">
             {{if and (eq .TranscriptStatus "ready") (eq .SummaryStatus "ready")}}
             <div class="panel-tabs">

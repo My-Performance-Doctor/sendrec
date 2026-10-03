@@ -221,6 +221,12 @@ func (h *Handler) SetPassword(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Retranscribe(w http.ResponseWriter, r *http.Request) {
 	videoID := chi.URLParam(r, "id")
 
+	// Nothing could run the job: accepting it left the status at "none" for good.
+	if !isTranscriptionEnabled() {
+		httputil.WriteError(w, http.StatusConflict, "transcription is not enabled on this server")
+		return
+	}
+
 	var req retranscribeRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

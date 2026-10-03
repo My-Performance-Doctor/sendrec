@@ -775,7 +775,7 @@ describe("VideoDetail", () => {
 
   it("shows transcript status 'Not started' with Transcribe button", async () => {
     const video = makeVideo({ transcriptStatus: "none" });
-    setupDefaultMocks();
+    setupDefaultMocks({ limits: { ...defaultLimits, transcriptionEnabled: true } });
 
     renderVideoDetail("v1");
 
@@ -813,7 +813,7 @@ describe("VideoDetail", () => {
   });
 
   it("shows transcript status 'Ready' with Redo transcript button", async () => {
-    setupWithTranscript();
+    setupWithTranscript({ limits: { ...defaultLimits, transcriptionEnabled: true } });
 
     renderVideoDetail("v1");
 
@@ -825,7 +825,7 @@ describe("VideoDetail", () => {
 
   it("shows transcript status 'Failed' with Retry transcript button", async () => {
     const video = makeVideo({ transcriptStatus: "failed" });
-    setupDefaultMocks({ video });
+    setupDefaultMocks({ video, limits: { ...defaultLimits, transcriptionEnabled: true } });
 
     renderVideoDetail("v1");
 
@@ -837,7 +837,7 @@ describe("VideoDetail", () => {
 
   it("calls retranscribe API when Transcribe clicked", async () => {
     const video = makeVideo({ transcriptStatus: "none" });
-    setupDefaultMocks();
+    setupDefaultMocks({ limits: { ...defaultLimits, transcriptionEnabled: true } });
     mockApiFetch.mockResolvedValueOnce(undefined);
 
     renderVideoDetail("v1");
