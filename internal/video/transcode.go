@@ -99,6 +99,12 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 	}
 	msg = strings.ReplaceAll(strings.ToValidUTF8(msg, ""), "\x00", "")
 
+	// Written on a context of its own: the commonest failure is the job's
+	// deadline, and on the expired job context this write would fail too,
+	// leaving the counter untouched and the job retrying forever.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
 	var attempts int
 	err := db.QueryRow(ctx,
 		`UPDATE videos
@@ -122,6 +128,8 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 }
 
 func clearTranscodeFailure(ctx context.Context, db database.DBTX, videoID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if _, err := db.Exec(ctx,
 		`UPDATE videos SET transcode_attempts = 0, transcode_error = NULL WHERE id = $1`,
 		videoID,
