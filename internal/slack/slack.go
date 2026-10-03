@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
-	"github.com/sendrec/sendrec/internal/email"
 )
 
 // Client sends Slack notifications via incoming webhooks.
@@ -147,40 +145,6 @@ func (c *Client) SendCommentNotification(ctx context.Context, toEmail, toName, v
 
 	if err := c.postMessage(ctx, webhookURL, p); err != nil {
 		slog.Error("slack: failed to send comment notification", "error", err)
-	}
-	return nil
-}
-
-func (c *Client) SendDigestNotification(ctx context.Context, toEmail, toName string, videos []email.DigestVideoSummary) error {
-	webhookURL, err := c.lookupWebhookURL(ctx, toEmail)
-	if err != nil {
-		slog.Warn("slack: no webhook configured", "user_email", toEmail, "error", err)
-		return nil
-	}
-
-	var lines []string
-	for _, v := range videos {
-		line := fmt.Sprintf("\u2022 <%s|%s> \u2014 %d views", v.WatchURL, v.Title, v.ViewCount)
-		if v.CommentCount > 0 {
-			line += fmt.Sprintf(", %d comments", v.CommentCount)
-		}
-		lines = append(lines, line)
-	}
-
-	p := payload{
-		Blocks: []block{
-			{
-				Type: "section",
-				Text: &text{
-					Type: "mrkdwn",
-					Text: ":bar_chart: *Daily video digest*\n" + strings.Join(lines, "\n"),
-				},
-			},
-		},
-	}
-
-	if err := c.postMessage(ctx, webhookURL, p); err != nil {
-		slog.Error("slack: failed to send digest notification", "error", err)
 	}
 	return nil
 }

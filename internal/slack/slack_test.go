@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
-	"github.com/sendrec/sendrec/internal/email"
 )
 
 func TestSendViewNotification_PostsCorrectPayload(t *testing.T) {
@@ -249,66 +248,6 @@ func TestSendTestMessage_PostsCorrectPayload(t *testing.T) {
 	expected := ":white_check_mark: *SendRec is connected!*\nSlack notifications are working. You'll receive messages here when someone views or comments on your videos."
 	if mrkdwn != expected {
 		t.Errorf("unexpected test message: %q", mrkdwn)
-	}
-}
-
-func TestSendDigestNotification_PostsCorrectPayload(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	var mu sync.Mutex
-	var receivedBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		_ = json.Unmarshal(body, &receivedBody)
-		mu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	mock.ExpectQuery(`SELECT np\.slack_webhook_url FROM notification_preferences np JOIN users u ON u\.id = np\.user_id WHERE u\.email = \$1 AND np\.slack_webhook_url IS NOT NULL`).
-		WithArgs("alice@example.com").
-		WillReturnRows(pgxmock.NewRows([]string{"slack_webhook_url"}).AddRow(server.URL))
-
-	client := New(mock)
-	videos := []email.DigestVideoSummary{
-		{Title: "Video A", ViewCount: 5, CommentCount: 2, WatchURL: "https://app.sendrec.eu/watch/aaa"},
-		{Title: "Video B", ViewCount: 3, CommentCount: 0, WatchURL: "https://app.sendrec.eu/watch/bbb"},
-	}
-	err = client.SendDigestNotification(context.Background(), "alice@example.com", "Alice", videos)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if receivedBody == nil {
-		t.Fatal("expected HTTP request to Slack webhook, got none")
-	}
-
-	blocks, ok := receivedBody["blocks"].([]any)
-	if !ok || len(blocks) < 1 {
-		t.Fatalf("expected at least 1 block, got %v", receivedBody)
-	}
-
-	section := blocks[0].(map[string]any)
-	text := section["text"].(map[string]any)
-	mrkdwn := text["text"].(string)
-
-	expected := ":bar_chart: *Daily video digest*\n" +
-		"\u2022 <https://app.sendrec.eu/watch/aaa|Video A> \u2014 5 views, 2 comments\n" +
-		"\u2022 <https://app.sendrec.eu/watch/bbb|Video B> \u2014 3 views"
-	if mrkdwn != expected {
-		t.Errorf("unexpected digest text:\ngot:  %q\nwant: %q", mrkdwn, expected)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
