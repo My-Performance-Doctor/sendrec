@@ -7,7 +7,7 @@ Kubernetes deployment for [SendRec](https://github.com/sendrec/sendrec) - open-s
 | Resource | Condition |
 | --- | --- |
 | `Deployment` | always |
-| `ConfigMap` (`sendrec-configmap`) | always - every non-secret env var |
+| `ConfigMap` (`sendrec-configmap`) | always - the non-secret env vars the chart maps |
 | `Secret` (`sendrec-secret`) | unless `sendrec.existingSecret` is set |
 | `Service` | always |
 | `Ingress` | `sendrec.ingress.enabled` |
@@ -81,7 +81,7 @@ Set `sendrec.existingSecret: my-secret` to skip the chart-managed Secret (useful
 
 ## Environment variables
 
-Every key under `sendrec.env` renders into the ConfigMap unconditionally. **An empty string behaves exactly like "unset"** - the app falls back to its own default - so leaving a key `""` is always safe.
+Each key listed below renders into the ConfigMap unconditionally; the chart maps a fixed set of keys, so a key it does not list is ignored. To pass an environment variable the chart does not map, put it in your `existingSecret`. **An empty string behaves exactly like "unset"** - the app falls back to its own default - so leaving a key `""` is always safe.
 
 The **Default** column below is what this chart ships in `values.yaml`, which is not always what the app would do on its own. Where the two differ, the app's own default follows in parentheses.
 
@@ -126,6 +126,13 @@ Set any of these to `"0"` for unlimited. The chart ships `"0"` for all three, so
 | `env.brandingEnabled` | `BRANDING_ENABLED` | Let users customise watch-page logo, colours, footer and custom CSS | `"true"` (app: `"false"`) |
 | `env.registrationEnabled` | `REGISTRATION_ENABLED` | Allow self-signup. `"false"` hides the form *and* disables the API endpoint | `"false"` (app: `"true"`) |
 | `env.planBadgeEnabled` | `PLAN_BADGE_ENABLED` | Show the Free/Pro/Business badge next to the logo. Only useful with billing configured | `"false"` |
+| `env.brandingDefaultName` | `BRANDING_DEFAULT_NAME` | Instance name shown in place of "SendRec" on viewer pages and in the app. The `brandingDefault*` keys apply whether or not `brandingEnabled` is on; users' own branding still wins on viewer pages | `""` |
+| `env.brandingDefaultLogoUrl` | `BRANDING_DEFAULT_LOGO_URL` | Logo and favicon: an `https://` URL or a path on this host | `""` |
+| `env.brandingDefaultColorBackground` | `BRANDING_DEFAULT_COLOR_BACKGROUND` | Page background, `#rrggbb` | `""` |
+| `env.brandingDefaultColorSurface` | `BRANDING_DEFAULT_COLOR_SURFACE` | Card and panel colour, `#rrggbb` | `""` |
+| `env.brandingDefaultColorText` | `BRANDING_DEFAULT_COLOR_TEXT` | Text colour, `#rrggbb` | `""` |
+| `env.brandingDefaultColorAccent` | `BRANDING_DEFAULT_COLOR_ACCENT` | Accent colour for buttons and links, `#rrggbb` | `""` |
+| `env.brandingDefaultFooterText` | `BRANDING_DEFAULT_FOOTER_TEXT` | Footer text on viewer pages | `""` |
 | `env.analyticsScript` | `ANALYTICS_SCRIPT` | A full `<script>` tag injected into every watch page (Umami, Plausible, Matomo, …). The CSP nonce is added automatically | `""` |
 | `env.allowedFrameAncestors` | `ALLOWED_FRAME_ANCESTORS` | **Extra** space-separated CSP `frame-ancestors` origins; the app always prepends `'self'`. Widen it to embed SendRec in Nextcloud, a wiki, etc. | `""` |
 

@@ -19,7 +19,8 @@ sendrec:
     extraVolumes: []         # pod-level volumes
     extraVolumeMounts: []    # mounts on the main sendrec container
 
-  # Every key below becomes an env var in the ConfigMap; an empty string means "unset", so the app default applies
+  # Each key below maps to one env var in templates/configmap.yaml; a key not listed there is ignored.
+  # An empty string means "unset", so the app default applies. Other variables can go in existingSecret.
   env:
     baseUrl: ""  # required; public URL used in share links, emails and OAuth redirect URIs (e.g. https://sendrec.yourdomain.com)
 
@@ -48,6 +49,15 @@ sendrec:
     brandingEnabled: "true"       # allow custom logo/colors on watch pages
     registrationEnabled: "false"  # public sign-up; "false" makes the instance invite-only
     planBadgeEnabled: "false"     # show plan badges in the UI, only useful with billing configured
+
+    # Instance branding: replaces "SendRec" on viewer pages and in the app. Applies whether or not brandingEnabled is on.
+    brandingDefaultName: ""             # e.g. Acme Video
+    brandingDefaultLogoUrl: ""          # https:// URL or a path on this host; also the favicon
+    brandingDefaultColorBackground: ""  # #rrggbb
+    brandingDefaultColorSurface: ""     # #rrggbb
+    brandingDefaultColorText: ""        # #rrggbb
+    brandingDefaultColorAccent: ""      # #rrggbb
+    brandingDefaultFooterText: ""
 
     # Security
     trustedProxy: "true"               # "true" only when an ingress controller you control always sets X-Forwarded-For; otherwise every client shares one rate-limit bucket
