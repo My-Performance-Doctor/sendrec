@@ -143,7 +143,7 @@ func TestCheckCapture(t *testing.T) {
 			return streamDurations{Video: 15.53, Audio: 141.1, HasVideo: true}, nil
 		}
 		mock.ExpectExec(`UPDATE videos SET capture_warning`).
-			WithArgs("video-1", pgxmock.AnyArg()).
+			WithArgs("video-1", pgxmock.AnyArg(), webcamDroppedWarning).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 		CheckCapture(context.Background(), mock, "video-1", "/tmp/in.mp4", 141)
@@ -166,7 +166,7 @@ func TestCheckCapture(t *testing.T) {
 			return streamDurations{Video: 103.35, Audio: 103.42, HasVideo: true}, nil
 		}
 		mock.ExpectExec(`UPDATE videos SET capture_warning`).
-			WithArgs("video-1", (*string)(nil)).
+			WithArgs("video-1", (*string)(nil), webcamDroppedWarning).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 		CheckCapture(context.Background(), mock, "video-1", "/tmp/in.mp4", 103)
@@ -188,7 +188,7 @@ func TestCheckCapture(t *testing.T) {
 			return streamDurations{Audio: 5.518}, nil
 		}
 		mock.ExpectExec(`UPDATE videos SET capture_warning`).
-			WithArgs("video-1", pgxmock.AnyArg()).
+			WithArgs("video-1", pgxmock.AnyArg(), webcamDroppedWarning).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 		CheckCapture(context.Background(), mock, "video-1", "/tmp/in.mp4", 5)
@@ -210,7 +210,7 @@ func TestCheckCapture(t *testing.T) {
 			return streamDurations{HasVideo: true, Audio: 60}, nil
 		}
 		mock.ExpectExec(`UPDATE videos SET capture_warning`).
-			WithArgs("video-1", (*string)(nil)).
+			WithArgs("video-1", (*string)(nil), webcamDroppedWarning).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 		CheckCapture(context.Background(), mock, "video-1", "/tmp/in.webm", 60)
@@ -237,4 +237,31 @@ func TestCheckCapture(t *testing.T) {
 			t.Errorf("unmet expectations: %v", err)
 		}
 	})
+}
+
+// The capture check owns only its own verdict. A webcam composite that fell
+// back leaves a "webcam overlay could not be added" note in the same column;
+// a later check on the screen recording, healthy or not, keeps it. Audit BG-06.
+func TestCheckCapture_KeepsTheDroppedWebcamNote(t *testing.T) {
+	original := probeStreamDurations
+	t.Cleanup(func() { probeStreamDurations = original })
+	probeStreamDurations = func(context.Context, string) (streamDurations, error) {
+		return streamDurations{Video: 103.35, Audio: 103.42, HasVideo: true}, nil
+	}
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`position\(\$3 IN COALESCE\(capture_warning, ''\)\)`).
+		WithArgs("video-1", (*string)(nil), webcamDroppedWarning).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	CheckCapture(context.Background(), mock, "video-1", "/tmp/in.mp4", 103)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
 }

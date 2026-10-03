@@ -145,9 +145,15 @@ func CheckCapture(ctx context.Context, db database.DBTX, videoID, path string, c
 			"video_seconds", durations.Video, "recording_seconds", length)
 	}
 
+	// The column also carries the composite's "webcam could not be added"
+	// note, which no capture check can resolve: rewrite the verdict, keep the
+	// note.
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET capture_warning = $2, updated_at = now() WHERE id = $1`,
-		videoID, warning,
+		`UPDATE videos SET capture_warning = NULLIF(concat_ws(' ', $2::text,
+		        CASE WHEN position($3 IN COALESCE(capture_warning, '')) > 0 THEN $3 END), ''),
+		        updated_at = now()
+		 WHERE id = $1`,
+		videoID, warning, webcamDroppedWarning,
 	); err != nil {
 		slog.Error("capture-check: failed to store verdict", "video_id", videoID, "error", err)
 	}
