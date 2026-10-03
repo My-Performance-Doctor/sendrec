@@ -84,6 +84,13 @@ func isPermanentFFmpegError(err error) bool {
 	return false
 }
 
+// What the owner is told on the video page when processing fails. They read
+// these, so they say what happened to the video and what to do, not why.
+const (
+	editFailedMessage       = "Your last edit couldn't be applied, so the video is unchanged. Try the edit again."
+	conversionFailedMessage = "This video couldn't be converted for playback in every browser. It may not play on some devices; re-uploading it usually helps."
+)
+
 // recordTranscodeFailure increments the attempt counter and stores the reason.
 // Permanent failures consume the whole budget at once.
 func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID string, cause error) {
@@ -122,6 +129,12 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 
 	if attempts >= maxTranscodeAttempts {
 		slog.Error("transcode: giving up", "video_id", videoID, "attempts", attempts, "permanent", permanent, "error", cause)
+		if _, err := db.Exec(ctx,
+			`UPDATE videos SET processing_error = $2 WHERE id = $1`,
+			videoID, conversionFailedMessage,
+		); err != nil {
+			slog.Error("transcode: failed to record the give-up for the owner", "video_id", videoID, "error", err)
+		}
 		return
 	}
 	slog.Warn("transcode: will retry", "video_id", videoID, "attempts", attempts, "error", cause)

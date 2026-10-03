@@ -1,6 +1,7 @@
 package video
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -343,5 +344,27 @@ func TestRemoveSegments_EndLessThanOrEqualStart(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
+func TestRemoveSegmentsAsync_FailureSaysTheEditWasNotApplied(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
+
+	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
+		WithArgs("video-123", editFailedMessage).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	RemoveSegmentsAsync(context.Background(), mock, s, "video-123",
+		"recordings/user/video.webm", "recordings/user/video.jpg", "video/webm",
+		[]segmentRange{{Start: 1, End: 2}}, 30)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
 	}
 }

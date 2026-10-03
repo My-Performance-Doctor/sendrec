@@ -143,6 +143,10 @@ func TestRecordTranscodeFailure_PermanentConsumesBudget(t *testing.T) {
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", cause.Error(), true, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(maxTranscodeAttempts))
+	// Giving up is the one failure the owner has to hear about. Audit 3.8.
+	mock.ExpectExec(`UPDATE videos SET processing_error = \$2`).
+		WithArgs("video-1", conversionFailedMessage).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	recordTranscodeFailure(context.Background(), mock, "video-1", cause)
 
@@ -312,6 +316,10 @@ func TestTranscodeWebMAsync_ProceedsBelowBudget(t *testing.T) {
 	mock.ExpectQuery(`UPDATE videos`).
 		WithArgs("video-1", "s3 down", false, maxTranscodeAttempts).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(maxTranscodeAttempts))
+	// Giving up is the one failure the owner has to hear about. Audit 3.8.
+	mock.ExpectExec(`UPDATE videos SET processing_error = \$2`).
+		WithArgs("video-1", conversionFailedMessage).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TranscodeWebMAsync(context.Background(), mock, s, "video-1", "recordings/user/video.webm", "")
 
