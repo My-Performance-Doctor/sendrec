@@ -101,13 +101,21 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
 		return
 	}
-	// Best effort, like every other purge: an object that will not go is
-	// logged, and the account is still deleted as the user asked.
+	// The account is deleted as the user asked even when an object will not
+	// go; that object is recorded for the retired-objects sweep instead.
 	purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
 	for _, key := range keys {
 		if err := deleteWithRetry(purgeCtx, h.storage, key, 3); err != nil {
-			slog.Error("delete-account: failed to delete object", "user_id", userID, "key", key, "error", err)
+			// The rows naming this object go below, so hand it to the
+			// retired-objects sweep, which retries it once nothing references it.
+			slog.Error("delete-account: failed to delete object, leaving it to the sweep", "user_id", userID, "key", key, "error", err)
+			if _, err := h.db.Exec(purgeCtx,
+				`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')
+				 ON CONFLICT (key) DO UPDATE SET delete_after = EXCLUDED.delete_after`, key,
+			); err != nil {
+				slog.Error("delete-account: failed to record object for retry", "user_id", userID, "key", key, "error", err)
+			}
 		}
 	}
 
