@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
 )
 
@@ -62,23 +63,28 @@ func discardReplacement(ctx context.Context, db database.DBTX, newKey string) {
 // and match only the row the job started from. In the same statement it
 // consumes the attempt record for $3 and retires $2 for retiredObjectGrace.
 //
-// The attempt record is the fence against the sweep. The switch only applies
-// if it could delete that record, and the sweep deletes the record before it
-// deletes the object. Both take the record's row lock, so whichever comes
-// second waits for the first and then finds the record gone: either the sweep
-// skips a key the video now uses, or the switch leaves the video alone because
-// the object is being deleted.
+// The attempt record is the fence against the sweep. The switch locks it
+// first and only applies if it still exists; the sweep claims a record, under
+// the same row lock, before it deletes the object. Whichever comes second
+// waits for the first and then finds the record gone: either the sweep skips
+// a key the video now uses, or the switch leaves the video alone because the
+// object is being deleted.
 //
-// It reports whether the row was switched. When it wasn't, the attempt record
-// may have been consumed anyway; the caller discards the upload, which writes
-// it back.
+// The record is consumed only when the switch applied. A switch that matched
+// no video leaves it in place, so the upload stays tracked even if the job
+// dies before discarding it.
+//
+// It reports whether the row was switched.
 func switchFileKey(ctx context.Context, db database.DBTX, update string, args ...any) (bool, error) {
 	var switched int
 	err := db.QueryRow(ctx,
-		`WITH attempt AS (
-		     DELETE FROM retired_objects WHERE key = $3 RETURNING key
+		`WITH held AS (
+		     SELECT key FROM retired_objects WHERE key = $3 FOR UPDATE
 		 ),
-		 switched AS (`+update+` AND EXISTS (SELECT 1 FROM attempt) RETURNING id),
+		 switched AS (`+update+` AND EXISTS (SELECT 1 FROM held) RETURNING id),
+		 attempt AS (
+		     DELETE FROM retired_objects WHERE key = $3 AND EXISTS (SELECT 1 FROM switched)
+		 ),
 		 retired AS (
 		     INSERT INTO retired_objects (key, delete_after)
 		     SELECT $2, now() + INTERVAL '`+retiredObjectGrace+`' FROM switched
@@ -97,10 +103,13 @@ func switchFileKey(ctx context.Context, db database.DBTX, update string, args ..
 func publishUpload(ctx context.Context, db database.DBTX, update string, args ...any) (bool, error) {
 	var published int
 	err := db.QueryRow(ctx,
-		`WITH attempt AS (
-		     DELETE FROM retired_objects WHERE key = $2 RETURNING key
+		`WITH held AS (
+		     SELECT key FROM retired_objects WHERE key = $2 FOR UPDATE
 		 ),
-		 published AS (`+update+` AND EXISTS (SELECT 1 FROM attempt) RETURNING id)
+		 published AS (`+update+` AND EXISTS (SELECT 1 FROM held) RETURNING id),
+		 attempt AS (
+		     DELETE FROM retired_objects WHERE key = $2 AND EXISTS (SELECT 1 FROM published)
+		 )
 		 SELECT count(*) FROM published`,
 		args...).Scan(&published)
 	return published > 0, err
@@ -110,10 +119,9 @@ func publishUpload(ctx context.Context, db database.DBTX, update string, args ..
 // video still references is never deleted, only dropped from the table.
 //
 // Each key is claimed, by deleting its record under the same conditions,
-// before its object is deleted; see switchFileKey for why. A key whose
-// storage delete fails is written back with a later delete_after, so it
-// neither gets lost nor holds up the keys behind it. A crash between the claim
-// and the storage delete leaks that one object.
+// before its object is deleted, in one transaction; see deleteRetiredObject.
+// A key whose storage delete fails gets a later delete_after, so it neither
+// gets lost nor holds up the keys behind it.
 func DeleteRetiredObjects(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	if _, err := db.Exec(ctx,
 		`DELETE FROM retired_objects r WHERE r.delete_after < now() AND `+referenced,
@@ -147,24 +155,51 @@ func DeleteRetiredObjects(ctx context.Context, db database.DBTX, storage ObjectS
 	}
 
 	for _, key := range keys {
-		tag, err := db.Exec(ctx,
-			`DELETE FROM retired_objects r
-			 WHERE r.key = $1 AND r.delete_after < now() AND NOT `+referenced, key)
-		if err != nil {
-			slog.Error("retired-objects: failed to claim key", "key", key, "error", err)
-			continue
+		deleteRetiredObject(ctx, db, storage, key)
+	}
+}
+
+// deleteRetiredObject claims key and deletes its object inside one
+// transaction, so the claim holds the record's row lock until the storage
+// delete is done. A crash or a failed delete in between rolls the claim back
+// or pushes the record behind the keys that are deletable now; either way
+// the record outlives the object. A switch waiting on the lock sees the
+// record gone and leaves the video alone.
+func deleteRetiredObject(ctx context.Context, db database.DBTX, storage ObjectStorage, key string) {
+	pool, ok := db.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		slog.Error("retired-objects: database cannot start a transaction, not sweeping", "key", key)
+		return
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		slog.Error("retired-objects: failed to begin", "key", key, "error", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM retired_objects r
+		 WHERE r.key = $1 AND r.delete_after < now() AND NOT `+referenced, key)
+	if err != nil {
+		slog.Error("retired-objects: failed to claim key", "key", key, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		return // adopted, re-armed or claimed elsewhere since the query
+	}
+	if err := storage.DeleteObject(ctx, key); err != nil {
+		slog.Error("retired-objects: failed to delete object, retrying later", "key", key, "error", err)
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')`, key,
+		); err != nil {
+			slog.Error("retired-objects: failed to push key back", "key", key, "error", err)
+			return
 		}
-		if tag.RowsAffected() == 0 {
-			continue // adopted, re-armed or claimed elsewhere since the query
-		}
-		if err := storage.DeleteObject(ctx, key); err != nil {
-			slog.Error("retired-objects: failed to delete object", "key", key, "error", err)
-			if _, err := db.Exec(ctx,
-				`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')
-				 ON CONFLICT (key) DO NOTHING`, key,
-			); err != nil {
-				slog.Error("retired-objects: failed to keep key for retry", "key", key, "error", err)
-			}
-		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("retired-objects: failed to commit", "key", key, "error", err)
 	}
 }

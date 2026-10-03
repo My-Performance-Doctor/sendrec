@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -176,5 +177,66 @@ func TestDeleteRetiredObjectsIgnoresDeletedRows(t *testing.T) {
 
 	if _, ok := s.snapshot()["recordings/u/gone.webm"]; ok {
 		t.Error("a key named only by a deleted video survived the sweep")
+	}
+}
+
+// A publication that matches no video must leave the upload's attempt record
+// alone, so the upload stays tracked even if the job dies before discarding
+// it.
+func TestRejectedPublicationKeepsTheAttemptRecord(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	const key = "recordings/u/tok.webm"
+	videoID := seedProcessingVideo(t, pool, key, "video/webm")
+	deleteVideo(t, pool, videoID)
+	for _, k := range []string{"recordings/u/tok.n1.webm", "recordings/u/tok.t1.jpg"} {
+		if err := recordReplacementAttempt(ctx, pool, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	switched, err := switchFileKey(ctx, pool,
+		`UPDATE videos SET file_key = $3 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
+		videoID, key, "recordings/u/tok.n1.webm")
+	if err != nil || switched {
+		t.Fatalf("switch on a deleted video = %t, %v", switched, err)
+	}
+	published, err := publishUpload(ctx, pool,
+		`UPDATE videos SET thumbnail_key = $2 WHERE id = $1 AND status != 'deleted'`,
+		videoID, "recordings/u/tok.t1.jpg")
+	if err != nil || published {
+		t.Fatalf("publish on a deleted video = %t, %v", published, err)
+	}
+
+	r := retired(t, pool)
+	for _, k := range []string{"recordings/u/tok.n1.webm", "recordings/u/tok.t1.jpg"} {
+		if r[k] < 23*time.Hour {
+			t.Errorf("%s: attempt record due in %v (tracked %t), want it untouched", k, r[k], r[k] != 0)
+		}
+	}
+}
+
+// cancelOnDelete is a process that dies inside the storage delete.
+type cancelOnDelete struct {
+	*memStorage
+	cancel context.CancelFunc
+}
+
+func (c cancelOnDelete) DeleteObject(context.Context, string) error {
+	c.cancel()
+	return context.Canceled
+}
+
+// The sweep's claim on a record lasts until the object is gone: a crash
+// between the two must leave the record for the next run.
+func TestSweepCrashKeepsTheRecord(t *testing.T) {
+	pool := accountDB(t)
+	mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ('k/crash', now() - INTERVAL '1 minute')`)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	DeleteRetiredObjects(ctx, pool, cancelOnDelete{newMemStorage(map[string]string{"k/crash": "x"}), cancel})
+
+	if _, ok := retired(t, pool)["k/crash"]; !ok {
+		t.Error("a crash during the storage delete lost the record")
 	}
 }

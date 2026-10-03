@@ -155,7 +155,7 @@ func TestCompositeWithWebcam_WebMComesOutAsMP4(t *testing.T) {
 	// does not pick the video up and encode it a second time.
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH attempt AS .*file_key = \$3, content_type = 'video/mp4', file_size = \$4, cues_fixed = true, ios_normalized = true`).
+	mock.ExpectQuery(`WITH held AS .*file_key = \$3, content_type = 'video/mp4', file_size = \$4, cues_fixed = true, ios_normalized = true`).
 		WithArgs("video-123", "recordings/user/video.webm", pgxmock.AnyArg(), int64(len("mp4 bytes"))).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	expectWebcamCleared(mock)
@@ -195,7 +195,7 @@ func TestCompositeWithWebcam_MP4KeepsItsType(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH attempt AS .*file_key = \$3, file_size = \$4, updated_at`).
+	mock.ExpectQuery(`WITH held AS .*file_key = \$3, file_size = \$4, updated_at`).
 		WithArgs("video-123", "recordings/user/video.mp4", pgxmock.AnyArg(), int64(len("mp4 bytes"))).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	expectWebcamCleared(mock)
