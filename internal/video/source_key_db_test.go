@@ -99,3 +99,41 @@ func TestConversionFailureIsCountedForItsSource(t *testing.T) {
 		t.Errorf("attempts = %d, want 1", got.attempts)
 	}
 }
+
+// An edit replaces the file, so the conversion budget and the capture verdict
+// of the file it replaced go with it, in the switch itself: a crash right
+// after the switch must not leave the edited file with an exhausted budget
+// or the old file's warning. The webcam note is about the recording, not the
+// file, and stays.
+func TestEditSwitchResetsFileState(t *testing.T) {
+	for _, tc := range []struct{ name, before, after string }{
+		{"capture verdict", "the old verdict", ""},
+		{"webcam note kept", "the old verdict " + webcamDroppedWarning, webcamDroppedWarning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := accountDB(t)
+			const key = "recordings/u/tok.webm"
+			videoID := seedProcessingVideo(t, pool, key, "video/webm")
+			mustExecDB(t, pool, `UPDATE videos SET transcode_attempts = 5, transcode_error = 'permanent', capture_warning = $2 WHERE id = $1`, videoID, tc.before)
+			stubEdit(t, "edited")
+			ctx, cancel := context.WithCancel(context.Background())
+			probe := probeStreamDurations
+			probeStreamDurations = func(context.Context, string) (streamDurations, error) {
+				cancel() // the process dies right after the switch
+				return streamDurations{}, context.Canceled
+			}
+			t.Cleanup(func() { probeStreamDurations = probe })
+
+			TrimVideoAsync(ctx, pool, newMemStorage(map[string]string{key: "original"}), videoID, key, "recordings/u/tok.jpg", "video/webm", 2, 6)
+
+			got := readSourceRow(t, pool, videoID)
+			warning := ""
+			if got.warning != nil {
+				warning = *got.warning
+			}
+			if got.attempts != 0 || got.errText != nil || warning != tc.after {
+				t.Errorf("attempts %d, error %v, warning %q; want 0, none, %q", got.attempts, got.errText, warning, tc.after)
+			}
+		})
+	}
+}

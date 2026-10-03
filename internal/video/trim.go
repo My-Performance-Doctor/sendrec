@@ -106,11 +106,17 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 		return false
 	}
 
+	// The conversion budget and the capture verdict belong to the file being
+	// replaced, so they go in the same statement; only the webcam note, which
+	// is about the recording, survives. The verdict is recomputed below. #328.
 	switched, err := switchFileKey(ctx, db,
 		`UPDATE videos SET file_key = $3, duration = $4, file_size = $5, status = 'ready',
-		     processing_started_at = NULL, processing_error = NULL, updated_at = now()
+		     processing_started_at = NULL, processing_error = NULL,
+		     transcode_attempts = 0, transcode_error = NULL,
+		     capture_warning = CASE WHEN position($6 IN COALESCE(capture_warning, '')) > 0 THEN $6 END,
+		     updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
-		videoID, fileKey, newKey, newDuration, info.Size(),
+		videoID, fileKey, newKey, newDuration, info.Size(), webcamDroppedWarning,
 	)
 	if err != nil {
 		// The switch may have landed even so. The upload stays recorded, and the
