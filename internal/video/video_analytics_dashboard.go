@@ -99,7 +99,7 @@ func (h *Handler) AnalyticsDashboard(w http.ResponseWriter, r *http.Request) {
 
 	var totalVideos int64
 	err = h.db.QueryRow(r.Context(),
-		fmt.Sprintf(`SELECT COUNT(*) FROM videos v WHERE %s`, ownerFilter),
+		fmt.Sprintf(`SELECT COUNT(*) FROM videos v WHERE %s AND v.status != 'deleted'`, ownerFilter),
 		ownerArg,
 	).Scan(&totalVideos)
 	if err != nil {
