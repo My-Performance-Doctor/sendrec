@@ -221,3 +221,26 @@ describe("TranscriptSection upload", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// With transcription off on the server the Transcribe button could only
+// queue a job nothing would run. Uploading a transcript still works. Audit 1.6.
+describe("TranscriptSection with transcription off", () => {
+  it("offers upload but no Transcribe", () => {
+    render(
+      <TranscriptSection
+        video={makeVideo({ transcriptStatus: "none" })}
+        limits={{ transcriptionEnabled: false, aiEnabled: false } as any}
+        isViewer={false}
+        transcriptSegments={[]}
+        retranscribeLanguage="auto"
+        onRetranscribeLanguageChange={() => {}}
+        onVideoUpdate={() => {}}
+        onTranscriptClear={() => {}}
+        onTranscriptSegmentsUpdate={() => {}}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /^transcribe$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upload transcript/i })).toBeInTheDocument();
+    expect(screen.getByText("Not available")).toBeInTheDocument();
+  });
+});
