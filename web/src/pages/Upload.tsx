@@ -308,9 +308,9 @@ export function Upload() {
 
             {succeeded.map((result, i) => (
               <div key={i} className="result-row">
-                <span className="result-url">
+                <a href={result.shareUrl} target="_blank" rel="noopener noreferrer" className="result-url">
                   {result.shareUrl}
-                </span>
+                </a>
                 <button
                   onClick={() => copyShareUrl(result.shareUrl, i)}
                   data-testid={`copy-btn-${i}`}

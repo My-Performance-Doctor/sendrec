@@ -177,7 +177,9 @@ describe("Upload", () => {
       expect(screen.getByText("Upload complete")).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/abc123defghi/)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: /abc123defghi/ });
+    expect(link).toHaveAttribute("href", expect.stringMatching(/\/watch\/abc123defghi$/));
+    expect(link).toHaveAttribute("target", "_blank");
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/limits");
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/upload", {
