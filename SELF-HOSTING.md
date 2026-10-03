@@ -23,7 +23,7 @@ SendRec includes a Helm chart at `helm/sendrec` for Kubernetes deployments.
 - Helm 3
 - PostgreSQL database
 - S3-compatible object storage
-- **Start with 1 GiB for the app container and measure your workload** using [Sizing the container](#sizing-the-container). ffmpeg is a child process in the HTTP server's container: memory pressure can take down live traffic as well as the edit. High-resolution sources, local transcription and concurrent jobs can require more.
+- **Memory for the app container:** the chart requests 512Mi with no limit, measured for one edit on the default image. Measure your own workload using [Sizing the container](#sizing-the-container). ffmpeg is a child process in the HTTP server's container: memory pressure can take down live traffic as well as the edit. High-resolution sources, local transcription and concurrent jobs can require more.
 
 ### 1. Create a values file
 
@@ -63,7 +63,18 @@ kubectl -n sendrec get pods
 kubectl -n sendrec get svc
 ```
 
-### 4. Upgrade after changes
+### 4. Create the first account
+
+The chart ships `registrationEnabled: "false"`, so a fresh install has no account and nobody to invite one. Turn registration on for the first sign-up:
+
+```bash
+helm upgrade sendrec ./helm/sendrec -n sendrec -f values-prod.yaml \
+  --set sendrec.env.registrationEnabled=true
+```
+
+Register the owner at `https://<baseUrl>/register` (accounts are verified automatically when no email backend is configured; otherwise confirm the email). Then run the same `helm upgrade` without the `--set` line to make the instance invite-only again. Bring in everyone else with a workspace invite from the workspace's Members settings: an invited address can register while registration is off.
+
+### 5. Upgrade after changes
 
 ```bash
 helm upgrade sendrec ./helm/sendrec \
@@ -227,22 +238,9 @@ ffmpeg runs as a child process in the HTTP server's container. Encoder settings 
 
 `MAX_CONCURRENT_ENCODES` (default `1`) caps simultaneous encodes per app process. Extra edits queue. It does not cover local transcription, probes, thumbnails, or downloads/uploads. Raise concurrency and the memory allowance together.
 
-The chart now requests **1Gi**, without a default memory limit. This replaces the 512Mi estimate from a synthetic 1080p encode. On 2026-09-05, staging image `6219d0a` (after #208) held **837.3 MiB of anon** while removing 200 ranges from a 3242×2626, 1000 fps recording; idle was **6.64 MiB**, shmem was zero, and only one encode ran. With N=1 and 20% headroom, that requires **1004.8 MiB**, exceeding 512Mi by **492.8 MiB**. The job timed out after ten minutes, so this is a measured lower bound, not a completed-job ceiling. Remove-segments now scales its output to fit 1920×1080 at 60 fps; remeasure after upgrading. The 1Gi default is a starting reservation, not a guarantee for every source.
+The Helm chart requests **512Mi** (`sendrec.resources` in `helm/sendrec/values.yaml`) and sets no memory limit. That figure comes from one measurement on image `v1.90.6`, which bounds the edit output to 1920×1080 at 60 fps: a 200-cut edit of the largest staging recording (3242×2626, 43 seconds, with audio) peaked at **311 MiB** anon, **373 MiB** with 20% headroom, about 139 MiB under 512Mi.
 
-With these fixes, the same 200-cut edit on a copy completed in **367.3 seconds**. A disposable container using staging's FFmpeg 6.1.2 runtime and the patched binary (SHA-256 `534ea9aaeec27bd31464f1ca0c7c2473a761648dea84f70c71640bfc2400c5b8`, image created 2026-09-05 21:36 UTC) measured:
-
-| Measurement | Result |
-| --- | --- |
-| Idle anon | 5,836,800 bytes (5.57 MiB) |
-| Peak anon | 381,378,560 bytes (363.71 MiB) |
-| Within 5% of peak | 362.0 seconds, 363 one-second samples |
-| Shmem / swap / OOMs / restarts | Zero |
-| N=1 reservation: `(idle + (peak − idle)) × 1.2` | 457,654,272 bytes (436.45 MiB) |
-| Margin below 512Mi / 1Gi | 75.55 MiB / 587.55 MiB |
-
-This was the largest-resolution staging recording: 3242×2626, 43.167 seconds, 43,167 video frames, with audio. The completed output was 1334×1080 at 60 fps; video lasted 37.183 seconds and audio 37.172 seconds. The host exposed four CPUs, `/tmp` was disk-backed, and neither the container nor its ancestors imposed a memory limit. Only the app, its one edit subprocess at a time, and short-lived sampler commands ran in the measured cgroup; transcription was disabled and no other edit was active. The source and final-output probes ran separately, outside the measured container. The copied recording, container and sampler resources were removed; the original recording was unchanged.
-
-**512Mi covers this completed single-job run, not every accepted input or worker combination.** The 1Gi default remains a conservative starting reservation; reducing it requires a measurement on the image and workload you actually deploy. Decoding larger sources and enabling other workers can still exceed it.
+**512Mi covers that single completed job, not every accepted input or worker combination.** Decoding larger sources, local transcription and other workers can exceed it. Change the request only from a measurement on the image and workload you actually deploy.
 
 **Image matters:** these figures are for `v1.90.6` or newer, which bounds the edit output and honours `MAX_CONCURRENT_ENCODES`. Running an older image reintroduces the unbounded path — the same edit that peaks at 311 MiB here peaked at 757 MiB before the fix — so measure again if you pin one.
 

@@ -69,6 +69,17 @@ Upgrade the application on changes:
 helm upgrade sendrec ./helm/sendrec -n sendrec -f values.yaml
 ```
 
+### First account
+
+The chart ships `registrationEnabled: "false"`, so a fresh install has no account and nobody to invite one. Turn registration on for the first sign-up:
+
+```bash
+helm upgrade sendrec ./helm/sendrec -n sendrec -f values.yaml \
+  --set sendrec.env.registrationEnabled=true
+```
+
+Register the owner at `https://<baseUrl>/register` (accounts are verified automatically when no email backend is configured; otherwise confirm the email). Then run the same `helm upgrade` without the `--set` line to make the instance invite-only again. Bring in everyone else with a workspace invite from the workspace's Members settings: an invited address can register while registration is off.
+
 ### Required values
 
 Rendering fails with an explicit message if any of these are empty:
@@ -277,7 +288,7 @@ The Deployment carries `checksum/configmap` and `checksum/secret` annotations, s
 
 The chart requests **512Mi** and sets no memory limit. That figure is measured against the default image, `v1.90.6`, which bounds the edit output to 1920×1080 at 60 fps. On a staging container, a 200-cut edit of a 3242×2626 source peaked at **311 MiB** anon — **373 MiB** with 20% headroom, leaving about 139 MiB of margin. See the [measurement and its scope](../../SELF-HOSTING.md#sizing-the-container).
 
-**The request is tied to the image.** The identical edit on the pre-`v1.90.6` code peaked at **757 MiB** — over 900 MiB once reserved, which 512Mi cannot cover. If you pin `image.tag` to an older release, raise the request above 1Gi or you will OOM the pod. 512Mi covers one measured job on the default image; it does not certify every input, nor local transcription and the other workers running alongside.
+**The request is tied to the image.** The identical edit on the pre-`v1.90.6` code peaked at **757 MiB** — over 900 MiB once reserved, which 512Mi cannot cover. If you pin `image.tag` to an older release, raise the request above 1Gi: the request sets no cap, but with 512Mi reserved the pod can land on a node without the memory that edit needs. 512Mi covers one measured job on the default image; it does not certify every input, nor local transcription and the other workers running alongside.
 
 The default application image is `v1.90.6`, which contains the concurrency gate, the thread bounds and the remove-segments resolution/frame-rate fix. Overriding `image.tag` with anything older reintroduces the unbounded edit path and invalidates the sizing above — remeasure if you do.
 
