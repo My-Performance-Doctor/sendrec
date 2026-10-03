@@ -61,6 +61,7 @@ type Handler struct {
 	noiseReductionFilter    string
 	webhookClient           *webhook.Client
 	geoResolver             GeoResolver
+	subscriptionCanceler    SubscriptionCanceler
 }
 
 func NewHandler(db database.DBTX, s ObjectStorage, baseURL string, maxUploadBytes int64, maxVideosPerMonth int, maxVideoDurationSeconds int, maxPlaylists int, hmacSecret string, secureCookies bool) *Handler {

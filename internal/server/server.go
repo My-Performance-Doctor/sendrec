@@ -166,6 +166,10 @@ func New(cfg Config) *Server {
 
 		if cfg.CreemAPIKey != "" {
 			creemClient := billing.New(cfg.CreemAPIKey, "")
+			if s.videoHandler != nil {
+				// Deleting an account cancels its subscriptions first.
+				s.videoHandler.SetSubscriptionCanceler(creemClient)
+			}
 			s.billingHandlers = billing.NewHandlers(cfg.DB, creemClient, baseURL, cfg.CreemProProductID, cfg.CreemOrgProProductID, cfg.CreemBusinessProductID, cfg.CreemOrgBusinessProductID, cfg.CreemWebhookSecret)
 		}
 
@@ -324,6 +328,9 @@ func (s *Server) routes() {
 			r.Use(maxBodySize(64 * 1024))
 			r.Get("/", s.authHandler.GetUser)
 			r.Patch("/", s.authHandler.UpdateUser)
+			if s.videoHandler != nil {
+				r.Delete("/", s.videoHandler.DeleteAccount)
+			}
 			if s.ssoHandler != nil {
 				r.Get("/identities", s.ssoHandler.ListIdentities)
 				r.Delete("/identities/{provider}", s.ssoHandler.UnlinkIdentity)
