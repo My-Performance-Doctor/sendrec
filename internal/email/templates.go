@@ -142,7 +142,7 @@ var builtinHTML = map[string]string{
 	MailKindOnboardingDay7:   `<p>Hi {{.Name}},</p><p>Unlock more with SendRec Pro — longer recordings, custom branding, and more.</p><p><a href="{{.DashboardURL}}">Learn more</a></p>`,
 	MailKindWeeklyDigest:     `<p>Hi {{.Name}},</p><p>Your videos received {{.TotalViews}} view(s) and {{.TotalComments}} comment(s) this week.</p>`,
 	MailKindOrgInvite:        `<p>Hi,</p><p><strong>{{.InviterName}}</strong> has invited you to join <strong>{{.OrgName}}</strong> on SendRec.</p><p><a href="{{.AcceptLink}}">Accept invitation</a></p>`,
-	MailKindRetentionWarning: `<p>Hi,</p><p>The following videos will be deleted on <strong>{{.ExpiryDate}}</strong>: {{range $i, $v := .Videos}}{{if $i}}, {{end}}{{$v.Title}}{{end}}.</p><p>Upgrade your plan to keep them.</p>`,
+	MailKindRetentionWarning: `<p>Hi,</p><p>The following videos will be deleted on <strong>{{.ExpiryDate}}</strong>: {{range $i, $v := .Videos}}{{if $i}}, {{end}}{{$v.Title}}{{end}}.</p><p>To keep a video, pin it. To stop automatic deletion, set Auto-delete to Off under Data Retention in your Settings; for a workspace video, a workspace admin changes it in the workspace settings.</p>`,
 }
 
 func mustText(name, src string) *texttemplate.Template {

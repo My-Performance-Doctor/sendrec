@@ -1139,6 +1139,15 @@ func TestSendRetentionWarning_FallbackBodyWhenTemplateIDZero(t *testing.T) {
 	if received.Body == "" {
 		t.Error("expected inline body when template ID is zero")
 	}
+	// Paying does not stop retention; pinning or turning retention off does.
+	if strings.Contains(received.Body, "Upgrade") {
+		t.Errorf("body suggests upgrading, which does not prevent deletion: %s", received.Body)
+	}
+	for _, want := range []string{"pin", "Data Retention", "Off"} {
+		if !strings.Contains(received.Body, want) {
+			t.Errorf("body should mention %q: %s", want, received.Body)
+		}
+	}
 }
 
 func TestSendRetentionWarning_BypassesAllowlist(t *testing.T) {
