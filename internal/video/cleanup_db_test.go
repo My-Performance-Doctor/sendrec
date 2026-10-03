@@ -6,8 +6,10 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sendrec/sendrec/internal/webhook"
 )
 
 // The webcam of a composite abandoned with its process is deleted, and the
@@ -20,7 +22,7 @@ func TestResetStuckProcessing_DB_DeletesAbandonedWebcam(t *testing.T) {
 	mustExec(t, pool, `UPDATE videos SET status = 'processing', processing_started_at = now() - interval '3 hours' WHERE id = $1`, id)
 
 	storage := &mockStorage{deleteCalled: make(chan string, 4)}
-	resetStuckProcessing(context.Background(), pool, storage)
+	resetStuckProcessing(context.Background(), pool, storage, videoReadyHook{})
 
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND status = 'ready' AND webcam_key IS NULL AND capture_warning = $2`, id, webcamDroppedWarning) {
 		t.Error("want the row ready, warned and without its webcam key")
@@ -103,7 +105,7 @@ func TestDropWebcam_DB_FailedDeleteKeepsWebcamKey(t *testing.T) {
 			CompositeWithWebcam(context.Background(), pool, storage, id, prefix+"/file.mp4", prefix+"/webcam.webm", prefix+"/thumb.jpg", "video/mp4")
 		}},
 		{"stuck-processing reset", func(pool *pgxpool.Pool, _, _ string, storage *mockStorage) {
-			resetStuckProcessing(context.Background(), pool, storage)
+			resetStuckProcessing(context.Background(), pool, storage, videoReadyHook{})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,5 +148,30 @@ func TestRepurgeMigration_DB_ReturnsDeletedRowsToTheSweep(t *testing.T) {
 	}
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND file_purged_at IS NOT NULL`, id) {
 		t.Error("want the row purged again")
+	}
+}
+
+// A composite abandoned with its process becomes watchable when the sweep
+// publishes the screen recording, so the sweep sends video.ready for it. An
+// edit reset the same way was watchable all along and sends nothing. BG-13.
+func TestResetStuckProcessing_DB_SendsVideoReadyForComposites(t *testing.T) {
+	pool, composite, name := seedWebcamVideo(t, "processing")
+	user := mustID(t, pool, `SELECT user_id FROM videos WHERE id = $1`, composite)
+	trim := seedVideo(t, pool, user, nil, name+"-trim")
+	mustExec(t, pool, `UPDATE videos SET status = 'processing', webcam_key = NULL, processing_started_at = now() - interval '3 hours' WHERE id = $1`, trim)
+	// Dispatch to this host fails, but every attempt is logged by event name.
+	mustExec(t, pool, `INSERT INTO notification_preferences (user_id, webhook_url, webhook_secret) VALUES ($1, 'https://hooks.invalid/x', 's')`, user)
+
+	resetStuckProcessing(context.Background(), pool, &mockStorage{}, videoReadyHook{webhook.New(pool), "https://app.example"})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !exists(t, pool, `SELECT 1 FROM webhook_deliveries WHERE user_id = $1 AND event = 'video.ready' AND payload->'data'->>'videoId' = $2`, user, composite) {
+		if time.Now().After(deadline) {
+			t.Fatal("want video.ready for the reset composite")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if exists(t, pool, `SELECT 1 FROM webhook_deliveries WHERE payload->'data'->>'videoId' = $1`, trim) {
+		t.Error("video.ready sent for an edit that was already watchable")
 	}
 }
