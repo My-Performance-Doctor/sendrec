@@ -20,8 +20,11 @@ func (db *recoveryDB) Exec(ctx context.Context, _ string, _ ...any) (pgconn.Comm
 	if err := ctx.Err(); err != nil {
 		return pgconn.CommandTag{}, err
 	}
+	// The status recovery is the first write; later ones clean up after it.
+	if !db.updated {
+		db.deadline, _ = ctx.Deadline()
+	}
 	db.updated = true
-	db.deadline, _ = ctx.Deadline()
 	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
 

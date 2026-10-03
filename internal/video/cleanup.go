@@ -2,15 +2,19 @@ package video
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
 )
 
+// PurgeOrphanedFiles retries the storage cleanup of deleted videos whose
+// objects are not all gone yet.
 func PurgeOrphanedFiles(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
-		`SELECT file_key, thumbnail_key, transcript_key FROM videos
+		`SELECT id, file_key, thumbnail_key, webcam_key, transcript_key FROM videos
 		 WHERE status = 'deleted' AND file_purged_at IS NULL
 		 LIMIT 50`)
 	if err != nil {
@@ -20,37 +24,42 @@ func PurgeOrphanedFiles(ctx context.Context, db database.DBTX, storage ObjectSto
 	defer rows.Close()
 
 	for rows.Next() {
-		var fileKey string
-		var thumbnailKey *string
-		var transcriptKey *string
-		if err := rows.Scan(&fileKey, &thumbnailKey, &transcriptKey); err != nil {
+		var videoID, fileKey string
+		var thumbnailKey, webcamKey, transcriptKey *string
+		if err := rows.Scan(&videoID, &fileKey, &thumbnailKey, &webcamKey, &transcriptKey); err != nil {
 			slog.Error("cleanup: failed to scan file key", "error", err)
 			continue
 		}
-		if err := deleteWithRetry(ctx, storage, fileKey, 3); err != nil {
-			slog.Error("cleanup: failed to delete file", "key", fileKey, "error", err)
-			continue
-		}
-		if thumbnailKey != nil {
-			if err := deleteWithRetry(ctx, storage, *thumbnailKey, 3); err != nil {
-				slog.Error("cleanup: failed to delete thumbnail", "key", *thumbnailKey, "error", err)
-			}
-		}
-		if transcriptKey != nil {
-			if err := deleteWithRetry(ctx, storage, *transcriptKey, 3); err != nil {
-				slog.Error("cleanup: failed to delete transcript", "key", *transcriptKey, "error", err)
-			}
-		}
-		if _, err := db.Exec(ctx,
-			`UPDATE videos SET file_purged_at = now() WHERE file_key = $1`,
-			fileKey,
-		); err != nil {
-			slog.Error("cleanup: failed to mark purged", "key", fileKey, "error", err)
+		if err := purgeVideoObjects(ctx, db, storage, videoID, &fileKey, thumbnailKey, webcamKey, transcriptKey); err != nil {
+			slog.Error("cleanup: video objects not purged", "video_id", videoID, "error", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("cleanup: row iteration error", "error", err)
 	}
+}
+
+// purgeVideoObjects deletes every object a deleted video references, then
+// marks the row purged. If any delete fails the row is left unmarked, so the
+// cleanup sweep tries all of them again; deleting an object that is already
+// gone succeeds. Nil keys are skipped. #296.
+func purgeVideoObjects(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID string, keys ...*string) error {
+	var errs []error
+	for _, key := range keys {
+		if key == nil {
+			continue
+		}
+		if err := deleteWithRetry(ctx, storage, *key, 3); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if _, err := db.Exec(ctx, `UPDATE videos SET file_purged_at = now() WHERE id = $1`, videoID); err != nil {
+		return fmt.Errorf("mark purged: %w", err)
+	}
+	return nil
 }
 
 // staleUploadAgeHours is how long a video may sit in 'uploading' before it is

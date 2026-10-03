@@ -15,36 +15,49 @@ func TestResetStuckProcessing_ResetsAbandonedRows(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'ready'`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+		WillReturnRows(stuckRows().AddRow("v1", (*string)(nil)).AddRow("v2", (*string)(nil)))
 
-	resetStuckProcessing(context.Background(), mock)
+	resetStuckProcessing(context.Background(), mock, &mockStorage{})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
+func stuckRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{"id", "webcam_key"})
+}
+
 // The whole point of the sweep is to undo what setReadyFallback would have done
-// had the process survived: composite's fallback also drops webcam_key, so a row
-// abandoned mid-composite must not keep pointing at a webcam file that will never
-// be overlaid.
-func TestResetStuckProcessing_ClearsWebcamKeyAndStartedAt(t *testing.T) {
+// had the process survived: the webcam of an abandoned composite is deleted and
+// only then is its key cleared, so the object is never left with nothing
+// pointing at it. #296.
+func TestResetStuckProcessing_DeletesAbandonedWebcam(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`webcam_key = NULL`).
+	webcam := "recordings/u/v_webcam.webm"
+	mock.ExpectQuery(`processing_started_at = NULL`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WillReturnRows(stuckRows().AddRow("v1", &webcam))
+	mock.ExpectExec(`UPDATE videos SET webcam_key = NULL WHERE id = \$1 AND webcam_key = \$2`).
+		WithArgs("v1", webcam).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	resetStuckProcessing(context.Background(), mock)
+	storage := &mockStorage{deleteCalled: make(chan string, 2)}
+	resetStuckProcessing(context.Background(), mock, storage)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+	close(storage.deleteCalled)
+	if k := <-storage.deleteCalled; k != webcam {
+		t.Errorf("want %s deleted, got %q", webcam, k)
 	}
 }
 
@@ -57,11 +70,11 @@ func TestResetStuckProcessing_KeysOffProcessingStartedAt(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`processing_started_at < now\(\) - INTERVAL '15 minutes'`).
+	mock.ExpectQuery(`processing_started_at < now\(\) - INTERVAL '15 minutes'`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(stuckRows())
 
-	resetStuckProcessing(context.Background(), mock)
+	resetStuckProcessing(context.Background(), mock, &mockStorage{})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -77,11 +90,11 @@ func TestResetStuckProcessing_SweepsRowsWithNullStartedAt(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`processing_started_at IS NULL`).
+	mock.ExpectQuery(`processing_started_at IS NULL`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(stuckRows().AddRow("v1", (*string)(nil)))
 
-	resetStuckProcessing(context.Background(), mock)
+	resetStuckProcessing(context.Background(), mock, &mockStorage{})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -95,11 +108,11 @@ func TestResetStuckProcessing_SurvivesQueryFailure(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'ready'`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
 		WillReturnError(errors.New("connection refused"))
 
-	resetStuckProcessing(context.Background(), mock)
+	resetStuckProcessing(context.Background(), mock, &mockStorage{})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -116,11 +129,11 @@ func TestResetStuckProcessing_GivesCompositesTheirLongerDeadline(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`CASE WHEN webcam_key IS NOT NULL THEN make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
+	mock.ExpectQuery(`CASE WHEN webcam_key IS NOT NULL THEN make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
 		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(stuckRows())
 
-	resetStuckProcessing(context.Background(), mock)
+	resetStuckProcessing(context.Background(), mock, &mockStorage{})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
