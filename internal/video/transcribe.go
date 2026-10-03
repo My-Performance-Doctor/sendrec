@@ -129,8 +129,14 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 
 	slog.Info("transcribe: starting", "video_id", videoID, "language", language, "provider", transcriber.Name())
 
+	// The failure is recorded on the worker's context, not the job's: a job
+	// that ran out of time still has to say so. BG-07.
+	workerCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, transcriptionJobTimeout)
+	defer cancel()
+
 	setFailed := func() {
-		if _, err := db.Exec(ctx,
+		if _, err := db.Exec(workerCtx,
 			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1`,
 			videoID,
 		); err != nil {
