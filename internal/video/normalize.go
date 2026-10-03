@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 
@@ -201,7 +202,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	if !props.needsNormalization() {
 		slog.Info("normalize: already compatible", "video_id", videoID,
 			"width", props.Width, "height", props.Height, "level", props.Level, "fps", props.FrameRate)
-		markIOSNormalized(ctx, db, videoID)
+		markIOSNormalized(ctx, db, videoID, fileKey)
 		return
 	}
 
@@ -231,18 +232,17 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 	newFileSize := info.Size()
 
-	if err := storage.UploadFile(ctx, fileKey, tmpOutputPath, "video/mp4"); err != nil {
-		slog.Error("normalize: failed to upload", "video_id", videoID, "error", err)
+	// Written next to the original, never over it: an edit may be reading it.
+	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
+	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
+		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true, updated_at = now()
+		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
+		newFileSize)
+	if err != nil {
 		recordTranscodeFailure(ctx, db, videoID, err)
 		return
 	}
-
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET file_size = $2, ios_normalized = true, updated_at = now() WHERE id = $1`,
-		videoID, newFileSize,
-	); err != nil {
-		slog.Error("normalize: failed to update db", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+	if !switched {
 		return
 	}
 
@@ -251,10 +251,12 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	slog.Info("normalize: completed", "video_id", videoID, "new_size", newFileSize)
 }
 
-func markIOSNormalized(ctx context.Context, db database.DBTX, videoID string) {
+// The verdict is about the file that was probed, so it only lands while the
+// row still points at it and no edit is replacing it.
+func markIOSNormalized(ctx context.Context, db database.DBTX, videoID, fileKey string) {
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1`,
-		videoID,
+		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
+		videoID, fileKey,
 	); err != nil {
 		slog.Error("normalize: failed to mark normalized", "video_id", videoID, "error", err)
 	}

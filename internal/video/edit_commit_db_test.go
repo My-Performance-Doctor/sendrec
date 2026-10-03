@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -521,5 +522,154 @@ func TestPlaylistPlaysTheStoredFileKey(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].VideoURL != "https://storage.test/recordings/u/tok.1a2b.webm" {
 		t.Errorf("playlist items = %+v, want the stored file_key", items)
+	}
+}
+
+func stubConversions(t *testing.T, body string, during func()) {
+	t.Helper()
+	transcode, normalize, probe := transcodeToMP4, transcodeToIOSCompatible, probeVideoProperties
+	write := func(_ context.Context, _, out, _ string) error {
+		if during != nil {
+			during()
+		}
+		return os.WriteFile(out, []byte(body), 0o600)
+	}
+	transcodeToMP4, transcodeToIOSCompatible = write, write
+	probeVideoProperties = func(context.Context, string) (videoProperties, error) {
+		return videoProperties{CodecName: "vp9", Width: 1280, Height: 720}, nil
+	}
+	t.Cleanup(func() { transcodeToMP4, transcodeToIOSCompatible, probeVideoProperties = transcode, normalize, probe })
+}
+
+var conversionJobs = []struct {
+	name, contentType, key string
+	run                    func(ctx context.Context, pool *pgxpool.Pool, s ObjectStorage, videoID, fileKey string)
+}{
+	{"transcode", "video/webm", "recordings/u/tok.webm", func(ctx context.Context, pool *pgxpool.Pool, s ObjectStorage, videoID, fileKey string) {
+		TranscodeWebMAsync(ctx, pool, s, videoID, fileKey, "")
+	}},
+	{"normalize", "video/mp4", "recordings/u/tok.mp4", func(ctx context.Context, pool *pgxpool.Pool, s ObjectStorage, videoID, fileKey string) {
+		NormalizeVideoAsync(ctx, pool, s, videoID, fileKey, "")
+	}},
+}
+
+type conversionRow struct {
+	editRow
+	contentType string
+	normalized  bool
+	attempts    int
+}
+
+func readConversionRow(t *testing.T, pool *pgxpool.Pool, videoID string) conversionRow {
+	t.Helper()
+	r := conversionRow{editRow: readEditRow(t, pool, videoID)}
+	if err := pool.QueryRow(context.Background(),
+		`SELECT content_type, ios_normalized, transcode_attempts FROM videos WHERE id = $1`, videoID,
+	).Scan(&r.contentType, &r.normalized, &r.attempts); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// Audit 3.4: conversions run while the video reads 'ready', so an edit could
+// start, or even finish, underneath one. The conversion then put the
+// pre-edit footage back, while duration kept the edit's value.
+func TestConversionYieldsToEdits(t *testing.T) {
+	for _, job := range conversionJobs {
+		// An edit is running: the conversion must neither touch the object the
+		// edit is reading nor switch the row away from it.
+		t.Run(job.name+"/edit in progress", func(t *testing.T) {
+			pool := accountDB(t)
+			videoID := seedProcessingVideo(t, pool, job.key, job.contentType)
+			stubConversions(t, "converted", nil)
+			s := newMemStorage(map[string]string{job.key: "original"})
+
+			job.run(context.Background(), pool, s, videoID, job.key)
+			DeleteRetiredObjects(context.Background(), pool, s) // the next cleanup pass
+
+			got := readConversionRow(t, pool, videoID)
+			if got.fileKey != job.key || got.contentType != job.contentType || got.normalized || got.attempts != 0 {
+				t.Errorf("row = %+v, want it as the edit left it and no attempt spent", got)
+			}
+			if objects := s.snapshot(); len(objects) != 1 || objects[job.key] != "original" {
+				t.Errorf("objects = %v, want only the untouched original", objects)
+			}
+		})
+
+		// An edit finished while the conversion was encoding: the edit stands.
+		t.Run(job.name+"/edit committed meanwhile", func(t *testing.T) {
+			pool := accountDB(t)
+			videoID := seedProcessingVideo(t, pool, job.key, job.contentType)
+			edited := strings.TrimSuffix(job.key, path.Ext(job.key)) + ".e1" + path.Ext(job.key)
+			if _, err := pool.Exec(context.Background(), `UPDATE videos SET status = 'ready' WHERE id = $1`, videoID); err != nil {
+				t.Fatal(err)
+			}
+			s := newMemStorage(map[string]string{job.key: "original"})
+			stubConversions(t, "converted", func() {
+				if _, err := pool.Exec(context.Background(),
+					`UPDATE videos SET file_key = $2, duration = 4 WHERE id = $1`, videoID, edited,
+				); err != nil {
+					t.Error(err)
+				}
+				s.mu.Lock()
+				delete(s.objects, job.key)
+				s.objects[edited] = "edited"
+				s.mu.Unlock()
+			})
+
+			job.run(context.Background(), pool, s, videoID, job.key)
+			DeleteRetiredObjects(context.Background(), pool, s) // the next cleanup pass
+
+			got := readConversionRow(t, pool, videoID)
+			if got.fileKey != edited || got.duration != 4 || got.contentType != job.contentType || got.normalized {
+				t.Errorf("row = %+v, want the edit's key and duration, unconverted", got)
+			}
+			if objects := s.snapshot(); len(objects) != 1 || objects[edited] != "edited" {
+				t.Errorf("objects = %v, want only the edit", objects)
+			}
+		})
+
+		t.Run(job.name+"/no edit", func(t *testing.T) {
+			pool := accountDB(t)
+			videoID := seedProcessingVideo(t, pool, job.key, job.contentType)
+			if _, err := pool.Exec(context.Background(), `UPDATE videos SET status = 'ready' WHERE id = $1`, videoID); err != nil {
+				t.Fatal(err)
+			}
+			stubConversions(t, "converted", nil)
+			s := newMemStorage(map[string]string{job.key: "original"})
+
+			job.run(context.Background(), pool, s, videoID, job.key)
+			DeleteRetiredObjects(context.Background(), pool, s) // the next cleanup pass
+
+			got := readConversionRow(t, pool, videoID)
+			if got.fileKey == job.key || !got.normalized || got.fileSize != int64(len("converted")) {
+				t.Errorf("row = %+v, want a new key, normalized, %d bytes", got, len("converted"))
+			}
+			if objects := s.snapshot(); len(objects) != 2 || objects[got.fileKey] != "converted" || objects[job.key] != "original" {
+				t.Errorf("objects = %v, want the converted file at %s and the original kept for issued URLs", objects, got.fileKey)
+			}
+			if due := retired(t, pool)[job.key]; due < 90*time.Minute {
+				t.Errorf("original due in %v, want past the one-hour URL lifetime", due)
+			}
+		})
+	}
+}
+
+// The no-re-encode verdict is about the probed file; an edit in progress is
+// about to replace it.
+func TestCompatibleVerdictYieldsToEdits(t *testing.T) {
+	pool := accountDB(t)
+	const key = "recordings/u/tok.mp4"
+	videoID := seedProcessingVideo(t, pool, key, "video/mp4")
+	probe := probeVideoProperties
+	probeVideoProperties = func(context.Context, string) (videoProperties, error) {
+		return videoProperties{CodecName: "h264", Width: 1280, Height: 720, Level: 40, FrameRate: 30}, nil
+	}
+	t.Cleanup(func() { probeVideoProperties = probe })
+
+	NormalizeVideoAsync(context.Background(), pool, newMemStorage(map[string]string{key: "original"}), videoID, key, "")
+
+	if got := readConversionRow(t, pool, videoID); got.normalized {
+		t.Errorf("row = %+v, want it left for the edit", got)
 	}
 }
