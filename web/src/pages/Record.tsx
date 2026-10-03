@@ -251,7 +251,7 @@ export function Record() {
     limits.maxVideosPerMonth > 0 &&
     limits.videosUsedThisMonth >= limits.maxVideosPerMonth;
 
-  if (!screenRecordingSupported && !cameraSupported) {
+  if (tab === "record" && !screenRecordingSupported && !cameraSupported) {
     return (
       <div className="page-container page-container--centered">
         <h1 className="page-heading">Recording is not available</h1>

@@ -1100,6 +1100,26 @@ describe("Record", () => {
     expect(screen.queryByTestId("camera-recorder")).not.toBeInTheDocument();
   });
 
+  it("opens the Upload tab when recording is unavailable", async () => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+
+    mockApiFetch.mockResolvedValueOnce({
+      maxVideosPerMonth: 0,
+      maxVideoDurationSeconds: 0,
+      videosUsedThisMonth: 0,
+    });
+    renderRecord();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Go to Upload" }));
+
+    expect(screen.getByTestId("upload-component")).toBeInTheDocument();
+    expect(screen.queryByText(/recording is not available/i)).not.toBeInTheDocument();
+  });
+
   it("uploads camera recording with correct content type from blob", async () => {
     const xhrInstances: MockXHR[] = [];
     class TrackingXHR extends MockXHR {
