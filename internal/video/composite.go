@@ -126,6 +126,16 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		); err != nil {
 			slog.Error("composite: failed to set fallback ready status", "video_id", videoID, "error", err)
 		}
+
+		// The screen recording is now the published video, so it gets what any
+		// published video gets. On a context of its own: the fallback often runs
+		// because the job's context timed out.
+		followUpCtx, followUpCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+		defer followUpCancel()
+		GenerateThumbnail(followUpCtx, db, storage, videoID, screenKey, thumbnailKey)
+		if err := EnqueueTranscription(followUpCtx, db, videoID); err != nil {
+			slog.Error("composite: failed to enqueue transcription after fallback", "video_id", videoID, "error", err)
+		}
 	}
 
 	ext := extensionForContentType(contentType)

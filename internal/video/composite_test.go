@@ -197,3 +197,35 @@ func TestCompositeTimeout(t *testing.T) {
 		}
 	}
 }
+
+// A composite that falls back publishes the screen recording alone. It still
+// needs what a published video gets: a thumbnail and, where enabled, a
+// transcript. Audit 3.5.
+func TestCompositeWithWebcam_FallbackStillGetsThumbnailAndTranscript(t *testing.T) {
+	t.Setenv("TRANSCRIPTION_ENABLED", "true")
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
+
+	mock.ExpectExec(`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL`).
+		WithArgs("video-123", webcamDroppedWarning).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+		WithArgs("video-123").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	CompositeWithWebcam(context.Background(), mock, s, "video-123",
+		"recordings/user/video.webm", "recordings/user/video_webcam.webm", "recordings/user/video.jpg", "video/webm")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+	// One download for the composite, one for the thumbnail of the screen.
+	if s.downloadToFileCount != 2 {
+		t.Errorf("want the thumbnail to try the screen recording too, downloads = %d", s.downloadToFileCount)
+	}
+}
