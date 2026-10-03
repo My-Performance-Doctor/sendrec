@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
@@ -159,6 +160,11 @@ func DeleteRetiredObjects(ctx context.Context, db database.DBTX, storage ObjectS
 	}
 }
 
+// retiredObjectOpTimeout bounds each step of the cleanup transaction: the
+// claim, the storage delete, the push-back and the commit. A var so tests
+// can shorten it.
+var retiredObjectOpTimeout = time.Minute
+
 // deleteRetiredObject claims key and deletes its object inside one
 // transaction, so the claim holds the record's row lock until the storage
 // delete is done. A crash or a failed delete in between rolls the claim back
@@ -173,16 +179,32 @@ func deleteRetiredObject(ctx context.Context, db database.DBTX, storage ObjectSt
 		slog.Error("retired-objects: database cannot start a transaction, not sweeping", "key", key)
 		return
 	}
-	tx, err := pool.Begin(ctx)
+	// Every step gets a deadline of its own, so a stalled storage delete
+	// can't hold the record's lock, the connection and the rest of the
+	// loop. A delete that times out counts as failed and is pushed back.
+	// Steps derive from ctx, so a shutdown rolls the claim back instead.
+	step := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(ctx, retiredObjectOpTimeout)
+	}
+
+	beginCtx, cancel := step()
+	tx, err := pool.Begin(beginCtx)
+	cancel()
 	if err != nil {
 		slog.Error("retired-objects: failed to begin", "key", key, "error", err)
 		return
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer func() {
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
 
-	tag, err := tx.Exec(ctx,
+	claimCtx, cancel := step()
+	tag, err := tx.Exec(claimCtx,
 		`DELETE FROM retired_objects r
 		 WHERE r.key = $1 AND r.delete_after < now() AND NOT `+referenced, key)
+	cancel()
 	if err != nil {
 		slog.Error("retired-objects: failed to claim key", "key", key, "error", err)
 		return
@@ -190,16 +212,25 @@ func deleteRetiredObject(ctx context.Context, db database.DBTX, storage ObjectSt
 	if tag.RowsAffected() == 0 {
 		return // adopted, re-armed or claimed elsewhere since the query
 	}
-	if err := storage.DeleteObject(ctx, key); err != nil {
+
+	deleteCtx, cancel := step()
+	err = storage.DeleteObject(deleteCtx, key)
+	cancel()
+	if err != nil {
 		slog.Error("retired-objects: failed to delete object, retrying later", "key", key, "error", err)
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')`, key,
-		); err != nil {
+		pushCtx, cancel := step()
+		_, err := tx.Exec(pushCtx,
+			`INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() + INTERVAL '`+retryDeleteAfter+`')`, key)
+		cancel()
+		if err != nil {
 			slog.Error("retired-objects: failed to push key back", "key", key, "error", err)
 			return
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+
+	commitCtx, cancel := step()
+	defer cancel()
+	if err := tx.Commit(commitCtx); err != nil {
 		slog.Error("retired-objects: failed to commit", "key", key, "error", err)
 	}
 }

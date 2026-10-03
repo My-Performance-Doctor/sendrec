@@ -240,3 +240,36 @@ func TestSweepCrashKeepsTheRecord(t *testing.T) {
 		t.Error("a crash during the storage delete lost the record")
 	}
 }
+
+// stallingDelete is a storage delete that hangs until its context ends.
+type stallingDelete struct{ *memStorage }
+
+func (stallingDelete) DeleteObject(ctx context.Context, _ string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return nil
+	}
+}
+
+// A stalled storage delete must not hold the record's lock, its connection
+// and the rest of the cleanup loop indefinitely: it times out, and the record
+// is pushed back for a later try.
+func TestSweepBoundsAStalledDelete(t *testing.T) {
+	pool := accountDB(t)
+	mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ('k/stall', now() - INTERVAL '1 minute')`)
+	op := retiredObjectOpTimeout
+	retiredObjectOpTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { retiredObjectOpTimeout = op })
+
+	start := time.Now()
+	DeleteRetiredObjects(context.Background(), pool, stallingDelete{newMemStorage(map[string]string{"k/stall": "x"})})
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("sweep took %v with a stalled delete, want it bounded", elapsed)
+	}
+	if due := retired(t, pool)["k/stall"]; due <= 0 {
+		t.Errorf("stalled key due in %v, want it kept and pushed back", due)
+	}
+}
