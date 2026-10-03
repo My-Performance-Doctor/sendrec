@@ -3,13 +3,17 @@ package video
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sendrec/sendrec/internal/auth"
 )
 
 // memStorage keeps objects in memory so a test can see which objects exist
@@ -292,38 +296,202 @@ func TestEditCrashAfterUploadIsReclaimed(t *testing.T) {
 	}
 }
 
-type failingDeleteStorage struct{ *memStorage }
+// failingDeleteStorage refuses to delete the keys in fail.
+type failingDeleteStorage struct {
+	*memStorage
+	fail map[string]bool
+}
 
-func (failingDeleteStorage) DeleteObject(context.Context, string) error {
-	return fmt.Errorf("storage down")
+func (f failingDeleteStorage) DeleteObject(ctx context.Context, key string) error {
+	if f.fail == nil || f.fail[key] {
+		return fmt.Errorf("storage down")
+	}
+	return f.memStorage.DeleteObject(ctx, key)
+}
+
+func mustExecDB(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("%s: %v", sql, err)
+	}
 }
 
 func TestDeleteRetiredObjects(t *testing.T) {
 	pool := accountDB(t)
 	ctx := context.Background()
-	videoID := seedProcessingVideo(t, pool, "recordings/u/live.webm", "video/webm")
-	_ = videoID
-	if _, err := pool.Exec(ctx, `INSERT INTO retired_objects (key, delete_after) VALUES
+	seedProcessingVideo(t, pool, "recordings/u/live.webm", "video/webm")
+	mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES
 		('recordings/u/live.webm', now() - INTERVAL '1 minute'),
 		('recordings/u/old.webm',  now() - INTERVAL '1 minute'),
-		('recordings/u/fresh.webm', now() + INTERVAL '1 hour')`); err != nil {
-		t.Fatal(err)
-	}
+		('recordings/u/fresh.webm', now() + INTERVAL '1 hour')`)
 	s := newMemStorage(map[string]string{
 		"recordings/u/live.webm": "live", "recordings/u/old.webm": "old", "recordings/u/fresh.webm": "fresh",
 	})
 
-	DeleteRetiredObjects(ctx, pool, failingDeleteStorage{s})
-	if r := retired(t, pool); len(r) != 2 || r["recordings/u/old.webm"] > 0 {
-		t.Errorf("after a failed delete: %v, want old kept for retry and live dropped", r)
+	DeleteRetiredObjects(ctx, pool, failingDeleteStorage{memStorage: s})
+	r := retired(t, pool)
+	if _, ok := r["recordings/u/live.webm"]; ok || len(r) != 2 || r["recordings/u/old.webm"] <= 0 {
+		t.Errorf("after a failed delete: %v, want live dropped and old kept, retried later", r)
 	}
 
+	mustExecDB(t, pool, `UPDATE retired_objects SET delete_after = now() - INTERVAL '1 second' WHERE key = 'recordings/u/old.webm'`)
 	DeleteRetiredObjects(ctx, pool, s)
 	if r := retired(t, pool); len(r) != 1 || r["recordings/u/fresh.webm"] <= 0 {
 		t.Errorf("tracked after sweep: %v, want only the not-yet-due key", r)
 	}
 	if objects := s.snapshot(); len(objects) != 2 || objects["recordings/u/live.webm"] != "live" || objects["recordings/u/fresh.webm"] != "fresh" {
 		t.Errorf("objects after sweep = %v, want the live and the not-yet-due ones", objects)
+	}
+}
+
+// A retired key can still be in use under another column, on the row that
+// retired it or on any other.
+func TestDeleteRetiredObjectsKeepsEveryReference(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	a := seedProcessingVideo(t, pool, "recordings/u/a.new.webm", "video/webm")
+	mustExecDB(t, pool, `UPDATE videos SET thumbnail_key = 'k/a-thumb', transcript_key = 'k/a-vtt', webcam_key = 'k/a-cam' WHERE id = $1`, a)
+	var userID string
+	if err := pool.QueryRow(ctx, `SELECT user_id FROM videos WHERE id = $1`, a).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	mustExecDB(t, pool, `INSERT INTO videos (user_id, title, file_key, share_token, content_type, status, thumbnail_key, transcript_key, webcam_key)
+		VALUES ($1, 'B', 'k/b-file', 'tokb', 'video/webm', 'ready', 'k/b-thumb', 'k/b-vtt', 'k/b-cam')`, userID)
+
+	referenced := []string{"recordings/u/a.new.webm", "k/a-thumb", "k/a-vtt", "k/a-cam", "k/b-file", "k/b-thumb", "k/b-vtt", "k/b-cam"}
+	objects := map[string]string{"k/free": "free"}
+	for _, key := range referenced {
+		objects[key] = key
+		mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() - INTERVAL '1 minute')`, key)
+	}
+	mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ('k/free', now() - INTERVAL '1 minute')`)
+	s := newMemStorage(objects)
+
+	DeleteRetiredObjects(ctx, pool, s)
+
+	left := s.snapshot()
+	for _, key := range referenced {
+		if _, ok := left[key]; !ok {
+			t.Errorf("deleted %s, which a video still references", key)
+		}
+	}
+	if _, ok := left["k/free"]; ok {
+		t.Errorf("unreferenced k/free survived the sweep")
+	}
+}
+
+// A key whose delete keeps failing must not hold up the keys behind it.
+func TestDeleteRetiredObjectsIsNotStarvedByFailures(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	objects := map[string]string{"k/ok": "ok"}
+	fail := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("k/stuck-%03d", i)
+		objects[key], fail[key] = key, true
+		mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ($1, now() - INTERVAL '1 hour')`, key)
+	}
+	mustExecDB(t, pool, `INSERT INTO retired_objects (key, delete_after) VALUES ('k/ok', now() - INTERVAL '1 minute')`)
+	s := failingDeleteStorage{memStorage: newMemStorage(objects), fail: fail}
+
+	DeleteRetiredObjects(ctx, pool, s)
+	DeleteRetiredObjects(ctx, pool, s)
+
+	if _, ok := s.snapshot()["k/ok"]; ok {
+		t.Error("k/ok is still there after two sweeps behind 100 failing keys")
+	}
+	if r := retired(t, pool); len(r) != 100 || r["k/stuck-000"] <= 0 {
+		t.Errorf("failing keys: %d tracked, first due in %v; want all kept, retried later", len(r), r["k/stuck-000"])
+	}
+}
+
+// The switch adopts the replacement only while its attempt record exists. Once
+// the sweep has claimed the record (and is about to delete the object), the
+// switch must not point the video at it.
+func TestSwitchRequiresTheAttemptRecord(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	const key = "recordings/u/tok.webm"
+	videoID := seedProcessingVideo(t, pool, key, "video/webm")
+	const update = `UPDATE videos SET file_key = $3, status = 'ready' WHERE id = $1 AND file_key = $2 AND status = 'processing'`
+
+	// No attempt record: the sweep got there first.
+	switched, err := switchFileKey(ctx, pool, update, videoID, key, "recordings/u/tok.swept.webm")
+	if err != nil || switched {
+		t.Fatalf("switch without an attempt record = %t, %v; want no switch", switched, err)
+	}
+	if got := readEditRow(t, pool, videoID); got.fileKey != key || got.status != "processing" {
+		t.Errorf("row = %+v, want it untouched", got)
+	}
+
+	if err := recordReplacementAttempt(ctx, pool, "recordings/u/tok.kept.webm"); err != nil {
+		t.Fatal(err)
+	}
+	switched, err = switchFileKey(ctx, pool, update, videoID, key, "recordings/u/tok.kept.webm")
+	if err != nil || !switched {
+		t.Fatalf("switch with an attempt record = %t, %v; want a switch", switched, err)
+	}
+	if r := retired(t, pool); len(r) != 1 || r[key] <= 0 {
+		t.Errorf("tracked = %v, want only the retired original", r)
+	}
+}
+
+// keyMovesAfterRead lets the edit endpoints read the video, then switches its
+// file_key the way a conversion finishing at that moment would.
+type keyMovesAfterRead struct {
+	*pgxpool.Pool
+	move func()
+}
+
+type movingRow struct {
+	pgx.Row
+	move func()
+}
+
+func (r movingRow) Scan(dest ...any) error {
+	err := r.Row.Scan(dest...)
+	r.move()
+	return err
+}
+
+func (d keyMovesAfterRead) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return movingRow{d.Pool.QueryRow(ctx, sql, args...), d.move}
+}
+
+func TestEditEndpointsClaimTheKeyTheyRead(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		serve      func(h *Handler, w http.ResponseWriter, r *http.Request)
+	}{
+		{"trim", `{"startSeconds": 1, "endSeconds": 5}`, func(h *Handler, w http.ResponseWriter, r *http.Request) { h.Trim(w, r) }},
+		{"remove-segments", `{"segments": [{"start": 1, "end": 2}]}`, func(h *Handler, w http.ResponseWriter, r *http.Request) { h.RemoveSegments(w, r) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := accountDB(t)
+			const key = "recordings/u/tok.webm"
+			videoID := seedProcessingVideo(t, pool, key, "video/webm")
+			mustExecDB(t, pool, `UPDATE videos SET status = 'ready' WHERE id = $1`, videoID)
+			var userID string
+			if err := pool.QueryRow(context.Background(), `SELECT user_id FROM videos WHERE id = $1`, videoID).Scan(&userID); err != nil {
+				t.Fatal(err)
+			}
+			db := keyMovesAfterRead{pool, func() {
+				mustExecDB(t, pool, `UPDATE videos SET file_key = 'recordings/u/tok.conv.mp4' WHERE id = $1`, videoID)
+			}}
+			h := NewHandler(db, newMemStorage(map[string]string{}), testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			req = withURLParam(req.WithContext(auth.ContextWithUserID(req.Context(), userID)), "id", videoID)
+			rec := httptest.NewRecorder()
+
+			tc.serve(h, rec, req)
+
+			if rec.Code != http.StatusConflict {
+				t.Errorf("status = %d (%s), want 409 when the key moved after the read", rec.Code, rec.Body.String())
+			}
+			if got := readEditRow(t, pool, videoID); got.status != "ready" {
+				t.Errorf("row = %+v, want it left ready for the next edit", got)
+			}
+		})
 	}
 }
 

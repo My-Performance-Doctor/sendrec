@@ -517,7 +517,9 @@ func (h *Handler) Trim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, nil, "AND status = 'ready'")
+	// Claim the version that was read: a conversion may have switched the key
+	// since, and the job below would edit the old one.
+	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, []any{fileKey}, "AND status = 'ready' AND file_key = $1")
 	tag, err := h.db.Exec(r.Context(),
 		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere, updateArgs...,
 	)
