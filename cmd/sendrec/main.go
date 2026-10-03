@@ -265,7 +265,7 @@ func main() {
 	// Reclaims videos whose editing job died with the process. Runs more often
 	// than the 15 minute staleness bound so a stranded row is picked up soon
 	// after it becomes eligible.
-	video.StartStuckProcessingWorker(cleanupCtx, db.Pool, store, 5*time.Minute)
+	video.StartStuckProcessingWorker(cleanupCtx, db.Pool, store, webhookClient, baseURL, 5*time.Minute)
 	video.StartOnboardingWorker(cleanupCtx, db.Pool, emailClient, baseURL)
 	video.StartRetentionWorker(cleanupCtx, db.Pool, emailClient, baseURL)
 

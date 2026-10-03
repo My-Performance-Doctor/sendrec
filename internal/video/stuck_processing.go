@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
+	"github.com/sendrec/sendrec/internal/webhook"
 )
 
 // stuckProcessingAfter is how long a video may sit in status='processing'
@@ -40,7 +41,11 @@ const stuckProcessingAfter = "15 minutes"
 // As in composite's own fallback, it is deleted and webcam_key cleared only
 // once the object is gone, so a failed delete still leaves the key for the
 // video's deletion to purge. #296.
-func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectStorage) {
+//
+// A reset composite publishes the screen recording, so the video becomes
+// watchable here and ready sends video.ready. Other edits were watchable
+// before they started and send nothing. BG-13.
+func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectStorage, ready videoReadyHook) {
 	// A composite's own deadline grows with the recording (compositeTimeout),
 	// so rows still holding a webcam get the same allowance before they are
 	// presumed dead, and the owner is told the webcam was dropped.
@@ -55,25 +60,30 @@ func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectS
 		   AND (processing_started_at < now() - INTERVAL '`+stuckProcessingAfter+`'
 		            - CASE WHEN webcam_key IS NOT NULL THEN make_interval(secs => LEAST(2 * duration, $2)) ELSE INTERVAL '0 seconds' END
 		        OR processing_started_at IS NULL)
-		 RETURNING id, webcam_key`,
+		 RETURNING id, webcam_key, user_id, share_token, duration`,
 		webcamDroppedWarning, compositeExtraCapSeconds,
 	)
 	if err != nil {
 		slog.Error("stuck-processing: failed to reset abandoned jobs", "error", err)
 		return
 	}
-	webcams := map[string]string{}
+	type composite struct {
+		id, webcamKey, userID, shareToken string
+		duration                          int
+	}
+	var composites []composite
 	n := 0
 	for rows.Next() {
-		var id string
+		var c composite
 		var webcamKey *string
-		if err := rows.Scan(&id, &webcamKey); err != nil {
+		if err := rows.Scan(&c.id, &webcamKey, &c.userID, &c.shareToken, &c.duration); err != nil {
 			slog.Error("stuck-processing: failed to scan reset row", "error", err)
 			continue
 		}
 		n++
 		if webcamKey != nil {
-			webcams[id] = *webcamKey
+			c.webcamKey = *webcamKey
+			composites = append(composites, c)
 		}
 	}
 	rows.Close()
@@ -84,17 +94,19 @@ func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectS
 	if n > 0 {
 		slog.Warn("stuck-processing: reset abandoned jobs to ready", "count", n, "older_than", stuckProcessingAfter)
 	}
-	for id, key := range webcams {
-		dropWebcam(ctx, db, storage, id, key)
+	for _, c := range composites {
+		dropWebcam(ctx, db, storage, c.id, c.webcamKey)
+		ready.send(c.userID, c.id, c.shareToken, c.duration)
 	}
 }
 
 // StartStuckProcessingWorker sweeps once at startup — the pod that died is
 // usually the pod that comes back — and then on every tick, which also covers
 // node-level failures where a different pod inherits the work.
-func StartStuckProcessingWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, interval time.Duration) {
+func StartStuckProcessingWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, hooks *webhook.Client, baseURL string, interval time.Duration) {
+	ready := videoReadyHook{hooks, baseURL}
 	go func() {
-		resetStuckProcessing(ctx, db, storage)
+		resetStuckProcessing(ctx, db, storage, ready)
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -104,7 +116,7 @@ func StartStuckProcessingWorker(ctx context.Context, db database.DBTX, storage O
 				slog.Info("stuck-processing: shutting down")
 				return
 			case <-ticker.C:
-				resetStuckProcessing(ctx, db, storage)
+				resetStuckProcessing(ctx, db, storage, ready)
 			}
 		}
 	}()

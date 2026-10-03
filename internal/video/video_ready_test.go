@@ -84,6 +84,7 @@ func TestCompositeJob_DispatchesVideoReadyWhenDone(t *testing.T) {
 	mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
 		WithArgs("video-123", webcamDroppedWarning).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	expectWebcamCleared(mock)
 	mock.ExpectQuery(`SELECT user_id, share_token, duration FROM videos WHERE id = \$1 AND status = 'ready'`).
 		WithArgs("video-123").
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "duration"}).AddRow(testUserID, "abc123defghi", 120))
