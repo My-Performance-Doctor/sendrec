@@ -126,7 +126,7 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 
 	// Re-checked, not cleared: cutting off a dead tail fixes the recording, and
 	// cutting elsewhere leaves it as broken as it was.
-	CheckCapture(ctx, db, videoID, outputPath, newDuration)
+	CheckCapture(ctx, db, videoID, newKey, outputPath, newDuration)
 
 	GenerateThumbnail(ctx, db, storage, videoID, newKey, thumbnailKey)
 	if err := EnqueueTranscription(ctx, db, videoID); err != nil {

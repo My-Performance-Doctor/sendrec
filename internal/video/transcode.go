@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
 )
 
@@ -93,7 +95,11 @@ const (
 
 // recordTranscodeFailure increments the attempt counter and stores the reason.
 // Permanent failures consume the whole budget at once.
-func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID string, cause error) {
+//
+// The budget belongs to the file the job converted, fileKey. If the video has
+// moved on to another file, or was deleted, nothing is counted: an edit's
+// output must not inherit the failures of the file it replaced. #328.
+func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, fileKey string, cause error) {
 	permanent := isPermanentFFmpegError(cause)
 
 	// The cause carries raw ffmpeg output, so it can hold arbitrary bytes, and
@@ -118,10 +124,14 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 		 SET transcode_attempts = CASE WHEN $3 THEN $4 ELSE transcode_attempts + 1 END,
 		     transcode_error = $2,
 		     updated_at = now()
-		 WHERE id = $1
+		 WHERE id = $1 AND file_key = $5 AND status != 'deleted'
 		 RETURNING transcode_attempts`,
-		videoID, msg, permanent, maxTranscodeAttempts,
+		videoID, msg, permanent, maxTranscodeAttempts, fileKey,
 	).Scan(&attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Info("transcode: video moved on from the failed file, not counting it", "video_id", videoID, "key", fileKey, "error", cause)
+		return
+	}
 	if err != nil {
 		slog.Error("transcode: failed to record failure", "video_id", videoID, "error", err)
 		return
@@ -130,8 +140,8 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID strin
 	if attempts >= maxTranscodeAttempts {
 		slog.Error("transcode: giving up", "video_id", videoID, "attempts", attempts, "permanent", permanent, "error", cause)
 		if _, err := db.Exec(ctx,
-			`UPDATE videos SET processing_error = $2 WHERE id = $1`,
-			videoID, conversionFailedMessage,
+			`UPDATE videos SET processing_error = $2 WHERE id = $1 AND file_key = $3`,
+			videoID, conversionFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("transcode: failed to record the give-up for the owner", "video_id", videoID, "error", err)
 		}
@@ -178,17 +188,6 @@ func publishConversion(ctx context.Context, db database.DBTX, storage ObjectStor
 	return switched, nil
 }
 
-func clearTranscodeFailure(ctx context.Context, db database.DBTX, videoID string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET transcode_attempts = 0, transcode_error = NULL WHERE id = $1`,
-		videoID,
-	); err != nil {
-		slog.Error("transcode: failed to clear failure state", "video_id", videoID, "error", err)
-	}
-}
-
 func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, audioFilter string) {
 	// Check if video is still WebM (another transcode may have already completed)
 	var contentType string
@@ -221,7 +220,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("transcode: failed to download", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 
@@ -236,13 +235,13 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 	if err := transcodeToMP4(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("transcode: ffmpeg failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 
 	// The MP4 rather than the WebM that produced it: MediaRecorder's WebM carries
 	// no stream durations to compare.
-	CheckCapture(ctx, db, videoID, tmpOutputPath, duration)
+	CheckCapture(ctx, db, videoID, fileKey, tmpOutputPath, duration)
 
 	info, err := os.Stat(tmpOutputPath)
 	if err != nil {
@@ -257,18 +256,17 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	newFileKey := replacementFileKey(fileKey, ".mp4")
 
 	switched, err := publishConversion(ctx, db, storage, "transcode", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, updated_at = now()
+		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true,
+		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 	if !switched {
 		return
 	}
-
-	clearTranscodeFailure(ctx, db, videoID)
 
 	slog.Info("transcode: completed", "video_id", videoID, "new_key", newFileKey, "size", newFileSize)
 }

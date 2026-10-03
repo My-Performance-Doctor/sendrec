@@ -180,14 +180,14 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("normalize: failed to download", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 
 	// The file is already here and it is the recording as uploaded, so this is
 	// where a capture that died gets noticed — and where the warning clears if a
 	// later edit fixed it.
-	CheckCapture(ctx, db, videoID, tmpInputPath, duration)
+	CheckCapture(ctx, db, videoID, fileKey, tmpInputPath, duration)
 
 	props, err := probeVideoProperties(ctx, tmpInputPath)
 	if err != nil {
@@ -195,7 +195,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		// normalized here took it out of every later pass while it could still
 		// fail on iPhones; count an attempt instead, within the retry budget.
 		slog.Warn("normalize: probe failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 
@@ -221,7 +221,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := transcodeToIOSCompatible(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("normalize: ffmpeg failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 
@@ -235,18 +235,17 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	// Written next to the original, never over it: an edit may be reading it.
 	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
 	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true, updated_at = now()
+		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true,
+		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
-		recordTranscodeFailure(ctx, db, videoID, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
 		return
 	}
 	if !switched {
 		return
 	}
-
-	clearTranscodeFailure(ctx, db, videoID)
 
 	slog.Info("normalize: completed", "video_id", videoID, "new_size", newFileSize)
 }

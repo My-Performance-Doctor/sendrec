@@ -212,7 +212,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	// The screen recording rather than the composited output: the webcam overlay
 	// spans the full length whatever the screen capture did.
-	CheckCapture(ctx, db, videoID, tmpScreenPath, 0)
+	CheckCapture(ctx, db, videoID, screenKey, tmpScreenPath, 0)
 
 	webcamFrames, webcamProbeInfo, probeErr := probeVideoInfo(ctx, tmpWebcamPath)
 	if probeErr != nil {
