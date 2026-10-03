@@ -392,9 +392,10 @@ func (h *Handler) UploadTranscript(w http.ResponseWriter, r *http.Request) {
 
 	where, args := orgRowFilter(r.Context(), videoID, nil, "AND status = 'ready'")
 	var userID, shareToken string
+	var version int
 	if err := h.db.QueryRow(r.Context(),
-		`SELECT user_id, share_token FROM videos WHERE `+where, args...,
-	).Scan(&userID, &shareToken); err != nil {
+		`SELECT user_id, share_token, media_version FROM videos WHERE `+where, args...,
+	).Scan(&userID, &shareToken, &version); err != nil {
 		httputil.WriteError(w, http.StatusNotFound, "video not found")
 		return
 	}
@@ -429,25 +430,37 @@ func (h *Handler) UploadTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	segments = mergeSegments(segments)
 
-	transcriptKey := transcriptFileKey(userID, shareToken)
-	if err := h.uploadTranscriptVTT(r.Context(), transcriptKey, segmentsToVTT(segments)); err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "could not store transcript")
-		return
-	}
-
 	segmentsJSON, err := json.Marshal(segments)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "could not encode transcript")
 		return
 	}
 
-	updWhere, updArgs := orgRowFilter(r.Context(), videoID,
-		[]any{transcriptKey, string(segmentsJSON)}, "")
-	if _, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET transcript_key = $1, transcript_json = $2, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now() WHERE `+updWhere,
-		updArgs...,
-	); err != nil {
+	// Under a key of its own and only for the content it was written for, like
+	// a generated transcript. #327.
+	transcriptKey := replacementFileKey(transcriptFileKey(userID, shareToken), ".vtt")
+	if err := recordReplacementAttempt(r.Context(), h.db, transcriptKey); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "could not store transcript")
+		return
+	}
+	if err := h.uploadTranscriptVTT(r.Context(), transcriptKey, segmentsToVTT(segments)); err != nil {
+		discardReplacement(r.Context(), h.db, transcriptKey)
+		httputil.WriteError(w, http.StatusInternalServerError, "could not store transcript")
+		return
+	}
+
+	published, err := publishUpload(r.Context(), h.db, "transcript_key",
+		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now()
+		 WHERE id = $1 AND media_version = $4 AND status != 'deleted'`,
+		videoID, transcriptKey, string(segmentsJSON), version)
+	if err != nil {
+		discardReplacement(r.Context(), h.db, transcriptKey)
 		httputil.WriteError(w, http.StatusInternalServerError, "could not update transcript")
+		return
+	}
+	if !published {
+		discardReplacement(r.Context(), h.db, transcriptKey)
+		httputil.WriteError(w, http.StatusConflict, "the video changed while the transcript was uploading")
 		return
 	}
 

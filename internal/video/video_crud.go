@@ -406,7 +406,6 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			})
 		} else {
 			h.EnqueueJob(r.Context(), JobTypeThumbnail, videoID, map[string]any{
-				"fileKey":      fileKey,
 				"thumbnailKey": thumbnailFileKey(userID, shareToken),
 			})
 			h.EnqueueJob(r.Context(), JobTypeTranscribe, videoID, nil)

@@ -125,7 +125,7 @@ func TestThumbnailAfterDeletion(t *testing.T) {
 	stubFrame(t, func() { deleteVideo(t, pool, videoID) })
 	s := newMemStorage(map[string]string{key: "video"}) // purged thumbnail already gone
 
-	GenerateThumbnail(context.Background(), pool, s, videoID, key, thumb)
+	GenerateThumbnail(context.Background(), pool, s, videoID, thumb)
 
 	assertSweptClean(t, pool, s, key)
 }
@@ -156,7 +156,7 @@ func TestTranscriptionAfterDeletion(t *testing.T) {
 	}
 	s := newMemStorage(map[string]string{key: "video"})
 
-	processTranscription(context.Background(), pool, s, tr, videoID, key, "u", "tok", "auto", false)
+	processTranscription(context.Background(), pool, s, tr, videoID, key, 0, "u", "tok", "auto", false)
 
 	if _, _, transcript, status := readStatus(t, pool, videoID); transcript != nil || (status != nil && *status == "ready") {
 		t.Errorf("transcript_key = %v, status = %v; want nothing published", transcript, status)
@@ -201,7 +201,7 @@ func TestRejectedPublicationKeepsTheAttemptRecord(t *testing.T) {
 	if err != nil || switched {
 		t.Fatalf("switch on a deleted video = %t, %v", switched, err)
 	}
-	published, err := publishUpload(ctx, pool,
+	published, err := publishUpload(ctx, pool, "thumbnail_key",
 		`UPDATE videos SET thumbnail_key = $2 WHERE id = $1 AND status != 'deleted'`,
 		videoID, "recordings/u/tok.t1.jpg")
 	if err != nil || published {

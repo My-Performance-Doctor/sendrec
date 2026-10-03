@@ -25,11 +25,10 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 	switch jobType {
 	case JobTypeThumbnail:
 		thumbKey, _ := payload["thumbnailKey"].(string)
-		fileKey, _ := payload["fileKey"].(string)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			GenerateThumbnail(ctx, h.db, h.storage, videoID, fileKey, thumbKey)
+			GenerateThumbnail(ctx, h.db, h.storage, videoID, thumbKey)
 		}()
 	case JobTypeTranscode:
 		fileKey, _ := payload["fileKey"].(string)

@@ -53,18 +53,26 @@ func (h *Handler) UploadThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	thumbKey := thumbnailFileKey(videoOwnerID, shareToken)
+	// A key of its own, like a generated thumbnail's, so the one it replaces
+	// stays for the URLs already issued for it and is then retired. #327.
+	thumbKey := replacementFileKey(thumbnailFileKey(videoOwnerID, shareToken), ".jpg")
+	if err := recordReplacementAttempt(r.Context(), h.db, thumbKey); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update thumbnail")
+		return
+	}
 
 	uploadURL, err := h.storage.GenerateUploadURL(r.Context(), thumbKey, req.ContentType, req.ContentLength, 15*time.Minute)
 	if err != nil {
+		discardReplacement(r.Context(), h.db, thumbKey)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate upload URL")
 		return
 	}
 
-	if _, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET thumbnail_key = $1, updated_at = now() WHERE id = $2`,
-		thumbKey, videoID,
-	); err != nil {
+	published, err := publishUpload(r.Context(), h.db, "thumbnail_key",
+		`UPDATE videos SET thumbnail_key = $2, updated_at = now() WHERE id = $1 AND status != 'deleted'`,
+		videoID, thumbKey)
+	if err != nil || !published {
+		discardReplacement(r.Context(), h.db, thumbKey)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update thumbnail")
 		return
 	}
@@ -92,7 +100,7 @@ func (h *Handler) ResetThumbnail(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	go func() {
 		defer cancel()
-		GenerateThumbnail(ctx, h.db, h.storage, videoID, fileKey, thumbnailKey)
+		GenerateThumbnail(ctx, h.db, h.storage, videoID, thumbnailKey)
 	}()
 
 	w.WriteHeader(http.StatusAccepted)
@@ -129,7 +137,21 @@ func extractFrame(ctx context.Context, inputPath, outputPath string) error {
 	return extractFrameAt(ctx, inputPath, outputPath, 2)
 }
 
-func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, thumbnailKey string) {
+// GenerateThumbnail makes a thumbnail from the video's current file and
+// publishes it under a key of its own next to thumbnailBase. It is published
+// only for the content it was made from: an edit in the meantime bumps
+// media_version and queues its own thumbnail, while a conversion keeps the
+// content and the version. #327.
+func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, thumbnailBase string) {
+	var fileKey string
+	var version int
+	if err := db.QueryRow(ctx,
+		`SELECT file_key, media_version FROM videos WHERE id = $1 AND status != 'deleted'`, videoID,
+	).Scan(&fileKey, &version); err != nil {
+		slog.Info("thumbnail: video gone, skipping", "video_id", videoID, "error", err)
+		return
+	}
+	thumbnailKey := replacementFileKey(thumbnailBase, ".jpg")
 	tmpVideo, err := os.CreateTemp("", "sendrec-thumb-*.webm")
 	if err != nil {
 		slog.Error("thumbnail: failed to create temp video file", "error", err)
@@ -173,8 +195,8 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 		return
 	}
 
-	// Published only while the video is live; anything else is reclaimed by
-	// the sweep. #325.
+	// Published only while the video is live and its content unchanged;
+	// anything else is reclaimed by the sweep. #325, #327.
 	if err := recordReplacementAttempt(ctx, db, thumbnailKey); err != nil {
 		slog.Error("thumbnail: failed to record upload", "video_id", videoID, "error", err)
 		return
@@ -185,16 +207,16 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 		return
 	}
 
-	published, err := publishUpload(ctx, db,
+	published, err := publishUpload(ctx, db, "thumbnail_key",
 		`UPDATE videos SET thumbnail_key = $2, updated_at = now()
-		 WHERE id = $1 AND status != 'deleted'`,
-		videoID, thumbnailKey)
+		 WHERE id = $1 AND media_version = $3 AND status != 'deleted'`,
+		videoID, thumbnailKey, version)
 	if err != nil {
 		slog.Error("thumbnail: failed to update thumbnail_key", "video_id", videoID, "error", err)
 		return
 	}
 	if !published {
-		slog.Info("thumbnail: video deleted meanwhile, discarding", "video_id", videoID)
+		slog.Info("thumbnail: video deleted or edited meanwhile, discarding", "video_id", videoID)
 		discardReplacement(ctx, db, thumbnailKey)
 	}
 }

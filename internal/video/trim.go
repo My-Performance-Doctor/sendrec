@@ -106,17 +106,27 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 		return false
 	}
 
+	// The edit changes the content, so in the same statement it bumps
+	// media_version and drops the thumbnail and transcript made from the old
+	// content (switchFileKey retires their objects). A crash after this
+	// leaves no stale result behind, and the transcript stays queued. #327.
 	// The conversion budget and the capture verdict belong to the file being
-	// replaced, so they go in the same statement; only the webcam note, which
-	// is about the recording, survives. The verdict is recomputed below. #328.
+	// replaced and go too; only the webcam note, which is about the
+	// recording, survives. The verdict is recomputed below. #328.
+	transcriptStatus := "none"
+	if isTranscriptionEnabled() {
+		transcriptStatus = "pending"
+	}
 	switched, err := switchFileKey(ctx, db,
 		`UPDATE videos SET file_key = $3, duration = $4, file_size = $5, status = 'ready',
 		     processing_started_at = NULL, processing_error = NULL,
 		     transcode_attempts = 0, transcode_error = NULL,
 		     capture_warning = CASE WHEN position($6 IN COALESCE(capture_warning, '')) > 0 THEN $6 END,
+		     media_version = media_version + 1, thumbnail_key = NULL,
+		     transcript_key = NULL, transcript_json = NULL, transcript_status = $7, transcript_started_at = NULL,
 		     updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
-		videoID, fileKey, newKey, newDuration, info.Size(), webcamDroppedWarning,
+		videoID, fileKey, newKey, newDuration, info.Size(), webcamDroppedWarning, transcriptStatus,
 	)
 	if err != nil {
 		// The switch may have landed even so. The upload stays recorded, and the
@@ -134,10 +144,7 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 	// cutting elsewhere leaves it as broken as it was.
 	CheckCapture(ctx, db, videoID, newKey, outputPath, newDuration)
 
-	GenerateThumbnail(ctx, db, storage, videoID, newKey, thumbnailKey)
-	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
-		slog.Error(job+": failed to enqueue transcription", "video_id", videoID, "error", err)
-	}
+	GenerateThumbnail(ctx, db, storage, videoID, thumbnailKey)
 	return true
 }
 

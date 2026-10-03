@@ -71,7 +71,7 @@ func TestProcessNextTranscription_NoJobs(t *testing.T) {
 
 	// Claim query returns no rows
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -95,7 +95,7 @@ func TestProcessNextTranscription_ResetsStuckJobs(t *testing.T) {
 
 	// Claim query returns no rows (the reset job will be picked up next tick)
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -126,7 +126,7 @@ func TestProcessTranscription_HungJobFailsAtItsDeadline(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		processTranscription(context.Background(), db, hangingStorage{&mockStorage{}}, stubTranscriber{available: true},
-			"video-123", "recordings/u/v.webm", "u", "tok", "auto", false)
+			"video-123", "recordings/u/v.webm", 0, "u", "tok", "auto", false)
 		close(done)
 	}()
 
@@ -153,7 +153,7 @@ func TestProcessNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
 		WithArgs((transcriptionJobTimeout + time.Minute).Seconds()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
 
 	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
 

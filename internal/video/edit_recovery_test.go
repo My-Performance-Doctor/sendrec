@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sendrec/sendrec/internal/database"
 )
@@ -14,6 +15,11 @@ type recoveryDB struct {
 	database.DBTX
 	updated  bool
 	deadline time.Time
+}
+
+// The fallback's thumbnail reads the row first; there is none here.
+func (db *recoveryDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	return errRow{pgx.ErrNoRows}
 }
 
 func (db *recoveryDB) Exec(ctx context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {

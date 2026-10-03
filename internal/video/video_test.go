@@ -6964,7 +6964,7 @@ func TestUploadTranscript_NotFound(t *testing.T) {
 	videoID := "video-999"
 
 	// Mock SELECT returns no rows
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
 		WillReturnError(pgx.ErrNoRows)
 
@@ -6997,17 +6997,19 @@ func TestUploadTranscript_HappyPath(t *testing.T) {
 	videoID := "video-123"
 	shareToken := "tok"
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow(testUserID, shareToken))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow(testUserID, shareToken, 0))
 
 	segmentsJSON, err := json.Marshal([]TranscriptSegment{{Start: 0, End: 1, Text: "hi", Speaker: "Alice"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.ExpectExec(`UPDATE videos SET transcript_key = \$1, transcript_json = \$2, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now\(\) WHERE id = \$3 AND user_id = \$4 AND organization_id IS NULL`).
-		WithArgs("recordings/"+testUserID+"/"+shareToken+".vtt", string(segmentsJSON), videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET transcript_key = \$2, transcript_json = \$3`).
+		WithArgs(videoID, pgxmock.AnyArg(), string(segmentsJSON), 0).
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	vtt := "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nAlice: hi\n\n"
 
@@ -7042,7 +7044,7 @@ func TestUploadTranscript_HappyPath(t *testing.T) {
 	if storage.uploadCalls() != 1 {
 		t.Errorf("expected storage.UploadFile called once, got %d", storage.uploadCalls())
 	}
-	if len(storage.uploadedKeys()) == 1 && storage.uploadedKeys()[0] != "recordings/"+testUserID+"/"+shareToken+".vtt" {
+	if keys := storage.uploadedKeys(); len(keys) == 1 && (!strings.HasPrefix(keys[0], "recordings/"+testUserID+"/"+shareToken+".") || !strings.HasSuffix(keys[0], ".vtt")) {
 		t.Errorf("unexpected upload key: %s", storage.uploadedKeys()[0])
 	}
 	if len(storage.uploadedContentTypes()) == 1 && storage.uploadedContentTypes()[0] != "text/vtt" {
@@ -7066,9 +7068,9 @@ func TestUploadTranscript_RejectsNonVTT(t *testing.T) {
 	videoID := "video-124"
 	shareToken := "tok2"
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow(testUserID, shareToken))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow(testUserID, shareToken, 0))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/videos/{id}/transcript", handler.UploadTranscript)
@@ -7103,9 +7105,9 @@ func TestUploadTranscript_RejectsOversized(t *testing.T) {
 	videoID := "video-125"
 	shareToken := "tok3"
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow(testUserID, shareToken))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow(testUserID, shareToken, 0))
 
 	// Syntactically-plausible VTT, padded past the size limit with more cues:
 	// the rejection must be attributable to SIZE, not to invalid-VTT.
@@ -7152,9 +7154,9 @@ func TestUploadTranscript_RejectsOversized_OverRouteCeiling(t *testing.T) {
 	videoID := "video-126"
 	shareToken := "tok4"
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow(testUserID, shareToken))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow(testUserID, shareToken, 0))
 
 	// A body large enough to exceed the handler's own MaxBytesReader ceiling
 	// (MaxTranscriptUploadBytes+1024), not just the post-read size check.

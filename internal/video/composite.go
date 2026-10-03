@@ -155,7 +155,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		followUpCtx, followUpCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer followUpCancel()
 		dropWebcam(followUpCtx, db, storage, videoID, webcamKey)
-		GenerateThumbnail(followUpCtx, db, storage, videoID, screenKey, thumbnailKey)
+		GenerateThumbnail(followUpCtx, db, storage, videoID, thumbnailKey)
 		if err := EnqueueTranscription(followUpCtx, db, videoID); err != nil {
 			slog.Error("composite: failed to enqueue transcription after fallback", "video_id", videoID, "error", err)
 		}
@@ -295,7 +295,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 
 	dropWebcam(ctx, db, storage, videoID, webcamKey)
-	GenerateThumbnail(ctx, db, storage, videoID, outputKey, thumbnailKey)
+	GenerateThumbnail(ctx, db, storage, videoID, thumbnailKey)
 	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
 		slog.Error("composite: failed to enqueue transcription", "video_id", videoID, "error", err)
 	}
