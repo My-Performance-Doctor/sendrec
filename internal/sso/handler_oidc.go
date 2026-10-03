@@ -97,7 +97,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.resolveUser(r.Context(), providerName, info)
+	userID, err := h.resolveUser(r.Context(), providerName, info, true)
 	if err != nil {
 		slog.Error("sso: resolve user failed", "provider", providerName, "error", err)
 		h.redirectWithError(w, r, err.Error())
@@ -413,7 +413,7 @@ func (h *Handler) OrgCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Use orgID as the provider name for external_identities.
-	userID, err := h.resolveUser(r.Context(), orgID, info)
+	userID, err := h.resolveUser(r.Context(), orgID, info, false)
 	if err != nil {
 		slog.Error("sso: org resolve user failed", "orgID", orgID, "error", err)
 		h.redirectWithError(w, r, err.Error())
