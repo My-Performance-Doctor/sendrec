@@ -269,3 +269,25 @@ func TestDeleteAccount_StopsWhenTheSubscriptionCannotBeCanceled(t *testing.T) {
 		t.Errorf("objects were deleted although the subscription is still active: %v", keys)
 	}
 }
+
+// A stored file that will not delete must not be forgotten when the account's
+// rows go: it is handed to the retired-objects sweep, which retries it.
+func TestDeleteAccount_HandsUndeletedFilesToTheSweep(t *testing.T) {
+	pool := accountDB(t)
+	name := uniqueName(t)
+	alice := mustID(t, pool, `INSERT INTO users (email, password, name) VALUES ($1, 'x', 'Alice') RETURNING id`, name+"-alice@example.com")
+	seedVideo(t, pool, alice, nil, name+"/alice")
+
+	storage := &mockStorage{deleteCalled: make(chan string, 64), deleteFailUntil: 1000, deleteErr: errors.New("storage down")}
+	rec := deleteAccountAs(NewHandler(pool, storage, "https://example.com", 0, 0, 0, 0, "secret", false), alice)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	drainDeletes(storage)
+
+	for _, suffix := range []string{"/file.mp4", "/thumb.jpg", "/transcript.vtt", "/webcam.webm", "/logo.png"} {
+		if !exists(t, pool, `SELECT 1 FROM retired_objects WHERE key = $1`, name+"/alice"+suffix) {
+			t.Errorf("%s failed to delete and was not handed to the sweep", suffix)
+		}
+	}
+}
