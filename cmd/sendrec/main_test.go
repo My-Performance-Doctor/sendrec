@@ -37,3 +37,29 @@ func TestGetEnvReturnsFallbackWhenEmpty(t *testing.T) {
 		t.Errorf("expected fallback %q for empty env var, got %q", fallback, result)
 	}
 }
+
+// A self-hosted install has no billing, so nothing could ever raise its
+// limits: it defaults to unlimited. The hosted service sells plans, sets none
+// of these variables, and keeps the free plan's limits. An explicit value
+// always wins. #255, audit 1.4.
+func TestFreeLimit(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		env     string
+		billing bool
+		want    int
+	}{
+		{"self-hosted default", "", false, 0},
+		{"hosted default", "", true, 25},
+		{"self-hosted explicit", "10", false, 10},
+		{"hosted explicit", "0", true, 0},
+		{"unparsable keeps the default", "lots", false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("MAX_TEST_LIMIT", c.env)
+			if got := freeLimit("MAX_TEST_LIMIT", 25, c.billing); got != c.want {
+				t.Errorf("freeLimit = %d, want %d", got, c.want)
+			}
+		})
+	}
+}

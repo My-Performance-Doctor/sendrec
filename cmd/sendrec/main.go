@@ -155,6 +155,8 @@ func main() {
 	}
 
 	creemAPIKey := os.Getenv("CREEM_API_KEY")
+	// Billing is on exactly when the server builds its billing handlers.
+	billingEnabled := creemAPIKey != ""
 	creemWebhookSecret := os.Getenv("CREEM_WEBHOOK_SECRET")
 	// Billing enabled without a webhook secret leaves /api/webhooks/creem
 	// forgeable, so refuse to start rather than serve entitlements to anyone.
@@ -182,10 +184,10 @@ func main() {
 		RegistrationEnabled:       registrationEnabled,
 		PlanBadgeEnabled:          planBadgeEnabled,
 		MaxUploadBytes:            getEnvInt64("MAX_UPLOAD_BYTES", 500*1024*1024),
-		MaxVideosPerMonth:         int(getEnvInt64("MAX_VIDEOS_PER_MONTH", int64(plans.Free.MaxVideosPerMonth))),
-		MaxVideoDurationSeconds:   int(getEnvInt64("MAX_VIDEO_DURATION_SECONDS", int64(plans.Free.MaxVideoDurationSeconds))),
-		MaxPlaylists:              int(getEnvInt64("MAX_PLAYLISTS", int64(plans.Free.MaxPlaylists))),
-		MaxWorkspaces:             int(getEnvInt64("MAX_WORKSPACES", int64(plans.Free.MaxOrgsOwned))),
+		MaxVideosPerMonth:         freeLimit("MAX_VIDEOS_PER_MONTH", plans.Free.MaxVideosPerMonth, billingEnabled),
+		MaxVideoDurationSeconds:   freeLimit("MAX_VIDEO_DURATION_SECONDS", plans.Free.MaxVideoDurationSeconds, billingEnabled),
+		MaxPlaylists:              freeLimit("MAX_PLAYLISTS", plans.Free.MaxPlaylists, billingEnabled),
+		MaxWorkspaces:             freeLimit("MAX_WORKSPACES", plans.Free.MaxOrgsOwned, billingEnabled),
 		BrandingLogoURL:           os.Getenv("BRANDING_DEFAULT_LOGO_URL"),
 		BrandingName:              os.Getenv("BRANDING_DEFAULT_NAME"),
 		BrandingColorAccent:       os.Getenv("BRANDING_DEFAULT_COLOR_ACCENT"),
@@ -302,6 +304,17 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// freeLimit reads a free-plan limit. Without billing, as on a self-hosted
+// install, nothing could ever lift a limit, so the default is 0 (unlimited);
+// with billing it is the free plan's own. An explicit value always wins.
+func freeLimit(key string, planValue int, billingEnabled bool) int {
+	fallback := 0
+	if billingEnabled {
+		fallback = planValue
+	}
+	return int(getEnvInt64(key, int64(fallback)))
 }
 
 func getEnvInt64(key string, fallback int64) int64 {

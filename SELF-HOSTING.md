@@ -331,10 +331,10 @@ Re-measure when you change resolution limits, enable transcription or noise redu
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MAX_UPLOAD_BYTES` | Maximum upload size in bytes (applies to both recordings and file uploads) | `524288000` (500 MB) |
-| `MAX_VIDEOS_PER_MONTH` | Maximum videos a user can create per month (recordings + uploads). Set to `0` for unlimited | `25` |
-| `MAX_VIDEO_DURATION_SECONDS` | Maximum recording duration in seconds. Set to `0` for unlimited | `300` (5 min) |
-| `MAX_PLAYLISTS` | Maximum playlists a free-tier user can create. Set to `0` for unlimited | `3` |
-| `MAX_WORKSPACES` | Maximum workspaces a free-tier user can own. Set to `0` for unlimited | `1` |
+| `MAX_VIDEOS_PER_MONTH` | Maximum videos a user can create per month (recordings + uploads). Set to `0` for unlimited | `0` (unlimited); `25` when billing is configured |
+| `MAX_VIDEO_DURATION_SECONDS` | Maximum recording duration in seconds. Set to `0` for unlimited | `0` (unlimited); `300` (5 min) when billing is configured |
+| `MAX_PLAYLISTS` | Maximum playlists a free-tier user can create. Set to `0` for unlimited | `0` (unlimited); `3` when billing is configured |
+| `MAX_WORKSPACES` | Maximum workspaces a free-tier user can own. Set to `0` for unlimited | `0` (unlimited); `1` when billing is configured |
 
 ### API Documentation
 
@@ -447,7 +447,7 @@ Enable subscription billing with [Creem](https://creem.io) (EU merchant of recor
 
 **Creem webhook URL:** Configure `https://your-domain.com/api/webhooks/creem` in the Creem dashboard. Subscribe to all subscription events (`subscription.active`, `subscription.paid`, `subscription.canceled`, `subscription.expired`).
 
-**Self-hosters without billing:** Skip these variables entirely. Without billing every user stays on the free plan, so control limits with `MAX_VIDEOS_PER_MONTH`, `MAX_VIDEO_DURATION_SECONDS`, `MAX_PLAYLISTS` and `MAX_WORKSPACES` (set to `0` for unlimited).
+**Self-hosters without billing:** Skip these variables entirely. Without billing there are no limits by default; set `MAX_VIDEOS_PER_MONTH`, `MAX_VIDEO_DURATION_SECONDS`, `MAX_PLAYLISTS` or `MAX_WORKSPACES` to cap usage.
 
 ### Email notifications (optional)
 
