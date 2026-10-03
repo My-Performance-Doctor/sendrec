@@ -472,6 +472,133 @@ describe("Recorder", () => {
     expect(screen.getByText("Screen recording was blocked or failed. Please allow screen capture and try again.")).toBeInTheDocument();
   });
 
+  it.each(["NotReadableError", "NotFoundError", "NotAllowedError"])(
+    "warns and keeps recording when the microphone fails with %s",
+    async (name) => {
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new DOMException("mic failed", name),
+      );
+
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(screen.getByTestId("countdown-overlay")).toBeInTheDocument();
+      expect(screen.getByText(/Microphone unavailable — recording without your voice/)).toBeInTheDocument();
+    },
+  );
+
+  it("does not request the microphone or warn when audio is off", async () => {
+    const user = userEvent.setup();
+    render(<Recorder onRecordingComplete={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Disable system audio" }));
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("mic-note")).not.toBeInTheDocument();
+  });
+
+  describe("with a working audio mixer", () => {
+    beforeEach(() => {
+      vi.stubGlobal("AudioContext", class {
+        createMediaStreamDestination() {
+          return { stream: { getAudioTracks: () => [{ kind: "audio" }] } };
+        }
+        createMediaStreamSource() {
+          return { connect: vi.fn() };
+        }
+        close() {}
+      });
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it.each([
+      ["Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)", "Microphone: Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"],
+      ["", "Microphone: default microphone"],
+    ])("shows the recorded microphone for label %j", async (label, text) => {
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        getTracks: () => [{ stop: vi.fn() }],
+        getAudioTracks: () => [{ label }],
+      });
+
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(screen.getByText(text)).toBeInTheDocument();
+      expect(screen.queryByText(/Microphone unavailable/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("microphone picker", () => {
+    const devices = [
+      { kind: "audioinput", deviceId: "vm", label: "Voicemeeter Out B1" },
+      { kind: "audioinput", deviceId: "jabra", label: "Microphone (Jabra PRO 9470)" },
+      { kind: "videoinput", deviceId: "cam", label: "Webcam" },
+    ];
+
+    beforeEach(() => {
+      Object.assign(navigator.mediaDevices, {
+        enumerateDevices: vi.fn().mockResolvedValue(devices),
+      });
+    });
+    afterEach(() => {
+      localStorage.removeItem("recording-mic");
+    });
+
+    it("lists only named audio inputs plus the browser default", async () => {
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+
+      const select = await screen.findByRole("combobox", { name: "Microphone" });
+      const options = Array.from((select as HTMLSelectElement).options).map((o) => o.text);
+      expect(options).toEqual(["Browser default", "Voicemeeter Out B1", "Microphone (Jabra PRO 9470)"]);
+    });
+
+    it("records from the chosen microphone and remembers it", async () => {
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.selectOptions(await screen.findByRole("combobox", { name: "Microphone" }), "jabra");
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+        audio: { deviceId: { exact: "jabra" } },
+        video: false,
+      });
+      expect(localStorage.getItem("recording-mic")).toBe("jabra");
+    });
+
+    it("falls back to the browser default when the saved microphone is gone", async () => {
+      localStorage.setItem("recording-mic", "unplugged");
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Microphone" });
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true, video: false });
+    });
+
+    it("hides the picker until the browser reveals device names", async () => {
+      (navigator.mediaDevices.enumerateDevices as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { kind: "audioinput", deviceId: "", label: "" },
+      ]);
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await act(async () => {});
+
+      expect(screen.queryByRole("combobox", { name: "Microphone" })).not.toBeInTheDocument();
+    });
+
+    it("hides the picker when audio is off", async () => {
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Microphone" });
+      await user.click(screen.getByRole("button", { name: "Disable system audio" }));
+
+      expect(screen.queryByRole("combobox", { name: "Microphone" })).not.toBeInTheDocument();
+    });
+  });
+
   it("dismisses media error when dismiss button is clicked", async () => {
     (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error("Permission denied"),
