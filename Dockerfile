@@ -20,7 +20,10 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o sendre
 # Stage 3: Final image (base includes whisper-cli, ffmpeg, RNNoise model)
 FROM alexneamtu/sendrec-base:latest
 COPY --from=backend /app/sendrec .
-COPY docker-entrypoint.sh .
+# --chmod: a checkout made under a strict umask (077, or 027 on hardened
+# hosts) leaves the script unreadable to the sendrec user, and the container
+# restart-loops on "Permission denied".
+COPY --chmod=755 docker-entrypoint.sh .
 USER sendrec
 EXPOSE 8080
 ENTRYPOINT ["./docker-entrypoint.sh"]
