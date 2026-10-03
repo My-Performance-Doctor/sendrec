@@ -183,3 +183,23 @@ func TestProcessRetentionDeletions_RechecksRetentionSetting(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// A warning belongs to the retention period it announced. Once retention is
+// off for a video, its warning is void, so turning retention back on starts
+// a fresh warning instead of deleting at once.
+func TestClearCancelledRetentionWarnings(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`UPDATE videos v SET retention_warned_at = NULL`).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
+
+	clearCancelledRetentionWarnings(context.Background(), mock)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
