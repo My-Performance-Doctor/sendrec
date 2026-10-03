@@ -136,7 +136,7 @@ func TestProcessNextSummary_ClaimsAndProcesses(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// Title suggestion: query current title
-	mock.ExpectQuery(`SELECT title FROM videos WHERE id = \$1`).
+	mock.ExpectQuery(`UPDATE videos SET title_suggested_at = now\(\) WHERE id = \$1 RETURNING title`).
 		WithArgs("vid-1").
 		WillReturnRows(
 			pgxmock.NewRows([]string{"title"}).
@@ -204,7 +204,7 @@ func TestProcessNextSummary_SkipsTitleForCustomTitle(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// Title suggestion: query current title — returns custom title, so no GenerateTitle call
-	mock.ExpectQuery(`SELECT title FROM videos WHERE id = \$1`).
+	mock.ExpectQuery(`UPDATE videos SET title_suggested_at = now\(\) WHERE id = \$1 RETURNING title`).
 		WithArgs("vid-1").
 		WillReturnRows(
 			pgxmock.NewRows([]string{"title"}).
