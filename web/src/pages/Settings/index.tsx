@@ -50,11 +50,14 @@ interface LoadedState {
   jiraProjectKey: string;
   identities: LinkedIdentity[];
   identityHasPassword: boolean;
+  notificationsLoaded: boolean;
 }
 
 export function Settings() {
   const { selectedOrg } = useOrganization();
   const [loaded, setLoaded] = useState<LoadedState | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [version, setVersion] = useState("");
   // Half of this page is workspace-scoped — branding above all — and the scope
   // rides on a header rather than the URL, so switching workspace has to reload
@@ -103,61 +106,68 @@ export function Settings() {
         jiraProjectKey: "",
         identities: [],
         identityHasPassword: false,
+        notificationsLoaded: true,
       };
 
-      try {
-        const [result, notifPrefs, limits, keys] = await Promise.all([
-          apiFetch<UserProfile>("/api/user"),
-          apiFetch<{ notificationMode: string; slackWebhookUrl: string | null; webhookUrl: string | null; webhookSecret: string | null }>("/api/settings/notifications"),
-          apiFetch<LimitsResponse>("/api/videos/limits"),
-          apiFetch<APIKeyItem[]>("/api/settings/api-keys"),
-        ]);
-        if (result) {
-          state.profile = result;
-          if (result.transcriptionLanguage) {
-            state.transcriptionLanguage = result.transcriptionLanguage;
-          }
-          if (result.noiseReduction !== undefined) {
-            state.noiseReduction = result.noiseReduction;
-          }
-          if (result.retentionDays !== undefined) {
-            state.retentionDays = result.retentionDays;
-          }
+      // Only the profile is essential. Every other request may fail on its
+      // own without keeping the account controls out of reach.
+      const result = await apiFetch<UserProfile>("/api/user").catch(() => undefined);
+      if (!result) {
+        setLoadFailed(true);
+        return;
+      }
+      state.profile = result;
+      if (result.transcriptionLanguage) {
+        state.transcriptionLanguage = result.transcriptionLanguage;
+      }
+      if (result.noiseReduction !== undefined) {
+        state.noiseReduction = result.noiseReduction;
+      }
+      if (result.retentionDays !== undefined) {
+        state.retentionDays = result.retentionDays;
+      }
+
+      const [notifPrefs, limits, keys] = await Promise.all([
+        apiFetch<{ notificationMode: string; slackWebhookUrl: string | null; webhookUrl: string | null; webhookSecret: string | null }>("/api/settings/notifications").catch(() => {
+          state.notificationsLoaded = false;
+          return undefined;
+        }),
+        apiFetch<LimitsResponse>("/api/videos/limits").catch(() => undefined),
+        apiFetch<APIKeyItem[]>("/api/settings/api-keys").catch(() => undefined),
+      ]);
+      if (notifPrefs) {
+        state.notificationMode = notifPrefs.notificationMode;
+        if (notifPrefs.slackWebhookUrl) {
+          state.slackWebhookUrl = notifPrefs.slackWebhookUrl;
+          state.savedSlackUrl = notifPrefs.slackWebhookUrl;
         }
-        if (notifPrefs) {
-          state.notificationMode = notifPrefs.notificationMode;
-          if (notifPrefs.slackWebhookUrl) {
-            state.slackWebhookUrl = notifPrefs.slackWebhookUrl;
-            state.savedSlackUrl = notifPrefs.slackWebhookUrl;
-          }
-          if (notifPrefs.webhookUrl) {
-            state.webhookUrl = notifPrefs.webhookUrl;
-            state.savedWebhookUrl = notifPrefs.webhookUrl;
-          }
-          if (notifPrefs.webhookSecret) {
-            state.webhookSecret = notifPrefs.webhookSecret;
-          }
+        if (notifPrefs.webhookUrl) {
+          state.webhookUrl = notifPrefs.webhookUrl;
+          state.savedWebhookUrl = notifPrefs.webhookUrl;
         }
-        if (keys) {
-          state.apiKeys = keys;
+        if (notifPrefs.webhookSecret) {
+          state.webhookSecret = notifPrefs.webhookSecret;
         }
-        state.limits = limits ?? null;
-        if (limits?.transcriptionEnabled) {
-          state.transcriptionEnabled = true;
-        }
-        state.noiseReductionEnabled = limits?.noiseReductionEnabled ?? false;
-        if (limits?.brandingEnabled) {
+      }
+      if (keys) {
+        state.apiKeys = keys;
+      }
+      state.limits = limits ?? null;
+      if (limits?.transcriptionEnabled) {
+        state.transcriptionEnabled = true;
+      }
+      state.noiseReductionEnabled = limits?.noiseReductionEnabled ?? false;
+      if (limits?.brandingEnabled) {
+        // Branding is shown only once its saved values are in, so a save
+        // never writes blank defaults over them.
+        const brandingData = await apiFetch<BrandingSettings>("/api/settings/branding").catch(() => null);
+        if (brandingData !== null) {
           state.brandingEnabled = true;
-          const brandingData = await apiFetch<BrandingSettings>("/api/settings/branding");
           if (brandingData) {
             state.branding = brandingData;
           }
         }
-      } catch {
-        // stay on page, fields will be empty
       }
-
-      if (!state.profile) return;
 
       try {
         const billingData = await apiFetch<BillingData>("/api/settings/billing");
@@ -198,8 +208,18 @@ export function Settings() {
       setLoaded(state as LoadedState);
     }
     setLoaded(null);
+    setLoadFailed(false);
     fetchProfile();
-  }, [orgId]);
+  }, [orgId, attempt]);
+
+  if (loadFailed) {
+    return (
+      <div className="page-container page-container--centered">
+        <p className="error-message" role="alert">Couldn't load your settings.</p>
+        <button className="btn-primary" onClick={() => setAttempt((n) => n + 1)}>Try again</button>
+      </div>
+    );
+  }
 
   if (!loaded) {
     return (
@@ -238,19 +258,27 @@ export function Settings() {
         initialJiraProjectKey={loaded.jiraProjectKey}
       />
 
-      <NotificationSection
-        initialNotificationMode={loaded.notificationMode}
-        initialSlackWebhookUrl={loaded.slackWebhookUrl}
-        initialSavedSlackUrl={loaded.savedSlackUrl}
-      />
+      {loaded.notificationsLoaded ? (
+        <>
+          <NotificationSection
+            initialNotificationMode={loaded.notificationMode}
+            initialSlackWebhookUrl={loaded.slackWebhookUrl}
+            initialSavedSlackUrl={loaded.savedSlackUrl}
+          />
 
-      <WebhookSection
-        initialNotificationMode={loaded.notificationMode}
-        initialWebhookUrl={loaded.webhookUrl}
-        initialSavedWebhookUrl={loaded.savedWebhookUrl}
-        initialWebhookSecret={loaded.webhookSecret}
-        initialSavedSlackUrl={loaded.savedSlackUrl}
-      />
+          <WebhookSection
+            initialNotificationMode={loaded.notificationMode}
+            initialWebhookUrl={loaded.webhookUrl}
+            initialSavedWebhookUrl={loaded.savedWebhookUrl}
+            initialWebhookSecret={loaded.webhookSecret}
+            initialSavedSlackUrl={loaded.savedSlackUrl}
+          />
+        </>
+      ) : (
+        <p className="error-message" role="alert">
+          Notification and webhook settings couldn't load. Reload the page to try again.
+        </p>
+      )}
 
       <SecuritySection
         limits={loaded.limits}

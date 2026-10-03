@@ -70,6 +70,66 @@ describe("Settings", () => {
     expect(screen.getByDisplayValue("Alice")).toBeInTheDocument();
   });
 
+  function mockSettingsApi(failing: string[]) {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (failing.includes(path)) return Promise.reject(new Error("Internal Server Error"));
+      switch (path) {
+        case "/api/user":
+          return Promise.resolve({ name: "Alice", email: "alice@example.com" });
+        case "/api/settings/notifications":
+          return Promise.resolve({ notificationMode: "off" });
+        case "/api/videos/limits":
+          return Promise.resolve({ brandingEnabled: true });
+        case "/api/settings/branding":
+          return Promise.resolve({});
+        case "/api/settings/billing":
+          return Promise.reject(new Error("Not Found"));
+        case "/api/user/identities":
+          return Promise.resolve({ identities: [], hasPassword: false });
+        default:
+          return Promise.resolve([]);
+      }
+    });
+  }
+
+  it("shows a retryable error when the profile fails to load", async () => {
+    mockSettingsApi(["/api/user"]);
+    renderSettings();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn't load your settings/i);
+
+    mockSettingsApi([]);
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByDisplayValue("alice@example.com")).toBeInTheDocument();
+  });
+
+  it("shows account settings when an optional request fails", async () => {
+    mockSettingsApi([
+      "/api/settings/api-keys",
+      "/api/settings/notifications",
+      "/api/videos/limits",
+      "/api/settings/branding",
+    ]);
+    renderSettings();
+
+    expect(await screen.findByDisplayValue("alice@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Confirm new password")).toBeInTheDocument();
+    // A section whose saved values failed to load is not shown with blank
+    // defaults that a save would write back over the real values.
+    expect(screen.queryByRole("heading", { name: "Webhooks" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Notifications")).not.toBeInTheDocument();
+    expect(screen.getByText(/notification and webhook settings couldn't load/i)).toBeInTheDocument();
+  });
+
+  it("hides branding when its settings fail to load", async () => {
+    mockSettingsApi(["/api/settings/branding"]);
+    renderSettings();
+
+    expect(await screen.findByDisplayValue("alice@example.com")).toBeInTheDocument();
+    expect(screen.queryByText(/Editing your personal branding/)).not.toBeInTheDocument();
+  });
+
   it("reloads settings when the selected workspace changes", async () => {
     const profileCalls = () =>
       mockApiFetch.mock.calls.filter((c) => c[0] === "/api/user").length;
