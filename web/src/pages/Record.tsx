@@ -48,6 +48,10 @@ export function Record() {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [recordedVideoId, setRecordedVideoId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A take whose upload failed. Kept until it uploads or the user discards it:
+  // the recorder is unmounted by then, so this is the only copy. Audit C2.
+  const [failedTake, setFailedTake] = useState<{ blob: Blob; duration: number; webcamBlob?: Blob } | null>(null);
+  const [failedTakeUrl, setFailedTakeUrl] = useState<string | null>(null);
   const [limits, setLimits] = useState<LimitsResponse | null>(null);
   const [loadingLimits, setLoadingLimits] = useState(true);
 
@@ -111,14 +115,35 @@ export function Record() {
 
       setRecordedVideoId(result.id);
       setShareUrl(`${window.location.origin}/watch/${result.shareToken}`);
+      setFailedTake(null);
     } catch (err) {
       if (videoId) {
         apiFetch(`/api/videos/${videoId}`, { method: "DELETE" }).catch(() => {});
       }
+      setFailedTake({ blob, duration, webcamBlob });
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
     }
+  }
+
+  useEffect(() => {
+    if (!failedTake) {
+      setFailedTakeUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(failedTake.blob);
+    setFailedTakeUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [failedTake]);
+
+  function retryFailedTake() {
+    if (failedTake) handleRecordingComplete(failedTake.blob, failedTake.duration, failedTake.webcamBlob);
+  }
+
+  function discardFailedTake() {
+    setFailedTake(null);
+    recordAnother();
   }
 
   function handleRecordingError(message: string) {
@@ -199,7 +224,24 @@ export function Record() {
     return (
       <div className="page-container page-container--centered">
         <p className="error-message">{error}</p>
-        <button className="btn-record" onClick={recordAnother}>Try again</button>
+        {failedTake ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+            <p className="max-duration-label">Your recording is safe. Retry, or save a copy first.</p>
+            <button className="btn-record" onClick={retryFailedTake}>Retry upload</button>
+            {failedTakeUrl && (
+              <a
+                className="detail-btn"
+                href={failedTakeUrl}
+                download={`recording.${failedTake.blob.type.includes("mp4") ? "mp4" : "webm"}`}
+              >
+                Download recording
+              </a>
+            )}
+            <button className="detail-btn" onClick={discardFailedTake}>Record again</button>
+          </div>
+        ) : (
+          <button className="btn-record" onClick={recordAnother}>Try again</button>
+        )}
       </div>
     );
   }

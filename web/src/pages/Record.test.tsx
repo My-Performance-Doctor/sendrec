@@ -626,11 +626,11 @@ describe("Record", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Try again")).toBeInTheDocument();
+      expect(screen.getByText("Record again")).toBeInTheDocument();
     });
   });
 
-  it("clicking try again resets to recorder", async () => {
+  it("record again discards the recording and resets to recorder", async () => {
     const user = userEvent.setup();
 
     class FailingXHR extends MockXHR {
@@ -666,10 +666,10 @@ describe("Record", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Try again")).toBeInTheDocument();
+      expect(screen.getByText("Record again")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByText("Try again"));
+    await user.click(screen.getByText("Record again"));
 
     await waitFor(() => {
       expect(screen.getByTestId("recorder")).toBeInTheDocument();
@@ -1157,6 +1157,64 @@ describe("Record", () => {
     expect(createCall).toBeDefined();
     const body = JSON.parse((createCall![1] as { body: string }).body);
     expect(body.contentType).toBe("video/mp4");
+  });
+
+  // A failed upload used to leave "Try again", which started a new
+  // recording: the take was gone. The recording now survives the failure.
+  // Audit C2.
+  describe("after an upload fails", () => {
+    async function failFirstUpload(user: ReturnType<typeof userEvent.setup>) {
+      let calls = 0;
+      class FlakyXHR extends MockXHR {
+        send = vi.fn().mockImplementation(function (this: FlakyXHR, body: Blob) {
+          calls++;
+          sentBodies.push(body);
+          this.status = calls === 1 ? 500 : 200;
+          if (this.onload) this.onload();
+        });
+      }
+      globalThis.XMLHttpRequest = FlakyXHR as unknown as typeof XMLHttpRequest;
+      mockApiFetch.mockResolvedValueOnce({ maxVideosPerMonth: 0, maxVideoDurationSeconds: 0, videosUsedThisMonth: 0 });
+      renderRecord();
+      await waitFor(() => expect(screen.getByTestId("recorder")).toBeInTheDocument());
+
+      mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t1" });
+      mockApiFetch.mockResolvedValueOnce(undefined); // DELETE of the failed video
+      await act(async () => {
+        capturedOnRecordingComplete!(take, 30);
+      });
+      await waitFor(() => expect(screen.getByText("Retry upload")).toBeInTheDocument());
+      return user;
+    }
+
+    const take = new Blob(["the only take"], { type: "video/webm" });
+    let sentBodies: Blob[] = [];
+    beforeEach(() => {
+      sentBodies = [];
+    });
+
+    it("retries the same recording", async () => {
+      const user = await failFirstUpload(userEvent.setup());
+      mockApiFetch.mockResolvedValueOnce({ id: "video-2", uploadUrl: "https://s3.example.com/2", shareToken: "t2" });
+      mockApiFetch.mockResolvedValueOnce(undefined); // PATCH ready
+
+      await user.click(screen.getByText("Retry upload"));
+
+      await waitFor(() => expect(screen.getByDisplayValue(/watch\/t2/)).toBeInTheDocument());
+      expect(sentBodies).toEqual([take, take]);
+    });
+
+    it("offers the recording as a download", async () => {
+      const createObjectURL = vi.fn().mockReturnValue("blob:recording");
+      Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true });
+      Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+      await failFirstUpload(userEvent.setup());
+
+      const link = screen.getByRole("link", { name: "Download recording" });
+      expect(link).toHaveAttribute("href", "blob:recording");
+      expect(link).toHaveAttribute("download", expect.stringMatching(/\.webm$/));
+      expect(createObjectURL).toHaveBeenCalledWith(take);
+    });
   });
 
   describe("onboarding empty state", () => {
