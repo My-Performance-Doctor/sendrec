@@ -472,6 +472,32 @@ describe("Recorder", () => {
     expect(screen.getByText("Screen recording was blocked or failed. Please allow screen capture and try again.")).toBeInTheDocument();
   });
 
+  it.each(["NotReadableError", "NotFoundError", "NotAllowedError"])(
+    "warns and keeps recording when the microphone fails with %s",
+    async (name) => {
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new DOMException("mic failed", name),
+      );
+
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(screen.getByTestId("countdown-overlay")).toBeInTheDocument();
+      expect(screen.getByText(/Microphone unavailable — recording without your voice/)).toBeInTheDocument();
+    },
+  );
+
+  it("does not request the microphone or warn when audio is off", async () => {
+    const user = userEvent.setup();
+    render(<Recorder onRecordingComplete={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Disable system audio" }));
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("mic-note")).not.toBeInTheDocument();
+  });
+
   it("dismisses media error when dismiss button is clicked", async () => {
     (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error("Permission denied"),

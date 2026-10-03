@@ -24,6 +24,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const [systemAudioEnabled, setSystemAudioEnabled] = useState(() => localStorage.getItem("recording-audio") !== "false");
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [micFailed, setMicFailed] = useState(false);
   const countdownEnabled = useRef(localStorage.getItem("recording-countdown") !== "false");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -198,6 +199,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
 
   async function startRecording() {
     setMediaError(null);
+    setMicFailed(false);
     try {
       const displayMediaOptions: DisplayMediaStreamOptions & Record<string, unknown> = {
         video: true,
@@ -273,6 +275,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
           audioTracks = destination.stream.getAudioTracks();
         } catch (micErr) {
           console.warn("Microphone access denied, recording without mic audio", micErr);
+          setMicFailed(true);
         }
       }
 
@@ -527,6 +530,13 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
           </div>
         )}
       </div>
+
+      {isActive && micFailed && (
+        <p role="note" data-testid="mic-note" className="recorder-capture-warning">
+          Microphone unavailable — recording without your voice. Check your
+          browser&apos;s microphone setting.
+        </p>
+      )}
 
       {/* Idle UI */}
       {isIdle && (
