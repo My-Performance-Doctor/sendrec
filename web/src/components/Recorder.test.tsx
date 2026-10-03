@@ -447,6 +447,31 @@ describe("Recorder", () => {
     expect(screen.getByText("Screen recording was blocked or failed. Please allow screen capture and try again.")).toBeInTheDocument();
   });
 
+  it("blames the audio device when screen capture with audio is not readable", async () => {
+    (navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new DOMException("Device in use", "NotReadableError"),
+    );
+
+    const user = userEvent.setup();
+    render(<Recorder onRecordingComplete={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(screen.getByText(/system audio device is unavailable or in use/)).toBeInTheDocument();
+  });
+
+  it("keeps the generic error for unreadable capture when audio is off", async () => {
+    (navigator.mediaDevices.getDisplayMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new DOMException("Device in use", "NotReadableError"),
+    );
+
+    const user = userEvent.setup();
+    render(<Recorder onRecordingComplete={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Disable system audio" }));
+    await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+    expect(screen.getByText("Screen recording was blocked or failed. Please allow screen capture and try again.")).toBeInTheDocument();
+  });
+
   it("dismisses media error when dismiss button is clicked", async () => {
     (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error("Permission denied"),

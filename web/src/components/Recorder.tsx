@@ -402,7 +402,13 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       });
     } catch (err) {
       console.error("Screen capture failed", err);
-      setMediaError("Screen recording was blocked or failed. Please allow screen capture and try again.");
+      // NotReadableError with audio requested is usually the OS audio endpoint
+      // (e.g. Windows AUDCLNT_E_DEVICE_IN_USE), not a screen permission issue.
+      if (systemAudioEnabled && err instanceof DOMException && err.name === "NotReadableError") {
+        setMediaError("Screen recording could not start because the system audio device is unavailable or in use. Switch your audio output device or turn Audio off and try again.");
+      } else {
+        setMediaError("Screen recording was blocked or failed. Please allow screen capture and try again.");
+      }
       stopAllStreams();
     }
   }
