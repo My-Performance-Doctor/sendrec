@@ -1206,14 +1206,28 @@ describe("Record", () => {
 
     it("offers the recording as a download", async () => {
       const createObjectURL = vi.fn().mockReturnValue("blob:recording");
-      Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true });
-      Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
-      await failFirstUpload(userEvent.setup());
+      const revokeObjectURL = vi.fn();
+      const originalCreate = URL.createObjectURL;
+      const originalRevoke = URL.revokeObjectURL;
+      URL.createObjectURL = createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+      const clicked: HTMLAnchorElement[] = [];
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this);
+      });
+      try {
+        const user = await failFirstUpload(userEvent.setup());
+        await user.click(screen.getByRole("button", { name: "Download recording" }));
 
-      const link = screen.getByRole("link", { name: "Download recording" });
-      expect(link).toHaveAttribute("href", "blob:recording");
-      expect(link).toHaveAttribute("download", expect.stringMatching(/\.webm$/));
-      expect(createObjectURL).toHaveBeenCalledWith(take);
+        expect(createObjectURL).toHaveBeenCalledWith(take);
+        expect(clicked).toHaveLength(1);
+        expect(clicked[0].href).toBe("blob:recording");
+        expect(clicked[0].download).toBe("recording.webm");
+        await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:recording"));
+      } finally {
+        URL.createObjectURL = originalCreate;
+        URL.revokeObjectURL = originalRevoke;
+      }
     });
   });
 
