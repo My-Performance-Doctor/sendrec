@@ -571,3 +571,35 @@ func TestClearTranscodeFailure_WorksAfterTheJobTimedOut(t *testing.T) {
 		t.Errorf("the reset was not written on a cancelled context: %v", err)
 	}
 }
+
+// A probe that fails tells us nothing about the file, so the video must not
+// be recorded as compatible: that would take it out of every later pass while
+// it may still fail on iPhones. It counts as an attempt and is retried within
+// the budget. Audit BG-05.
+func TestNormalizeVideoAsync_ProbeFailureIsAnAttemptNotAVerdict(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	originalProbe := probeVideoProperties
+	probeVideoProperties = func(context.Context, string) (videoProperties, error) {
+		return videoProperties{}, fmt.Errorf("ffprobe: exit status 1")
+	}
+	t.Cleanup(func() { probeVideoProperties = originalProbe })
+
+	mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
+		WithArgs("video-1").
+		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
+			AddRow(false, 0, 120))
+	mock.ExpectQuery(`UPDATE videos`).
+		WithArgs("video-1", "ffprobe: exit status 1", false, maxTranscodeAttempts).
+		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
+
+	NormalizeVideoAsync(context.Background(), mock, &mockStorage{}, "video-1", "recordings/user/video.mp4", "")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

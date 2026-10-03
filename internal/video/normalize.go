@@ -190,8 +190,11 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	props, err := probeVideoProperties(ctx, tmpInputPath)
 	if err != nil {
-		slog.Warn("normalize: probe failed, marking normalized", "video_id", videoID, "error", err)
-		markIOSNormalized(ctx, db, videoID)
+		// A failed probe says nothing about compatibility. Marking the video
+		// normalized here took it out of every later pass while it could still
+		// fail on iPhones; count an attempt instead, within the retry budget.
+		slog.Warn("normalize: probe failed", "video_id", videoID, "error", err)
+		recordTranscodeFailure(ctx, db, videoID, err)
 		return
 	}
 
