@@ -151,6 +151,26 @@ func processRetentionDeletions(ctx context.Context, db database.DBTX) {
 	slog.Info("retention-worker: soft-deleted expired videos", "count", result.RowsAffected())
 }
 
+// clearCancelledRetentionWarnings voids the warning on videos whose retention
+// has since been turned off. A warning announces one retention period; kept
+// past a switch-off, it let retention, once back on, delete the video at once
+// with no new notice.
+func clearCancelledRetentionWarnings(ctx context.Context, db database.DBTX) {
+	tag, err := db.Exec(ctx,
+		`UPDATE videos v SET retention_warned_at = NULL
+		 WHERE v.retention_warned_at IS NOT NULL
+		   AND COALESCE(
+		         (SELECT o.retention_days FROM organizations o WHERE o.id = v.organization_id),
+		         (SELECT u.retention_days FROM users u WHERE u.id = v.user_id)) = 0`)
+	if err != nil {
+		slog.Error("retention-worker: clearing cancelled warnings failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("retention-worker: cleared warnings for videos no longer under retention", "count", n)
+	}
+}
+
 // StartRetentionWorker runs the data retention worker on a daily ticker.
 func StartRetentionWorker(ctx context.Context, db database.DBTX, sender RetentionSender, baseURL string) {
 	if sender == nil {
@@ -159,6 +179,7 @@ func StartRetentionWorker(ctx context.Context, db database.DBTX, sender Retentio
 	go func() {
 		slog.Info("retention-worker: started")
 
+		clearCancelledRetentionWarnings(ctx, db)
 		processRetentionWarnings(ctx, db, sender, baseURL)
 		processRetentionDeletions(ctx, db)
 
@@ -170,6 +191,7 @@ func StartRetentionWorker(ctx context.Context, db database.DBTX, sender Retentio
 				slog.Info("retention-worker: shutting down")
 				return
 			case <-ticker.C:
+				clearCancelledRetentionWarnings(ctx, db)
 				processRetentionWarnings(ctx, db, sender, baseURL)
 				processRetentionDeletions(ctx, db)
 			}
