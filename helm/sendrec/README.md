@@ -161,7 +161,7 @@ Rate limits are fixed per route group (token bucket, requests/second + burst): a
 
 #### Local model storage
 
-When `transcriptionEnabled: "true"` **and** the provider is `local` (or empty), the chart adds a `download-transcription-model` init container that fetches the model unless it is already present, plus a `/models` volume shared with the app container:
+When `transcriptionEnabled: "true"` **and** the provider is `local` (or empty), the chart adds a `download-transcription-model` init container that fetches the model unless it is already present (a failed download fails the init container, so the pod does not start without the model), plus a `/models` volume shared with the app container:
 
 | Values key | Meaning | Default |
 | --- | --- | --- |

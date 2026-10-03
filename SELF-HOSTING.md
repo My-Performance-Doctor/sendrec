@@ -618,7 +618,7 @@ curl -L -o models/ggml-small.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
 ```
 
-Without the model, transcription is silently skipped and everything else works normally.
+Without the model, transcription requests are marked failed; everything else works normally.
 
 ## Updating
 
