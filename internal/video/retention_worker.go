@@ -98,11 +98,16 @@ func processRetentionWarnings(ctx context.Context, db database.DBTX, sender Rete
 
 func processRetentionDeletions(ctx context.Context, db database.DBTX) {
 	rows, err := db.Query(ctx,
-		`SELECT id FROM videos
-		 WHERE retention_warned_at IS NOT NULL
-		   AND retention_warned_at < now() - interval '7 days'
-		   AND status = 'ready'
-		   AND pinned = false
+		// Re-checks retention is still on: a warning sent under an old
+		// setting does not license a deletion after the owner turned it off.
+		`SELECT v.id FROM videos v
+		 JOIN users u ON u.id = v.user_id
+		 LEFT JOIN organizations o ON o.id = v.organization_id
+		 WHERE v.retention_warned_at IS NOT NULL
+		   AND v.retention_warned_at < now() - interval '7 days'
+		   AND v.status = 'ready'
+		   AND v.pinned = false
+		   AND COALESCE(o.retention_days, u.retention_days) > 0
 		 LIMIT 100`)
 	if err != nil {
 		slog.Error("retention-worker: deletions query failed", "error", err)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -770,7 +771,17 @@ type RetentionVideoSummary struct {
 	WatchURL string `json:"watchURL"`
 }
 
+// ErrNoEmailBackend means a message that must reach its recipient could not be
+// sent because no delivery backend is configured.
+var ErrNoEmailBackend = errors.New("no email backend configured")
+
 func (c *Client) SendRetentionWarning(ctx context.Context, toEmail string, videos []RetentionVideoSummary, expiryDate string) error {
+	// The warning is the owner's only notice before deletion. sendTx drops
+	// messages when there is no backend; this one must fail instead, so the
+	// video is never recorded as warned.
+	if !c.HasBackend() {
+		return ErrNoEmailBackend
+	}
 	if c.config.BaseURL != "" {
 		c.ensureSubscriber(ctx, toEmail, "")
 	}
