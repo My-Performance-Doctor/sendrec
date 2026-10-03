@@ -15,6 +15,8 @@ interface AuthFormProps {
   }) => Promise<void>;
   footer: ReactNode;
   afterSubmit?: ReactNode;
+  initialEmail?: string;
+  notice?: string;
 }
 
 export function AuthForm({
@@ -25,9 +27,11 @@ export function AuthForm({
   onSubmit,
   footer,
   afterSubmit,
+  initialEmail = "",
+  notice,
 }: AuthFormProps) {
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -86,6 +90,11 @@ export function AuthForm({
 
       <form onSubmit={handleSubmit} className="auth-card">
         <h1>{title}</h1>
+        {notice && (
+          <p className="auth-notice" role="status">
+            {notice}
+          </p>
+        )}
 
         {showName && (
           <label>

@@ -277,3 +277,18 @@ describe("Login", () => {
     expect(screen.queryByText("Sign in with SSO for Acme Corp")).not.toBeInTheDocument();
   });
 });
+
+// Registering without email confirmation lands here. The form used to be
+// blank with no word that the account existed, so people retyped their email
+// or registered again. Audit 1.2.
+describe("Login after registering", () => {
+  it("keeps the email and says the account was created", () => {
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/login", state: { email: "new@example.com", justRegistered: true } }]}>
+        <Login />
+      </MemoryRouter>
+    );
+    expect(screen.getByLabelText(/email/i)).toHaveValue("new@example.com");
+    expect(screen.getByRole("status")).toHaveTextContent("Account created. Sign in to continue.");
+  });
+});

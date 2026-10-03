@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, apiFetch, setAccessToken } from "../api/client";
 import { AuthForm } from "../components/AuthForm";
 import { inviteTokenFromRedirect } from "../utils/invite";
@@ -14,6 +14,8 @@ interface SsoEnforcement {
 export function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  // Register sends people here when no email confirmation is needed.
+  const registered = useLocation().state as { email?: string; justRegistered?: boolean } | null;
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
   const [ssoProviders, setSsoProviders] = useState<string[]>([]);
   const [ssoError, setSsoError] = useState("");
@@ -138,6 +140,8 @@ export function Login() {
       title="Sign in"
       submitLabel="Sign in"
       onSubmit={handleLogin}
+      initialEmail={registered?.email}
+      notice={registered?.justRegistered ? "Account created. Sign in to continue." : undefined}
       afterSubmit={ssoSection}
       footer={
         <>
