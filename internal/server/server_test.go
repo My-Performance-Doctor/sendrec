@@ -1566,3 +1566,30 @@ func TestBrandingPreview_RequiresAuthentication(t *testing.T) {
 		t.Errorf("expected 401 without a token, got %d", rec.Code)
 	}
 }
+
+// Settings → Delete account calls DELETE /api/user, which used to answer 405
+// because no handler was registered for it.
+func TestDeleteAccountRouteIsRegistered(t *testing.T) {
+	srv, mock := newServerWithDB(t)
+
+	token, err := auth.GenerateAccessToken("test-secret", "user-1")
+	if err != nil {
+		t.Fatalf("failed to generate access token: %v", err)
+	}
+
+	mock.ExpectQuery(`SELECT o.name FROM organizations o`).
+		WithArgs("user-1").
+		WillReturnError(errors.New("stop here"))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/user", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusMethodNotAllowed {
+		t.Fatal("DELETE /api/user is still not registered")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("DELETE /api/user did not reach DeleteAccount: %v", err)
+	}
+}
