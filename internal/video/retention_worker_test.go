@@ -99,7 +99,7 @@ func TestProcessRetentionDeletions_DeletesExpiredVideos(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT id FROM videos`).
+	mock.ExpectQuery(`SELECT v.id FROM videos v`).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).
 			AddRow("vid-1").
 			AddRow("vid-2"))
@@ -126,7 +126,7 @@ func TestProcessRetentionDeletions_RemovesFromPlaylists(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT id FROM videos`).
+	mock.ExpectQuery(`SELECT v.id FROM videos v`).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).
 			AddRow("vid-1"))
 
@@ -152,10 +152,30 @@ func TestProcessRetentionDeletions_NoExpiredVideos(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`SELECT id FROM videos`).
+	mock.ExpectQuery(`SELECT v.id FROM videos v`).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
 	// No ExpectExec — DELETE and UPDATE should NOT be called when there are no expired videos
+
+	processRetentionDeletions(context.Background(), mock)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Turning retention off cancels deletions already warned about: the warning
+// was sent under the old setting and does not license a deletion under the
+// new one.
+func TestProcessRetentionDeletions_RechecksRetentionSetting(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`COALESCE\(o\.retention_days, u\.retention_days\) > 0`).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}))
 
 	processRetentionDeletions(context.Background(), mock)
 

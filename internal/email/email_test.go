@@ -3,6 +3,7 @@ package email
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1280,9 +1281,6 @@ func TestSendmail_AllEmailTypesWork(t *testing.T) {
 		{"OrgInvite", func() error {
 			return client.SendOrgInvite(context.Background(), "a@b.com", "Org", "Bob", "https://example.com/invite")
 		}},
-		{"RetentionWarning", func() error {
-			return client.SendRetentionWarning(context.Background(), "a@b.com", []RetentionVideoSummary{{Title: "V"}}, "2026-04-01")
-		}},
 	}
 
 	for _, tt := range tests {
@@ -1291,6 +1289,16 @@ func TestSendmail_AllEmailTypesWork(t *testing.T) {
 				t.Errorf("expected no error without Listmonk, got: %v", err)
 			}
 		})
+	}
+
+	// The retention warning is the exception: it must reach the owner, so it
+	// fails wherever sendmail is missing rather than being dropped.
+	err := client.SendRetentionWarning(context.Background(), "a@b.com", []RetentionVideoSummary{{Title: "V"}}, "2026-04-01")
+	if client.HasBackend() && err != nil {
+		t.Errorf("RetentionWarning via sendmail: %v", err)
+	}
+	if !client.HasBackend() && !errors.Is(err, ErrNoEmailBackend) {
+		t.Errorf("RetentionWarning without sendmail on PATH: want ErrNoEmailBackend, got %v", err)
 	}
 }
 
@@ -1401,5 +1409,17 @@ func TestDeveloperEmail_NotSetSendsToOriginal(t *testing.T) {
 
 	if received.SubscriberEmail != "user@real.com" {
 		t.Errorf("expected original email user@real.com, got %q", received.SubscriberEmail)
+	}
+}
+
+// A retention warning is the owner's only notice before deletion. With no
+// way to deliver it, it has not been sent, and the caller must not record it
+// as sent.
+func TestSendRetentionWarning_FailsWithoutBackend(t *testing.T) {
+	client := New(Config{})
+	err := client.SendRetentionWarning(context.Background(), "owner@example.com",
+		[]RetentionVideoSummary{{Title: "Demo", WatchURL: "https://example.com/watch/x"}}, "2026-10-10")
+	if !errors.Is(err, ErrNoEmailBackend) {
+		t.Fatalf("want ErrNoEmailBackend, got %v", err)
 	}
 }
