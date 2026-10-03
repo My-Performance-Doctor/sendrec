@@ -36,10 +36,13 @@ const retryDeleteAfter = "1 hour"
 // others are a scan per candidate.
 // ponytail: fine at hundreds of thousands of videos; index the other three
 // columns if the sweep shows up in slow-query logs.
-const referenced = `(EXISTS (SELECT 1 FROM videos v WHERE v.file_key = r.key)
-	OR EXISTS (SELECT 1 FROM videos v WHERE v.thumbnail_key = r.key)
-	OR EXISTS (SELECT 1 FROM videos v WHERE v.transcript_key = r.key)
-	OR EXISTS (SELECT 1 FROM videos v WHERE v.webcam_key = r.key))`
+//
+// A deleted video doesn't count: its objects are being purged, and a job or
+// upload that recreated one after the purge would otherwise keep it forever.
+const referenced = `(EXISTS (SELECT 1 FROM videos v WHERE v.file_key = r.key AND v.status != 'deleted')
+	OR EXISTS (SELECT 1 FROM videos v WHERE v.thumbnail_key = r.key AND v.status != 'deleted')
+	OR EXISTS (SELECT 1 FROM videos v WHERE v.transcript_key = r.key AND v.status != 'deleted')
+	OR EXISTS (SELECT 1 FROM videos v WHERE v.webcam_key = r.key AND v.status != 'deleted'))`
 
 // discardReplacement makes an upload that will never be used due for deletion
 // on the next sweep. The record may already be gone, consumed by a switch
@@ -84,6 +87,23 @@ func switchFileKey(ctx context.Context, db database.DBTX, update string, args ..
 		 SELECT count(*) FROM switched`,
 		args...).Scan(&switched)
 	return switched > 0, err
+}
+
+// publishUpload runs update, which must point video $1 at the upload $2 and
+// match only while the video is live. Like switchFileKey it consumes the
+// upload's attempt record in the same statement and applies only if it could,
+// which fences it against the sweep. It reports whether the video was
+// updated; when it wasn't, the caller discards the upload.
+func publishUpload(ctx context.Context, db database.DBTX, update string, args ...any) (bool, error) {
+	var published int
+	err := db.QueryRow(ctx,
+		`WITH attempt AS (
+		     DELETE FROM retired_objects WHERE key = $2 RETURNING key
+		 ),
+		 published AS (`+update+` AND EXISTS (SELECT 1 FROM attempt) RETURNING id)
+		 SELECT count(*) FROM published`,
+		args...).Scan(&published)
+	return published > 0, err
 }
 
 // DeleteRetiredObjects deletes objects whose delete_after has passed. A key a

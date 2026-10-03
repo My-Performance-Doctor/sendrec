@@ -133,14 +133,20 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		defer cancel()
 		// The screen goes out alone, and the video page says so. Appended to,
 		// not replacing, a capture warning the screen recording already has.
-		if _, err := db.Exec(recoveryCtx,
+		tag, err := db.Exec(recoveryCtx,
 			`UPDATE videos SET status = 'ready', processing_started_at = NULL,
 			        capture_warning = CASE WHEN capture_warning IS NULL THEN $2 ELSE capture_warning || ' ' || $2 END,
 			        updated_at = now()
-			 WHERE id = $1 AND status = 'processing'`,
-			videoID, webcamDroppedWarning,
-		); err != nil {
+			 WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			videoID, webcamDroppedWarning, screenKey,
+		)
+		if err != nil {
 			slog.Error("composite: failed to set fallback ready status", "video_id", videoID, "error", err)
+		}
+		// Deleted, or no longer this job's: publishing the screen and making
+		// its thumbnail would recreate what the purge removed. #325.
+		if err != nil || tag.RowsAffected() == 0 {
+			return
 		}
 
 		// The screen recording is now the published video, so it gets what any
@@ -227,12 +233,20 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 	slog.Info("composite: webcam validated", "video_id", videoID, "webcam_frames", webcamFrames, "webcam_info", webcamProbeInfo)
 
-	// A WebM screen comes out as MP4 under a new key; MP4 and QuickTime keep
-	// theirs.
-	outputKey, outputType, outputExt := screenKey, contentType, ext
+	// A WebM screen comes out as MP4; MP4 and QuickTime keep their type. The
+	// output always gets a key of its own, recorded before the upload, so a
+	// composite that can't be published never touches the screen recording.
+	outputType, outputExt := contentType, ext
+	publish := `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, file_size = $4, updated_at = now()
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`
 	if contentType == "video/webm" {
-		outputKey, outputType, outputExt = strings.TrimSuffix(screenKey, ".webm")+".mp4", "video/mp4", ".mp4"
+		outputType, outputExt = "video/mp4", ".mp4"
+		// Marked as the transcode worker marks its own MP4s, so the worker
+		// does not encode this one a second time.
+		publish = `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, updated_at = now()
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`
 	}
+	outputKey := replacementFileKey(screenKey, outputExt)
 	tmpOutput, err := os.CreateTemp("", "sendrec-composite-output-*"+outputExt)
 	if err != nil {
 		slog.Error("composite: failed to create temp output file", "error", err)
@@ -251,37 +265,33 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	}
 	slog.Info("composite: ffmpeg succeeded", "video_id", videoID, "ffmpeg_output", ffmpegOutput)
 
+	var fileSize int64
+	if info, err := os.Stat(tmpOutputPath); err == nil {
+		fileSize = info.Size()
+	}
+	if err := recordReplacementAttempt(ctx, db, outputKey); err != nil {
+		slog.Error("composite: failed to record output", "video_id", videoID, "error", err)
+		setReadyFallback()
+		return
+	}
 	if err := storage.UploadFile(ctx, outputKey, tmpOutputPath, outputType); err != nil {
 		slog.Error("composite: failed to upload composited video", "video_id", videoID, "error", err)
+		discardReplacement(ctx, db, outputKey)
 		setReadyFallback()
 		return
 	}
 
-	if outputKey == screenKey {
-		if _, err := db.Exec(ctx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now() WHERE id = $1`,
-			videoID,
-		); err != nil {
-			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
-			return
-		}
-	} else {
-		var fileSize int64
-		if info, err := os.Stat(tmpOutputPath); err == nil {
-			fileSize = info.Size()
-		}
-		// Marked as the transcode worker marks its own MP4s, so the worker
-		// does not encode this one a second time.
-		if _, err := db.Exec(ctx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $2, content_type = 'video/mp4', file_size = $3, cues_fixed = true, ios_normalized = true, updated_at = now() WHERE id = $1`,
-			videoID, outputKey, fileSize,
-		); err != nil {
-			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
-			return
-		}
-		if err := storage.DeleteObject(ctx, screenKey); err != nil {
-			slog.Warn("composite: failed to delete original webm", "video_id", videoID, "key", screenKey, "error", err)
-		}
+	// The screen recording is retired by the switch, not deleted: a viewer
+	// may hold a URL for it.
+	switched, err := switchFileKey(ctx, db, publish, videoID, screenKey, outputKey, fileSize)
+	if err != nil {
+		slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
+		return
+	}
+	if !switched {
+		slog.Info("composite: video deleted or changed meanwhile, discarding", "video_id", videoID)
+		discardReplacement(ctx, db, outputKey)
+		return
 	}
 
 	dropWebcam(ctx, db, storage, videoID, webcamKey)
