@@ -89,6 +89,7 @@ type messageResponse struct {
 type registerResponse struct {
 	Message                   string `json:"message"`
 	RequiresEmailConfirmation bool   `json:"requiresEmailConfirmation"`
+	EmailDeliveryFailed       bool   `json:"emailDeliveryFailed,omitempty"`
 }
 
 const resetTokenExpiry = 1 * time.Hour
@@ -258,8 +259,17 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		// The path is fixed here; only the token comes from the request.
 		confirmLink += "&redirect=" + url.QueryEscape(inviteAcceptPath(req.InviteToken))
 	}
+	// Unlike reset and resend, this path has already said the account is new,
+	// so reporting the failure reveals nothing and spares a wait for mail
+	// that will never come.
 	if err := h.emailSender.SendConfirmation(r.Context(), req.Email, req.Name, confirmLink); err != nil {
 		slog.Error("register: failed to send confirmation email", "error", err)
+		httputil.WriteJSON(w, http.StatusCreated, registerResponse{
+			Message:                   "Account created, but the confirmation email couldn't be sent. Try resending it.",
+			RequiresEmailConfirmation: true,
+			EmailDeliveryFailed:       true,
+		})
+		return
 	}
 
 	httputil.WriteJSON(w, http.StatusCreated, registerResponse{

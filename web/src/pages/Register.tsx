@@ -40,6 +40,7 @@ export function Register() {
     const res = await apiFetch<{
       message: string;
       requiresEmailConfirmation?: boolean;
+      emailDeliveryFailed?: boolean;
     }>("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({
@@ -58,7 +59,9 @@ export function Register() {
     if (res?.requiresEmailConfirmation === false) {
       navigate(loginPath, { state: { email: data.email, justRegistered: true } });
     } else {
-      navigate("/check-email", { state: { email: data.email } });
+      navigate("/check-email", {
+        state: { email: data.email, ...(res?.emailDeliveryFailed && { deliveryFailed: true }) },
+      });
     }
   }
 

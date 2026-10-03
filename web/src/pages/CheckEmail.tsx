@@ -5,7 +5,7 @@ import { Wordmark } from "../components/Wordmark";
 export function CheckEmail() {
   const location = useLocation();
   const navigate = useNavigate();
-  const email = (location.state as { email?: string })?.email;
+  const { email, deliveryFailed } = (location.state as { email?: string; deliveryFailed?: boolean } | null) ?? {};
   const [cooldown, setCooldown] = useState(0);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
@@ -54,11 +54,23 @@ export function CheckEmail() {
         <Wordmark variant="auth" />
       </div>
       <div className="auth-card auth-centered">
-        <h1>Check your email</h1>
-        <p className="auth-subtitle">
-          We&apos;ve sent a confirmation link to <strong>{email}</strong>. Click
-          the link to activate your account. The link expires in 24 hours.
-        </p>
+        {deliveryFailed && !sent ? (
+          <>
+            <h1>We couldn&apos;t send your confirmation email</h1>
+            <p className="auth-subtitle">
+              Your account was created, but the confirmation link to{" "}
+              <strong>{email}</strong> failed to send. Try resending it.
+            </p>
+          </>
+        ) : (
+          <>
+            <h1>Check your email</h1>
+            <p className="auth-subtitle">
+              We&apos;ve sent a confirmation link to <strong>{email}</strong>. Click
+              the link to activate your account. The link expires in 24 hours.
+            </p>
+          </>
+        )}
 
         {sent && (
           <p className="auth-success-text">

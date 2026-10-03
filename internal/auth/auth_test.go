@@ -553,6 +553,48 @@ func TestRegister_SendsConfirmationEmail(t *testing.T) {
 	}
 }
 
+// The account exists either way, so saying the email failed reveals nothing
+// the 201 doesn't; it spares the new user waiting for mail that never comes.
+func TestRegister_ReportsConfirmationDeliveryFailure(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+
+	handler.SetEmailSender(&mockEmailSender{sendErr: errors.New("smtp down")}, "https://app.sendrec.eu")
+
+	mock.ExpectQuery(`INSERT INTO users`).
+		WithArgs("alice@example.com", pgxmock.AnyArg(), "Alice", false).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow("user-uuid-1"))
+	mock.ExpectExec(`UPDATE email_confirmations SET used_at`).
+		WithArgs("user-uuid-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectExec(`INSERT INTO email_confirmations`).
+		WithArgs(pgxmock.AnyArg(), "user-uuid-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	body := `{"email":"alice@example.com","password":"strongpass123","name":"Alice"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handler.Register(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+	var resp registerResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.EmailDeliveryFailed {
+		t.Errorf("expected emailDeliveryFailed, got %+v", resp)
+	}
+	if strings.Contains(resp.Message, "Check your email") {
+		t.Errorf("message still tells the user to check their inbox: %q", resp.Message)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // An invited user who has to confirm their address must come back to the
 // invite, so the confirmation link carries the accept redirect.
 func TestRegister_InviteSurvivesEmailConfirmation(t *testing.T) {
