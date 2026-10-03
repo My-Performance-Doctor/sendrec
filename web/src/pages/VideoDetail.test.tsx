@@ -1788,6 +1788,41 @@ describe("VideoDetail", () => {
     );
   }, 10000);
 
+  it("shows the transcript once a pending transcript finishes", async () => {
+    setupDefaultMocks({ video: makeVideo({ transcriptStatus: "processing" }) });
+    renderVideoDetail("v1");
+    await waitFor(() => {
+      expect(screen.getByText("Transcribing...")).toBeInTheDocument();
+    });
+    mockApiFetch.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === "/api/videos/v1/transcript"
+          ? { status: "ready", segments: [{ start: 0, end: 2.5, text: "Hello from the poll" }] }
+          : [makeVideo({ transcriptStatus: "ready" })],
+      ),
+    );
+    expect(
+      await screen.findByText("Hello from the poll", {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+  }, 10000);
+
+  it("polls video status while a summary is pending", async () => {
+    setupDefaultMocks({ video: makeVideo({ summaryStatus: "pending" }) });
+    renderVideoDetail("v1");
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+    });
+    mockApiFetch.mockClear();
+    mockApiFetch.mockResolvedValue([makeVideo({ summaryStatus: "ready" })]);
+    await waitFor(
+      () => {
+        expect(mockApiFetch).toHaveBeenCalledWith("/api/videos");
+      },
+      { timeout: 4000 },
+    );
+  }, 10000);
+
   it("renders pin button", async () => {
     setupDefaultMocks();
     renderVideoDetail("v1");
