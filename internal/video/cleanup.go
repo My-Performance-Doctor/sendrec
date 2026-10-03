@@ -46,7 +46,7 @@ func PurgeOrphanedFiles(ctx context.Context, db database.DBTX, storage ObjectSto
 }
 
 // purgeVideoObjects deletes every object a deleted video references, then
-// marks the row purged. If any delete fails the row is left unmarked, so the
+// marks the row purged and schedules the final purge. If any delete fails the row is left unmarked, so the
 // cleanup sweep tries all of them again; deleting an object that is already
 // gone succeeds. Nil keys are skipped. #296.
 func purgeVideoObjects(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID string, keys ...*string) error {
@@ -62,7 +62,22 @@ func purgeVideoObjects(ctx context.Context, db database.DBTX, storage ObjectStor
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
-	if _, err := db.Exec(ctx, `UPDATE videos SET file_purged_at = now() WHERE id = $1`, videoID); err != nil {
+	// An upload URL issued before the deletion can put any of these back, so
+	// the same statement hands them to the retired-objects sweep for a final
+	// purge once every such URL has expired. The sweep ignores deleted rows,
+	// so it deletes them then. #326.
+	if _, err := db.Exec(ctx,
+		`WITH marked AS (
+		     UPDATE videos SET file_purged_at = now() WHERE id = $1
+		     RETURNING file_key, thumbnail_key, webcam_key, transcript_key
+		 )
+		 INSERT INTO retired_objects (key, delete_after)
+		 SELECT k, now() + INTERVAL '`+uploadURLGrace+`'
+		 FROM marked, unnest(ARRAY[file_key, thumbnail_key, webcam_key, transcript_key]) AS k
+		 WHERE k IS NOT NULL
+		 ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)`,
+		videoID,
+	); err != nil {
 		return fmt.Errorf("mark purged: %w", err)
 	}
 	return nil

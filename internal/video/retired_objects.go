@@ -14,6 +14,11 @@ import (
 // before the switch keeps range-requesting that URL until it expires.
 const retiredObjectGrace = "2 hours"
 
+// uploadURLGrace is how long after a purge its keys are deleted once more. The
+// longest presigned upload URL (recording and webcam) lasts 30 minutes, so an
+// upload through one issued before the deletion lands within it. #326.
+const uploadURLGrace = "1 hour"
+
 // replacementAttemptGrace bounds an upload whose job never reaches the switch.
 // It is far past every job deadline, so the sweep can't take an object a live
 // job is about to switch the row to.
