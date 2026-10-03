@@ -117,8 +117,16 @@ func dropWebcam(ctx context.Context, db database.DBTX, storage ObjectStorage, vi
 		slog.Error("composite: failed to delete webcam file", "video_id", videoID, "key", webcamKey, "error", err)
 		return
 	}
+	// The browser's upload URL for the webcam can outlive the composite, so
+	// the key is retired past it in the same statement: an upload through it
+	// after this is deleted rather than kept with nothing naming it. #326.
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET webcam_key = NULL WHERE id = $1 AND webcam_key = $2`,
+		`WITH cleared AS (
+		     UPDATE videos SET webcam_key = NULL WHERE id = $1 AND webcam_key = $2 RETURNING id
+		 )
+		 INSERT INTO retired_objects (key, delete_after)
+		 SELECT $2, now() + INTERVAL '`+uploadURLGrace+`' FROM cleared
+		 ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)`,
 		videoID, webcamKey,
 	); err != nil {
 		slog.Error("composite: failed to clear webcam key", "video_id", videoID, "error", err)

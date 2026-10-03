@@ -101,23 +101,49 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
 		return
 	}
-	// The account is deleted as the user asked even when an object will not
-	// go. Every key is also handed to the retired-objects sweep, which deletes
-	// it again once nothing references it: that retries a failed delete, and
-	// catches an upload through a URL issued before the deletion. #326.
 	purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
-	for _, key := range keys {
-		if err := deleteWithRetry(purgeCtx, h.storage, key, 3); err != nil {
-			slog.Error("delete-account: failed to delete object, leaving it to the sweep", "user_id", userID, "key", key, "error", err)
-		}
-	}
+
+	// Every key goes to the retired-objects sweep first, which deletes it
+	// again once nothing references it: that retries a failed delete and
+	// catches an upload through a URL issued before the deletion. Without
+	// that record nothing would find these objects once the rows are gone,
+	// so the account stays if it can't be written. #326.
 	if _, err := h.db.Exec(purgeCtx,
 		`INSERT INTO retired_objects (key, delete_after)
 		 SELECT k, now() + INTERVAL '`+uploadURLGrace+`' FROM unnest($1::text[]) AS k
 		 ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)`, keys,
 	); err != nil {
 		slog.Error("delete-account: failed to schedule the final purge", "user_id", userID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+
+	// Logos are shared: a workspace's branding and every video in it name the
+	// same object, so a key someone staying still uses is left to the sweep,
+	// which keeps it. Media keys belong to one video each.
+	deletable, err := h.queryStrings(purgeCtx,
+		`SELECT k FROM unnest($1::text[]) AS k
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM videos v
+		     WHERE NOT (v.user_id = $2 OR v.organization_id = ANY($3::uuid[])) AND v.status != 'deleted'
+		       AND k IN (v.file_key, v.thumbnail_key, v.transcript_key, v.webcam_key, v.branding_logo_key))
+		   AND NOT EXISTS (
+		     SELECT 1 FROM user_branding b
+		     WHERE b.logo_key = k
+		       AND NOT ((b.user_id = $2 AND b.organization_id IS NULL) OR b.organization_id = ANY($3::uuid[])))`,
+		keys, userID, ownOrgs)
+	if err != nil {
+		slog.Error("delete-account: failed to check shared files", "user_id", userID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
+		return
+	}
+	// The account is deleted as the user asked even when an object will not
+	// go; the record above retries it.
+	for _, key := range deletable {
+		if err := deleteWithRetry(purgeCtx, h.storage, key, 3); err != nil {
+			slog.Error("delete-account: failed to delete object, leaving it to the sweep", "user_id", userID, "key", key, "error", err)
+		}
 	}
 
 	videos := `SELECT id FROM videos WHERE user_id = $1 OR organization_id = ANY($2::uuid[])`
