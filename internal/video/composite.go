@@ -109,6 +109,22 @@ var compositeOverlay = func(ctx context.Context, screenPath, webcamPath, outputP
 	return string(output), nil
 }
 
+// dropWebcam deletes a webcam recording that has been overlaid or given up on,
+// and clears webcam_key only once the object is gone. A key that stays set
+// still points at the object, so deleting the video removes it. #296.
+func dropWebcam(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, webcamKey string) {
+	if err := deleteWithRetry(ctx, storage, webcamKey, 3); err != nil {
+		slog.Error("composite: failed to delete webcam file", "video_id", videoID, "key", webcamKey, "error", err)
+		return
+	}
+	if _, err := db.Exec(ctx,
+		`UPDATE videos SET webcam_key = NULL WHERE id = $1 AND webcam_key = $2`,
+		videoID, webcamKey,
+	); err != nil {
+		slog.Error("composite: failed to clear webcam key", "video_id", videoID, "error", err)
+	}
+}
+
 func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, screenKey, webcamKey, thumbnailKey, contentType string) {
 	slog.Info("composite: starting webcam overlay", "video_id", videoID)
 
@@ -118,7 +134,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		// The screen goes out alone, and the video page says so. Appended to,
 		// not replacing, a capture warning the screen recording already has.
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL,
 			        capture_warning = CASE WHEN capture_warning IS NULL THEN $2 ELSE capture_warning || ' ' || $2 END,
 			        updated_at = now()
 			 WHERE id = $1 AND status = 'processing'`,
@@ -132,6 +148,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		// because the job's context timed out.
 		followUpCtx, followUpCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer followUpCancel()
+		dropWebcam(followUpCtx, db, storage, videoID, webcamKey)
 		GenerateThumbnail(followUpCtx, db, storage, videoID, screenKey, thumbnailKey)
 		if err := EnqueueTranscription(followUpCtx, db, videoID); err != nil {
 			slog.Error("composite: failed to enqueue transcription after fallback", "video_id", videoID, "error", err)
@@ -240,13 +257,9 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		return
 	}
 
-	if err := storage.DeleteObject(ctx, webcamKey); err != nil {
-		slog.Error("composite: failed to delete webcam file", "key", webcamKey, "error", err)
-	}
-
 	if outputKey == screenKey {
 		if _, err := db.Exec(ctx,
-			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, updated_at = now() WHERE id = $1`,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, updated_at = now() WHERE id = $1`,
 			videoID,
 		); err != nil {
 			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
@@ -260,7 +273,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		// Marked as the transcode worker marks its own MP4s, so the worker
 		// does not encode this one a second time.
 		if _, err := db.Exec(ctx,
-			`UPDATE videos SET status = 'ready', webcam_key = NULL, processing_started_at = NULL, file_key = $2, content_type = 'video/mp4', file_size = $3, cues_fixed = true, ios_normalized = true, updated_at = now() WHERE id = $1`,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $2, content_type = 'video/mp4', file_size = $3, cues_fixed = true, ios_normalized = true, updated_at = now() WHERE id = $1`,
 			videoID, outputKey, fileSize,
 		); err != nil {
 			slog.Error("composite: failed to update status", "video_id", videoID, "error", err)
@@ -271,6 +284,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 		}
 	}
 
+	dropWebcam(ctx, db, storage, videoID, webcamKey)
 	GenerateThumbnail(ctx, db, storage, videoID, outputKey, thumbnailKey)
 	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
 		slog.Error("composite: failed to enqueue transcription", "video_id", videoID, "error", err)

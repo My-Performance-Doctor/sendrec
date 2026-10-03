@@ -592,30 +592,8 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := deleteWithRetry(ctx, h.storage, fileKey, 3); err != nil {
-			slog.Error("video: all delete retries failed", "key", fileKey, "error", err)
-			return
-		}
-		if thumbnailKey != nil {
-			if err := deleteWithRetry(ctx, h.storage, *thumbnailKey, 3); err != nil {
-				slog.Error("video: thumbnail delete failed", "key", *thumbnailKey, "error", err)
-			}
-		}
-		if webcamKey != nil {
-			if err := deleteWithRetry(ctx, h.storage, *webcamKey, 3); err != nil {
-				slog.Error("video: webcam delete failed", "key", *webcamKey, "error", err)
-			}
-		}
-		if transcriptKey != nil {
-			if err := deleteWithRetry(ctx, h.storage, *transcriptKey, 3); err != nil {
-				slog.Error("video: transcript delete failed", "key", *transcriptKey, "error", err)
-			}
-		}
-		if _, err := h.db.Exec(ctx,
-			`UPDATE videos SET file_purged_at = now() WHERE file_key = $1`,
-			fileKey,
-		); err != nil {
-			slog.Error("video: failed to mark file_purged_at", "key", fileKey, "error", err)
+		if err := purgeVideoObjects(ctx, h.db, h.storage, videoID, &fileKey, thumbnailKey, webcamKey, transcriptKey); err != nil {
+			slog.Error("video: objects not purged, cleanup will retry", "video_id", videoID, "error", err)
 		}
 	}()
 

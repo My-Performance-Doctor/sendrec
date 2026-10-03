@@ -38,6 +38,7 @@ type mockStorage struct {
 	deleteCalled           chan string
 	deleteCallCount        int
 	deleteFailUntil        int
+	deleteFailKey          string
 	headSize               int64
 	headType               string
 	headErr                error
@@ -73,6 +74,12 @@ func (m *mockStorage) DeleteObject(_ context.Context, key string) error {
 	m.deleteCallCount++
 	if m.deleteCalled != nil {
 		m.deleteCalled <- key
+	}
+	if m.deleteFailKey != "" {
+		if key == m.deleteFailKey {
+			return errors.New("delete failed")
+		}
+		return nil
 	}
 	if m.deleteFailUntil > 0 && m.deleteCallCount <= m.deleteFailUntil {
 		return m.deleteErr
@@ -3506,7 +3513,7 @@ func TestDelete_MarksFilePurgedOnSuccess(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 
 	mock.ExpectExec(`UPDATE videos SET file_purged_at`).
-		WithArgs(fileKey).
+		WithArgs(videoID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	r := chi.NewRouter()
@@ -3557,7 +3564,7 @@ func TestDelete_CleansUpWebcamFile(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 
 	mock.ExpectExec(`UPDATE videos SET file_purged_at`).
-		WithArgs(fileKey).
+		WithArgs(videoID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	r := chi.NewRouter()
@@ -4666,7 +4673,7 @@ func TestDelete_CleansUpTranscriptFile(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 
 	mock.ExpectExec(`UPDATE videos SET file_purged_at`).
-		WithArgs(fileKey).
+		WithArgs(videoID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	r := chi.NewRouter()
