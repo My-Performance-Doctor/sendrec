@@ -1084,6 +1084,44 @@ describe("VideoDetail", () => {
     });
   });
 
+  // The thumbnail only changes once the upload is confirmed, so a PUT that
+  // fails or never happens leaves the current one in place.
+  async function uploadCustomThumbnail(putOk: boolean) {
+    setupDefaultMocks();
+    mockApiFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/videos/v1/thumbnail") {
+        return { uploadUrl: "https://s3.example.com/put", thumbnailKey: "recordings/u/tok.abc.jpg", mediaVersion: 3 };
+      }
+      if (url === "/api/videos") return [makeVideo()];
+      return undefined;
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: putOk });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderVideoDetail("v1");
+    await waitFor(() => expect(screen.getByText("Upload")).toBeInTheDocument());
+    const input = document.querySelector<HTMLInputElement>('input[accept="image/jpeg,image/png,image/webp"]')!;
+    const file = new File(["jpeg"], "thumb.jpg", { type: "image/jpeg" });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("https://s3.example.com/put", expect.objectContaining({ method: "PUT" })));
+    await waitFor(() => expect(screen.getByText("Upload")).toBeInTheDocument());
+    vi.unstubAllGlobals();
+    return mockApiFetch.mock.calls.filter(([url]) => url === "/api/videos/v1/thumbnail/complete");
+  }
+
+  it("confirms a custom thumbnail after uploading it", async () => {
+    const calls = await uploadCustomThumbnail(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(calls[0][1].body)).toEqual({ thumbnailKey: "recordings/u/tok.abc.jpg", mediaVersion: 3 });
+  });
+
+  it("does not confirm a custom thumbnail whose upload failed", async () => {
+    const calls = await uploadCustomThumbnail(false);
+    expect(calls).toHaveLength(0);
+    expect(await screen.findByText("Thumbnail upload failed")).toBeInTheDocument();
+  });
+
   it("hides reset thumbnail when no thumbnail", async () => {
     const video = makeVideo({ thumbnailUrl: undefined });
     setupDefaultMocks({ video });

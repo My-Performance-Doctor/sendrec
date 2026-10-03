@@ -135,15 +135,12 @@ func TestUploadThumbnail_ValidJPEG(t *testing.T) {
 	videoID := "video-thumb-1"
 	shareToken := "abc123thumb"
 
-	mock.ExpectQuery(`SELECT share_token, user_id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT share_token, user_id, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id"}).AddRow(shareToken, testUserID))
+		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id", "media_version"}).AddRow(shareToken, testUserID, 0))
 
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET thumbnail_key = \$2`).
-		WithArgs(videoID, pgxmock.AnyArg()).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	body, _ := json.Marshal(struct {
 		ContentType   string `json:"contentType"`
@@ -189,15 +186,12 @@ func TestUploadThumbnail_ValidPNG(t *testing.T) {
 	videoID := "video-thumb-2"
 	shareToken := "def456thumb"
 
-	mock.ExpectQuery(`SELECT share_token, user_id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT share_token, user_id, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id"}).AddRow(shareToken, testUserID))
+		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id", "media_version"}).AddRow(shareToken, testUserID, 0))
 
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET thumbnail_key = \$2`).
-		WithArgs(videoID, pgxmock.AnyArg()).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	body, _ := json.Marshal(struct {
 		ContentType   string `json:"contentType"`
@@ -243,15 +237,12 @@ func TestUploadThumbnail_ValidWebP(t *testing.T) {
 	videoID := "video-thumb-3"
 	shareToken := "ghi789thumb"
 
-	mock.ExpectQuery(`SELECT share_token, user_id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT share_token, user_id, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs(videoID, testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id"}).AddRow(shareToken, testUserID))
+		WillReturnRows(pgxmock.NewRows([]string{"share_token", "user_id", "media_version"}).AddRow(shareToken, testUserID, 0))
 
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET thumbnail_key = \$2`).
-		WithArgs(videoID, pgxmock.AnyArg()).
-		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	body, _ := json.Marshal(struct {
 		ContentType   string `json:"contentType"`
@@ -351,7 +342,7 @@ func TestUploadThumbnail_VideoNotFound(t *testing.T) {
 
 	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
 
-	mock.ExpectQuery(`SELECT share_token, user_id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT share_token, user_id, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs("nonexistent-video", testUserID).
 		WillReturnError(pgx.ErrNoRows)
 

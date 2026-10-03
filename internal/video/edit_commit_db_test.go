@@ -61,6 +61,20 @@ func (s *memStorage) DeleteObject(_ context.Context, key string) error {
 	return nil
 }
 
+func (s *memStorage) HeadObject(_ context.Context, key string) (int64, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	body, ok := s.objects[key]
+	if !ok {
+		return 0, "", fmt.Errorf("no such key %q", key)
+	}
+	return int64(len(body)), "image/jpeg", nil
+}
+
+func (s *memStorage) GenerateUploadURL(_ context.Context, key, _ string, _ int64, _ time.Duration) (string, error) {
+	return "https://storage.test/put/" + key, nil
+}
+
 func (s *memStorage) GenerateDownloadURL(_ context.Context, key string, _ time.Duration) (string, error) {
 	return "https://storage.test/" + key, nil
 }

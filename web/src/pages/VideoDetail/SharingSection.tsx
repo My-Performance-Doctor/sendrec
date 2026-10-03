@@ -172,23 +172,35 @@ export function SharingSection({
     if (!validTypes.includes(file.type)) return;
     setUploadingThumbnail(true);
     try {
-      const result = await apiFetch<{ uploadUrl: string }>(
-        `/api/videos/${video.id}/thumbnail`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            contentType: file.type,
-            contentLength: file.size,
-          }),
-        },
-      );
+      const result = await apiFetch<{
+        uploadUrl: string;
+        thumbnailKey: string;
+        mediaVersion: number;
+      }>(`/api/videos/${video.id}/thumbnail`, {
+        method: "POST",
+        body: JSON.stringify({
+          contentType: file.type,
+          contentLength: file.size,
+        }),
+      });
       if (!result) return;
       const uploadResp = await fetch(result.uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": file.type },
         body: file,
       });
-      if (!uploadResp.ok) return;
+      if (!uploadResp.ok) {
+        toast.show("Thumbnail upload failed");
+        return;
+      }
+      // The current thumbnail stays until the server has seen the upload.
+      await apiFetch(`/api/videos/${video.id}/thumbnail/complete`, {
+        method: "POST",
+        body: JSON.stringify({
+          thumbnailKey: result.thumbnailKey,
+          mediaVersion: result.mediaVersion,
+        }),
+      });
       await onRefetchVideo();
       toast.show("Thumbnail updated");
     } finally {
