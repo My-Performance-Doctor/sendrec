@@ -247,8 +247,8 @@ func RemoveSegmentsAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND status = 'processing'`,
-			videoID, editFailedMessage,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			videoID, editFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("remove-segments: failed to set fallback ready status", "video_id", videoID, "error", err)
 		}

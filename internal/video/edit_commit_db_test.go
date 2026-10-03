@@ -134,9 +134,30 @@ var editJobs = []struct {
 	}},
 }
 
+// retired returns how long from now each tracked key is due for deletion.
+func retired(t *testing.T, pool *pgxpool.Pool) map[string]time.Duration {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `SELECT key, delete_after - now() FROM retired_objects`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]time.Duration{}
+	for rows.Next() {
+		var key string
+		var due time.Duration
+		if err := rows.Scan(&key, &due); err != nil {
+			t.Fatal(err)
+		}
+		out[key] = due
+	}
+	return out
+}
+
 // BG-10: the edit used to overwrite the only copy of the video and then update
-// the row. Now it lands under a new key, the row switches to it together with
-// the new duration, and only then does the original go.
+// the row. Now it lands under a new key that is recorded first, and the row
+// switches to it together with the new duration while the original is retired
+// for longer than any URL already issued for it.
 func TestEditReplacesVideoUnderNewKey(t *testing.T) {
 	for _, job := range editJobs {
 		for _, tc := range []struct{ contentType, key, ext string }{
@@ -150,7 +171,8 @@ func TestEditReplacesVideoUnderNewKey(t *testing.T) {
 				stubEdit(t, "edited")
 				s := newMemStorage(map[string]string{tc.key: "original"})
 				// The moment the edit is in storage is the moment a crash would
-				// strand it: the row and the original must still agree.
+				// strand it: the row and the original must still agree, and the
+				// upload must already be on record.
 				s.onPut = func(key string) {
 					if key == tc.key {
 						t.Errorf("edit overwrote the original at %s", key)
@@ -158,8 +180,8 @@ func TestEditReplacesVideoUnderNewKey(t *testing.T) {
 					if got := readEditRow(t, pool, videoID); got.fileKey != tc.key || got.duration != 10 {
 						t.Errorf("row changed before the edit was stored: %+v", got)
 					}
-					if s.snapshot()[tc.key] != "original" {
-						t.Errorf("original gone before the row switched")
+					if due, ok := retired(t, pool)[key]; !ok || due < 23*time.Hour {
+						t.Errorf("upload %s not recorded for later cleanup (due in %v)", key, due)
 					}
 				}
 
@@ -173,20 +195,25 @@ func TestEditReplacesVideoUnderNewKey(t *testing.T) {
 					t.Errorf("file_key = %q, want a new key next to %q ending %s", got.fileKey, tc.key, tc.ext)
 				}
 				objects := s.snapshot()
-				if objects[got.fileKey] != "edited" {
-					t.Errorf("row points at %q, which holds %q", got.fileKey, objects[got.fileKey])
+				if objects[got.fileKey] != "edited" || objects[tc.key] != "original" {
+					t.Errorf("objects = %v, want the edit and the original kept for issued URLs", objects)
 				}
-				if _, ok := objects[tc.key]; ok {
-					t.Errorf("original %s left behind after the switch", tc.key)
+				r := retired(t, pool)
+				if due, ok := r[tc.key]; !ok || due < 90*time.Minute || due > 2*time.Hour {
+					t.Errorf("original due in %v (tracked %t), want past the one-hour URL lifetime", due, ok)
+				}
+				if _, ok := r[got.fileKey]; ok {
+					t.Errorf("the live edit %s is still on the deletion list", got.fileKey)
 				}
 			})
 		}
 	}
 }
 
-// When the row is no longer the one the edit started from, the edit must not
-// take it over, and the object it uploaded belongs to nobody.
-func TestEditDoesNotSwitchAMovedRow(t *testing.T) {
+// A claim held by another job (here: the row already moved to another key and
+// processing again) must not be switched or released by this edit, and the
+// object it uploaded is due for deletion.
+func TestEditLeavesAnotherClaimAlone(t *testing.T) {
 	for _, job := range editJobs {
 		t.Run(job.name, func(t *testing.T) {
 			pool := accountDB(t)
@@ -194,24 +221,109 @@ func TestEditDoesNotSwitchAMovedRow(t *testing.T) {
 			videoID := seedProcessingVideo(t, pool, key, "video/webm")
 			stubEdit(t, "edited")
 			s := newMemStorage(map[string]string{key: "original"})
-			s.onPut = func(string) {
+			var uploaded string
+			s.onPut = func(k string) {
+				uploaded = k
 				if _, err := pool.Exec(context.Background(),
-					`UPDATE videos SET file_key = 'recordings/u/tok.mp4', content_type = 'video/mp4' WHERE id = $1`, videoID,
+					`UPDATE videos SET file_key = 'recordings/u/tok.other.webm' WHERE id = $1`, videoID,
 				); err != nil {
-					t.Fatal(err)
+					t.Error(err)
 				}
 			}
 
 			job.run(context.Background(), pool, s, videoID, key, "video/webm")
 
 			got := readEditRow(t, pool, videoID)
-			if got.fileKey != "recordings/u/tok.mp4" || got.duration != 10 || got.status != "ready" {
-				t.Errorf("row = %+v, want the moved key, the old duration and ready", got)
+			if got.fileKey != "recordings/u/tok.other.webm" || got.duration != 10 || got.status != "processing" {
+				t.Errorf("row = %+v, want the other claim untouched", got)
 			}
-			if objects := s.snapshot(); len(objects) != 1 || objects[key] != "original" {
-				t.Errorf("objects = %v, want only the untouched original", objects)
+			if due, ok := retired(t, pool)[uploaded]; !ok || due > 0 {
+				t.Errorf("discarded upload %s due in %v (tracked %t), want due now", uploaded, due, ok)
 			}
 		})
+	}
+}
+
+// An edit that fails before switching releases only its own claim. Edit A's
+// switch can commit with the error lost; edit B then claims the row on A's key,
+// and A's fallback must not hand B's claim back.
+func TestEditFallbackReleasesOnlyItsClaim(t *testing.T) {
+	for _, job := range editJobs {
+		t.Run(job.name, func(t *testing.T) {
+			pool := accountDB(t)
+			videoID := seedProcessingVideo(t, pool, "recordings/u/tok.b.webm", "video/webm")
+			s := newMemStorage(map[string]string{}) // A's download fails
+
+			job.run(context.Background(), pool, s, videoID, "recordings/u/tok.webm", "video/webm")
+
+			if got := readEditRow(t, pool, videoID); got.status != "processing" {
+				t.Errorf("row = %+v, want B's claim still held", got)
+			}
+		})
+	}
+}
+
+// A crash between the upload and the switch leaves the row as it was and the
+// upload on record, so the sweep reclaims it.
+func TestEditCrashAfterUploadIsReclaimed(t *testing.T) {
+	pool := accountDB(t)
+	const key = "recordings/u/tok.webm"
+	videoID := seedProcessingVideo(t, pool, key, "video/webm")
+	stubEdit(t, "edited")
+	ctx, cancel := context.WithCancel(context.Background())
+	s := newMemStorage(map[string]string{key: "original"})
+	var uploaded string
+	s.onPut = func(k string) { uploaded = k; cancel() }
+
+	TrimVideoAsync(ctx, pool, s, videoID, key, "recordings/u/tok.jpg", "video/webm", 2, 6)
+
+	if got := readEditRow(t, pool, videoID); got.fileKey != key || got.duration != 10 {
+		t.Errorf("row = %+v, want it unchanged", got)
+	}
+	if _, ok := retired(t, pool)[uploaded]; !ok {
+		t.Fatalf("stranded upload %s is not on record", uploaded)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE retired_objects SET delete_after = now() - INTERVAL '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	DeleteRetiredObjects(context.Background(), pool, s)
+	if objects := s.snapshot(); len(objects) != 1 || objects[key] != "original" {
+		t.Errorf("objects after sweep = %v, want only the original", objects)
+	}
+}
+
+type failingDeleteStorage struct{ *memStorage }
+
+func (failingDeleteStorage) DeleteObject(context.Context, string) error {
+	return fmt.Errorf("storage down")
+}
+
+func TestDeleteRetiredObjects(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	videoID := seedProcessingVideo(t, pool, "recordings/u/live.webm", "video/webm")
+	_ = videoID
+	if _, err := pool.Exec(ctx, `INSERT INTO retired_objects (key, delete_after) VALUES
+		('recordings/u/live.webm', now() - INTERVAL '1 minute'),
+		('recordings/u/old.webm',  now() - INTERVAL '1 minute'),
+		('recordings/u/fresh.webm', now() + INTERVAL '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	s := newMemStorage(map[string]string{
+		"recordings/u/live.webm": "live", "recordings/u/old.webm": "old", "recordings/u/fresh.webm": "fresh",
+	})
+
+	DeleteRetiredObjects(ctx, pool, failingDeleteStorage{s})
+	if r := retired(t, pool); len(r) != 2 || r["recordings/u/old.webm"] > 0 {
+		t.Errorf("after a failed delete: %v, want old kept for retry and live dropped", r)
+	}
+
+	DeleteRetiredObjects(ctx, pool, s)
+	if r := retired(t, pool); len(r) != 1 || r["recordings/u/fresh.webm"] <= 0 {
+		t.Errorf("tracked after sweep: %v, want only the not-yet-due key", r)
+	}
+	if objects := s.snapshot(); len(objects) != 2 || objects["recordings/u/live.webm"] != "live" || objects["recordings/u/fresh.webm"] != "fresh" {
+		t.Errorf("objects after sweep = %v, want the live and the not-yet-due ones", objects)
 	}
 }
 

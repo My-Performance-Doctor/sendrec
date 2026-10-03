@@ -357,7 +357,7 @@ func TestRemoveSegmentsAsync_FailureSaysTheEditWasNotApplied(t *testing.T) {
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
-		WithArgs("video-123", editFailedMessage).
+		WithArgs("video-123", editFailedMessage, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	RemoveSegmentsAsync(context.Background(), mock, s, "video-123",

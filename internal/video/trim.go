@@ -77,18 +77,17 @@ var trimVideo = func(ctx context.Context, inputPath, outputPath, contentType str
 }
 
 // replaceWithEdit makes the edited file at outputPath the video. It is stored
-// under a new key, the row is switched to that key together with the new
-// duration and size in one statement, and only then is the original deleted.
-// A crash at any point leaves the row describing an object that exists: before
-// the switch the original is untouched, after it the edit is complete. The
-// cost of a crash before the switch is an orphaned upload, not a lost video.
+// under a new key, recorded before the upload so a crash can't orphan it. One
+// statement then switches the row to that key with the new duration and size,
+// and retires the original: it stays for the lifetime of the URLs already
+// handed out for it, and the cleanup loop deletes it after that. A crash at any
+// point leaves the row describing an object that exists.
 //
-// The switch only applies to the row this edit started from. If its key moved
-// meanwhile, or it stopped being 'processing' (deleted, or swept as abandoned),
-// the upload belongs to nobody and is removed.
+// The switch only applies to the row this edit claimed: still 'processing' and
+// still on fileKey. Otherwise the upload belongs to nobody and is discarded.
 //
-// It reports false when the edit was not applied; the caller then restores the
-// row's status.
+// It reports false when the edit was not applied; the caller then releases
+// its claim.
 func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorage, job, videoID, fileKey, thumbnailKey, contentType, outputPath string, newDuration int) bool {
 	info, err := os.Stat(outputPath)
 	if err != nil {
@@ -97,38 +96,37 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 	}
 
 	newKey := replacementFileKey(fileKey, extensionForContentType(contentType))
+	if err := recordReplacementAttempt(ctx, db, newKey); err != nil {
+		slog.Error(job+": failed to record edited video", "video_id", videoID, "error", err)
+		return false
+	}
 	if err := storage.UploadFile(ctx, newKey, outputPath, contentType); err != nil {
 		slog.Error(job+": failed to upload edited video", "video_id", videoID, "error", err)
+		discardReplacement(ctx, db, newKey)
 		return false
 	}
 
-	tag, err := db.Exec(ctx,
+	switched, err := switchFileKey(ctx, db,
 		`UPDATE videos SET file_key = $3, duration = $4, file_size = $5, status = 'ready',
 		     processing_started_at = NULL, processing_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
 		videoID, fileKey, newKey, newDuration, info.Size(),
 	)
 	if err != nil {
-		// The switch may have landed even so. Keep both objects: a stray upload
-		// is cheaper than deleting the one the row points at.
+		// The switch may have landed even so. The upload stays recorded, and the
+		// sweep only deletes it if no video points at it.
 		slog.Error(job+": failed to switch to edited video", "video_id", videoID, "new_key", newKey, "error", err)
 		return false
 	}
-	if tag.RowsAffected() == 0 {
+	if !switched {
 		slog.Warn(job+": video changed during the edit, discarding it", "video_id", videoID, "new_key", newKey)
-		if err := deleteWithRetry(ctx, storage, newKey, 3); err != nil {
-			slog.Error(job+": failed to delete discarded edit", "video_id", videoID, "key", newKey, "error", err)
-		}
+		discardReplacement(ctx, db, newKey)
 		return false
 	}
 
 	// Re-checked, not cleared: cutting off a dead tail fixes the recording, and
 	// cutting elsewhere leaves it as broken as it was.
 	CheckCapture(ctx, db, videoID, outputPath, newDuration)
-
-	if err := deleteWithRetry(ctx, storage, fileKey, 3); err != nil {
-		slog.Error(job+": failed to delete the replaced original", "video_id", videoID, "key", fileKey, "error", err)
-	}
 
 	GenerateThumbnail(ctx, db, storage, videoID, newKey, thumbnailKey)
 	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
@@ -144,8 +142,8 @@ func TrimVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND status = 'processing'`,
-			videoID, editFailedMessage,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			videoID, editFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("trim: failed to set fallback ready status", "video_id", videoID, "error", err)
 		}
