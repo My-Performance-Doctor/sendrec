@@ -188,6 +188,12 @@ export function VideoDetail() {
     const found = videos?.find((v) => v.id === id) ?? null;
     if (found) {
       setVideo(found);
+      // The page only loads segments on mount, so pick them up when a
+      // transcript finishes while it is open.
+      if (found.transcriptStatus === "ready" && video?.transcriptStatus !== "ready") {
+        const data = await apiFetch<TranscriptResponse>(`/api/videos/${found.id}/transcript`);
+        setTranscriptSegments(data?.segments ?? []);
+      }
     }
   }
 
@@ -253,15 +259,17 @@ export function VideoDetail() {
   }
 
   useEffect(() => {
+    const busy = (s?: string) => s === "pending" || s === "processing";
     if (
       video?.status === "processing" ||
-      video?.documentStatus === "pending" ||
-      video?.documentStatus === "processing"
+      busy(video?.documentStatus) ||
+      busy(video?.transcriptStatus) ||
+      busy(video?.summaryStatus)
     ) {
       const interval = setInterval(() => refetchVideo(), 3000);
       return () => clearInterval(interval);
     }
-  }, [video?.status, video?.documentStatus]);
+  }, [video?.status, video?.documentStatus, video?.transcriptStatus, video?.summaryStatus]);
 
   async function acceptSuggestedTitle() {
     if (!video || !video.suggestedTitle) return;
