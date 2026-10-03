@@ -88,50 +88,59 @@ func (h *Handler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	keys, err := h.queryStrings(ctx,
-		`SELECT k FROM videos v
-		 CROSS JOIN LATERAL unnest(ARRAY[v.file_key, v.thumbnail_key, v.transcript_key, v.webcam_key, v.branding_logo_key]) AS k
-		 WHERE (v.user_id = $1 OR v.organization_id = ANY($2::uuid[])) AND v.file_purged_at IS NULL AND k IS NOT NULL
-		 UNION
-		 SELECT logo_key FROM user_branding
-		 WHERE ((user_id = $1 AND organization_id IS NULL) OR organization_id = ANY($2::uuid[])) AND logo_key IS NOT NULL`,
-		userID, ownOrgs)
-	if err != nil {
-		slog.Error("delete-account: failed to list stored files", "user_id", userID, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
-		return
-	}
 	purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
 
-	// Every key goes to the retired-objects sweep first, which deletes it
-	// again once nothing references it: that retries a failed delete and
+	// One statement fences the account's videos and collects what they store.
+	// Marking them deleted makes every job's "publish only while live" guard
+	// refuse them from here on, and a job that published first has its key
+	// read here, because the update waits for its row lock and sees its
+	// result. Every key then goes to the retired-objects sweep, which deletes
+	// it again once nothing references it: that retries a failed delete and
 	// catches an upload through a URL issued before the deletion. Without
 	// that record nothing would find these objects once the rows are gone,
-	// so the account stays if it can't be written. #326.
-	if _, err := h.db.Exec(purgeCtx,
-		`INSERT INTO retired_objects (key, delete_after)
-		 SELECT k, now() + INTERVAL '`+uploadURLGrace+`' FROM unnest($1::text[]) AS k
-		 ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)`, keys,
-	); err != nil {
-		slog.Error("delete-account: failed to schedule the final purge", "user_id", userID, "error", err)
+	// so nothing is deleted if this fails. #325, #326.
+	keys, err := h.queryStrings(purgeCtx,
+		`WITH fenced AS (
+		     UPDATE videos SET status = 'deleted', updated_at = now()
+		     WHERE user_id = $1 OR organization_id = ANY($2::uuid[])
+		     RETURNING file_key, thumbnail_key, transcript_key, webcam_key, branding_logo_key
+		 ),
+		 collected AS (
+		     SELECT k FROM fenced
+		     CROSS JOIN LATERAL unnest(ARRAY[file_key, thumbnail_key, transcript_key, webcam_key, branding_logo_key]) AS k
+		     WHERE k IS NOT NULL
+		     UNION
+		     SELECT logo_key FROM user_branding
+		     WHERE ((user_id = $1 AND organization_id IS NULL) OR organization_id = ANY($2::uuid[])) AND logo_key IS NOT NULL
+		 ),
+		 scheduled AS (
+		     INSERT INTO retired_objects (key, delete_after)
+		     SELECT k, now() + INTERVAL '`+uploadURLGrace+`' FROM collected
+		     ON CONFLICT (key) DO UPDATE SET delete_after = GREATEST(retired_objects.delete_after, EXCLUDED.delete_after)
+		 )
+		 SELECT k FROM collected`,
+		userID, ownOrgs)
+	if err != nil {
+		slog.Error("delete-account: failed to fence videos and schedule the final purge", "user_id", userID, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete account")
 		return
 	}
 
 	// Logos are shared: a workspace's branding and every video in it name the
 	// same object, so a key someone staying still uses is left to the sweep,
-	// which keeps it. Media keys belong to one video each.
+	// which keeps it. Media keys belong to one video each. IS NOT TRUE, not
+	// NOT: organization_id is NULL on personal videos.
 	deletable, err := h.queryStrings(purgeCtx,
 		`SELECT k FROM unnest($1::text[]) AS k
 		 WHERE NOT EXISTS (
 		     SELECT 1 FROM videos v
-		     WHERE NOT (v.user_id = $2 OR v.organization_id = ANY($3::uuid[])) AND v.status != 'deleted'
+		     WHERE (v.user_id = $2 OR v.organization_id = ANY($3::uuid[])) IS NOT TRUE AND v.status != 'deleted'
 		       AND k IN (v.file_key, v.thumbnail_key, v.transcript_key, v.webcam_key, v.branding_logo_key))
 		   AND NOT EXISTS (
 		     SELECT 1 FROM user_branding b
 		     WHERE b.logo_key = k
-		       AND NOT ((b.user_id = $2 AND b.organization_id IS NULL) OR b.organization_id = ANY($3::uuid[])))`,
+		       AND ((b.user_id = $2 AND b.organization_id IS NULL) OR b.organization_id = ANY($3::uuid[])) IS NOT TRUE)`,
 		keys, userID, ownOrgs)
 	if err != nil {
 		slog.Error("delete-account: failed to check shared files", "user_id", userID, "error", err)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -153,6 +154,13 @@ func (f failingSchedule) Exec(ctx context.Context, sql string, args ...any) (pgc
 	return f.Pool.Exec(ctx, sql, args...)
 }
 
+func (f failingSchedule) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if strings.Contains(sql, "INSERT INTO retired_objects") {
+		return nil, errors.New("database unavailable")
+	}
+	return f.Pool.Query(ctx, sql, args...)
+}
+
 // Review #4: if the final purge can't be scheduled, the account is not
 // deleted, so nothing is left unreachable.
 func TestAccountDeletionStopsWhenTheFinalPurgeCannotBeScheduled(t *testing.T) {
@@ -172,5 +180,81 @@ func TestAccountDeletionStopsWhenTheFinalPurgeCannotBeScheduled(t *testing.T) {
 	}
 	if _, ok := s.snapshot()[name+"/alice/file.mp4"]; !ok {
 		t.Error("files were deleted although the account stays")
+	}
+}
+
+// publishesOnDelete runs a job's publication while the account deletion is
+// deleting objects, once.
+type publishesOnDelete struct {
+	*memStorage
+	once    *bool
+	publish func()
+}
+
+func (p publishesOnDelete) DeleteObject(ctx context.Context, key string) error {
+	if !*p.once {
+		*p.once = true
+		p.publish()
+	}
+	return p.memStorage.DeleteObject(ctx, key)
+}
+
+// Re-review #1: a job publishing while the account is being deleted must
+// either land before the deletion collects the keys or be refused; it must
+// never attach an object to a row that is then removed untracked.
+func TestAccountDeletionFencesPublishers(t *testing.T) {
+	pool := accountDB(t)
+	name := uniqueName(t)
+	alice := mustID(t, pool, `INSERT INTO users (email, password, name) VALUES ($1, 'x', 'Alice') RETURNING id`, name+"-alice@example.com")
+	video := seedVideo(t, pool, alice, nil, name+"/alice")
+	late := name + "/alice/thumb.late.jpg"
+	if err := recordReplacementAttempt(context.Background(), pool, late); err != nil {
+		t.Fatal(err)
+	}
+	var published bool
+	once := false
+	s := publishesOnDelete{newMemStorage(map[string]string{late: "late thumbnail"}), &once, func() {
+		var err error
+		published, err = publishUpload(context.Background(), pool, "thumbnail_key",
+			`UPDATE videos SET thumbnail_key = $2 WHERE id = $1 AND status != 'deleted'`, video, late)
+		if err != nil {
+			t.Error(err)
+		}
+	}}
+
+	rec := deleteAccountAs(NewHandler(pool, s, "https://example.com", 0, 0, 0, 0, "secret", false), alice)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if published {
+		t.Error("a job published onto a video the account deletion had already collected")
+	}
+	if _, ok := retired(t, pool)[late]; !ok {
+		t.Errorf("the late upload %s is no longer tracked", late)
+	}
+}
+
+// Re-review #2: someone else's personal video (organization_id NULL) that
+// still shows a workspace logo protects it.
+func TestAccountDeletionKeepsLogosOnPersonalVideos(t *testing.T) {
+	pool := accountDB(t)
+	name := uniqueName(t)
+	alice := mustID(t, pool, `INSERT INTO users (email, password, name) VALUES ($1, 'x', 'Alice') RETURNING id`, name+"-alice@example.com")
+	bob := mustID(t, pool, `INSERT INTO users (email, password, name) VALUES ($1, 'x', 'Bob') RETURNING id`, name+"-bob@example.com")
+	solo := mustID(t, pool, `INSERT INTO organizations (name, slug) VALUES ('Solo', $1) RETURNING id`, name+"-solo")
+	mustExec(t, pool, `INSERT INTO organization_members (organization_id, user_id, role) VALUES ($1, $2, 'owner')`, solo, alice)
+	logo := "branding/org-" + solo + "/logo.png"
+	mustExec(t, pool, `INSERT INTO user_branding (organization_id, logo_key) VALUES ($1, $2)`, solo, logo)
+	// Bob's video was made in the workspace, then moved to his personal scope.
+	bobs := seedVideo(t, pool, bob, nil, name+"/bob")
+	mustExec(t, pool, `UPDATE videos SET branding_logo_key = $2 WHERE id = $1`, bobs, logo)
+	s := newMemStorage(map[string]string{logo: "workspace logo"})
+
+	rec := deleteAccountAs(NewHandler(pool, s, "https://example.com", 0, 0, 0, 0, "secret", false), alice)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if s.snapshot()[logo] != "workspace logo" {
+		t.Error("the account deletion deleted a logo another user's personal video still shows")
 	}
 }
