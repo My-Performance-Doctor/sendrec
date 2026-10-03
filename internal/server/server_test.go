@@ -436,9 +436,9 @@ func TestTranscriptRoutesDoNotShadow(t *testing.T) {
 		t.Fatalf("failed to close multipart writer: %v", err)
 	}
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs("video-1", "user-1").
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow("user-1", "tok"))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow("user-1", "tok", 0))
 
 	postReq := httptest.NewRequest(http.MethodPost, "/api/videos/video-1/transcript", &buf)
 	postReq.Header.Set("Content-Type", mw.FormDataContentType())
@@ -482,9 +482,9 @@ func TestUploadTranscriptRouteAcceptsBodyOverGenericLimit(t *testing.T) {
 		t.Fatalf("failed to generate access token: %v", err)
 	}
 
-	mock.ExpectQuery(`SELECT user_id, share_token FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
+	mock.ExpectQuery(`SELECT user_id, share_token, media_version FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status = 'ready'`).
 		WithArgs("video-1", "user-1").
-		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token"}).AddRow("user-1", "tok"))
+		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow("user-1", "tok", 0))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/videos/video-1/transcript", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())

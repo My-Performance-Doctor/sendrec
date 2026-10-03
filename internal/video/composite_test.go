@@ -262,6 +262,8 @@ func TestCompositeWithWebcam_FallbackStillGetsThumbnailAndTranscript(t *testing.
 		WithArgs("video-123", webcamDroppedWarning, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	expectWebcamCleared(mock)
+	mock.ExpectQuery(`SELECT file_key, media_version FROM videos`).WithArgs("video-123").
+		WillReturnRows(pgxmock.NewRows([]string{"file_key", "media_version"}).AddRow("recordings/user/video.webm", 0))
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
 		WithArgs("video-123").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))

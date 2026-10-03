@@ -456,6 +456,7 @@ func (s *Server) routes() {
 					r.Put("/{id}/link-expiry", s.videoHandler.SetLinkExpiry)
 					r.Put("/{id}/branding", s.videoHandler.SetVideoBranding)
 					r.Post("/{id}/thumbnail", s.videoHandler.UploadThumbnail)
+					r.Post("/{id}/thumbnail/complete", s.videoHandler.CompleteThumbnail)
 					r.Delete("/{id}/thumbnail", s.videoHandler.ResetThumbnail)
 					r.Put("/{id}/cta", s.videoHandler.SetCTA)
 					r.Put("/{id}/email-gate", s.videoHandler.SetEmailGate)

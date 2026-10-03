@@ -41,6 +41,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 
 	// Claim the next pending job
 	var videoID, fileKey, userID, shareToken, language string
+	var version int
 	err := db.QueryRow(ctx,
 		`UPDATE videos SET transcript_status = 'processing', transcript_started_at = now(), updated_at = now()
 		 WHERE id = (
@@ -49,9 +50,9 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		     ORDER BY v.updated_at ASC LIMIT 1
 		     FOR UPDATE SKIP LOCKED
 		 )
-		 RETURNING id, file_key, user_id, share_token,
+		 RETURNING id, file_key, media_version, user_id, share_token,
 		     COALESCE(transcription_language, (SELECT transcription_language FROM users WHERE id = videos.user_id), 'auto')`,
-	).Scan(&videoID, &fileKey, &userID, &shareToken, &language)
+	).Scan(&videoID, &fileKey, &version, &userID, &shareToken, &language)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("transcribe-worker: failed to claim job", "error", err)
@@ -60,7 +61,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	}
 
 	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
-	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, userID, shareToken, language, aiEnabled)
+	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, userID, shareToken, language, aiEnabled)
 }
 
 func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, interval time.Duration, aiEnabled bool) {

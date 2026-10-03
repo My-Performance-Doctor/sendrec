@@ -62,7 +62,8 @@ func discardReplacement(ctx context.Context, db database.DBTX, newKey string) {
 
 // switchFileKey runs update, which must set file_key from $2 to $3 for video $1
 // and match only the row the job started from. In the same statement it
-// consumes the attempt record for $3 and retires $2 for retiredObjectGrace.
+// consumes the attempt record for $3 and retires $2 for retiredObjectGrace,
+// along with the thumbnail and transcript if update cleared them.
 //
 // The attempt record is the fence against the sweep. The switch locks it
 // first and only applies if it still exists; the sweep claims a record, under
@@ -82,13 +83,19 @@ func switchFileKey(ctx context.Context, db database.DBTX, update string, args ..
 		`WITH held AS (
 		     SELECT key FROM retired_objects WHERE key = $3 FOR UPDATE
 		 ),
-		 switched AS (`+update+` AND EXISTS (SELECT 1 FROM held) RETURNING id),
+		 switched AS (`+update+` AND EXISTS (SELECT 1 FROM held)
+		     RETURNING old.thumbnail_key AS old_thumbnail, new.thumbnail_key AS new_thumbnail,
+		               old.transcript_key AS old_transcript, new.transcript_key AS new_transcript),
 		 attempt AS (
 		     DELETE FROM retired_objects WHERE key = $3 AND EXISTS (SELECT 1 FROM switched)
 		 ),
 		 retired AS (
 		     INSERT INTO retired_objects (key, delete_after)
-		     SELECT $2, now() + INTERVAL '`+retiredObjectGrace+`' FROM switched
+		     SELECT k, now() + INTERVAL '`+retiredObjectGrace+`' FROM switched,
+		         LATERAL (VALUES ($2::text),
+		             (CASE WHEN old_thumbnail IS DISTINCT FROM new_thumbnail THEN old_thumbnail END),
+		             (CASE WHEN old_transcript IS DISTINCT FROM new_transcript THEN old_transcript END)) AS v(k)
+		     WHERE k IS NOT NULL
 		     ON CONFLICT (key) DO UPDATE SET delete_after = EXCLUDED.delete_after
 		 )
 		 SELECT count(*) FROM switched`,
@@ -96,20 +103,27 @@ func switchFileKey(ctx context.Context, db database.DBTX, update string, args ..
 	return switched > 0, err
 }
 
-// publishUpload runs update, which must point video $1 at the upload $2 and
-// match only while the video is live. Like switchFileKey it consumes the
-// upload's attempt record in the same statement and applies only if it could,
-// which fences it against the sweep. It reports whether the video was
-// updated; when it wasn't, the caller discards the upload.
-func publishUpload(ctx context.Context, db database.DBTX, update string, args ...any) (bool, error) {
+// publishUpload runs update, which must set column to the upload $2 on video
+// $1 and match only while the upload is still wanted. Like switchFileKey it
+// locks the upload's attempt record, applies only while it exists and consumes
+// it only if it applied, which fences it against the sweep, and it retires the
+// value it replaces for retiredObjectGrace. It reports whether the video was updated;
+// when it wasn't, the caller discards the upload.
+func publishUpload(ctx context.Context, db database.DBTX, column, update string, args ...any) (bool, error) {
 	var published int
 	err := db.QueryRow(ctx,
 		`WITH held AS (
 		     SELECT key FROM retired_objects WHERE key = $2 FOR UPDATE
 		 ),
-		 published AS (`+update+` AND EXISTS (SELECT 1 FROM held) RETURNING id),
+		 published AS (`+update+` AND EXISTS (SELECT 1 FROM held) RETURNING old.`+column+` AS previous),
 		 attempt AS (
 		     DELETE FROM retired_objects WHERE key = $2 AND EXISTS (SELECT 1 FROM published)
+		 ),
+		 retired AS (
+		     INSERT INTO retired_objects (key, delete_after)
+		     SELECT previous, now() + INTERVAL '`+retiredObjectGrace+`' FROM published
+		     WHERE previous IS NOT NULL AND previous <> $2
+		     ON CONFLICT (key) DO UPDATE SET delete_after = EXCLUDED.delete_after
 		 )
 		 SELECT count(*) FROM published`,
 		args...).Scan(&published)

@@ -103,6 +103,7 @@ func StartCleanupLoop(ctx context.Context, db database.DBTX, storage ObjectStora
 				AbandonStaleUploads(ctx, db)
 				PurgeOrphanedFiles(ctx, db, storage)
 				DeleteRetiredObjects(ctx, db, storage)
+				RegenerateMissingThumbnails(ctx, db, storage)
 			}
 		}
 	}()
