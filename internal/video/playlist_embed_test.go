@@ -51,7 +51,7 @@ func TestPlaylistEmbedPage_RendersWorkspaceAccent(t *testing.T) {
 			(*string)(nil), &orgAccent, (*string)(nil), (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
@@ -139,7 +139,7 @@ func TestPlaylistEmbedPage_DefaultAccentWithoutBranding(t *testing.T) {
 			(*string)(nil), (*string)(nil), (*string)(nil), (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))

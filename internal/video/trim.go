@@ -56,7 +56,8 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 	return append(args, "-y", outputPath)
 }
 
-func trimVideo(ctx context.Context, inputPath, outputPath, contentType string, startSeconds, endSeconds float64) error {
+// See transcodeToMP4 for why this is a var.
+var trimVideo = func(ctx context.Context, inputPath, outputPath, contentType string, startSeconds, endSeconds float64) error {
 	args := buildTrimArgs(inputPath, outputPath, contentType, startSeconds, endSeconds)
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
@@ -73,6 +74,67 @@ func trimVideo(ctx context.Context, inputPath, outputPath, contentType string, s
 		return fmt.Errorf("ffmpeg trim: %w: %s", err, string(output))
 	}
 	return nil
+}
+
+// replaceWithEdit makes the edited file at outputPath the video. It is stored
+// under a new key, the row is switched to that key together with the new
+// duration and size in one statement, and only then is the original deleted.
+// A crash at any point leaves the row describing an object that exists: before
+// the switch the original is untouched, after it the edit is complete. The
+// cost of a crash before the switch is an orphaned upload, not a lost video.
+//
+// The switch only applies to the row this edit started from. If its key moved
+// meanwhile, or it stopped being 'processing' (deleted, or swept as abandoned),
+// the upload belongs to nobody and is removed.
+//
+// It reports false when the edit was not applied; the caller then restores the
+// row's status.
+func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorage, job, videoID, fileKey, thumbnailKey, contentType, outputPath string, newDuration int) bool {
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		slog.Error(job+": failed to stat edited video", "video_id", videoID, "error", err)
+		return false
+	}
+
+	newKey := replacementFileKey(fileKey, extensionForContentType(contentType))
+	if err := storage.UploadFile(ctx, newKey, outputPath, contentType); err != nil {
+		slog.Error(job+": failed to upload edited video", "video_id", videoID, "error", err)
+		return false
+	}
+
+	tag, err := db.Exec(ctx,
+		`UPDATE videos SET file_key = $3, duration = $4, file_size = $5, status = 'ready',
+		     processing_started_at = NULL, processing_error = NULL, updated_at = now()
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
+		videoID, fileKey, newKey, newDuration, info.Size(),
+	)
+	if err != nil {
+		// The switch may have landed even so. Keep both objects: a stray upload
+		// is cheaper than deleting the one the row points at.
+		slog.Error(job+": failed to switch to edited video", "video_id", videoID, "new_key", newKey, "error", err)
+		return false
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn(job+": video changed during the edit, discarding it", "video_id", videoID, "new_key", newKey)
+		if err := deleteWithRetry(ctx, storage, newKey, 3); err != nil {
+			slog.Error(job+": failed to delete discarded edit", "video_id", videoID, "key", newKey, "error", err)
+		}
+		return false
+	}
+
+	// Re-checked, not cleared: cutting off a dead tail fixes the recording, and
+	// cutting elsewhere leaves it as broken as it was.
+	CheckCapture(ctx, db, videoID, outputPath, newDuration)
+
+	if err := deleteWithRetry(ctx, storage, fileKey, 3); err != nil {
+		slog.Error(job+": failed to delete the replaced original", "video_id", videoID, "key", fileKey, "error", err)
+	}
+
+	GenerateThumbnail(ctx, db, storage, videoID, newKey, thumbnailKey)
+	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
+		slog.Error(job+": failed to enqueue transcription", "video_id", videoID, "error", err)
+	}
+	return true
 }
 
 func TrimVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, thumbnailKey, contentType string, startSeconds, endSeconds float64) {
@@ -122,29 +184,9 @@ func TrimVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage
 		return
 	}
 
-	if err := storage.UploadFile(ctx, fileKey, tmpOutputPath, contentType); err != nil {
-		slog.Error("trim: failed to upload trimmed video", "video_id", videoID, "error", err)
+	if !replaceWithEdit(ctx, db, storage, "trim", videoID, fileKey, thumbnailKey, contentType, tmpOutputPath, int(endSeconds-startSeconds)) {
 		setReadyFallback()
 		return
-	}
-
-	newDuration := int(endSeconds - startSeconds)
-
-	// Re-checked, not cleared: trimming off a dead tail fixes the recording, and
-	// trimming elsewhere leaves it as broken as it was.
-	CheckCapture(ctx, db, videoID, tmpOutputPath, newDuration)
-
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET status = 'ready', duration = $1, processing_started_at = NULL, processing_error = NULL, updated_at = now() WHERE id = $2`,
-		newDuration, videoID,
-	); err != nil {
-		slog.Error("trim: failed to update status", "video_id", videoID, "error", err)
-		return
-	}
-
-	GenerateThumbnail(ctx, db, storage, videoID, fileKey, thumbnailKey)
-	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
-		slog.Error("trim: failed to enqueue transcription", "video_id", videoID, "error", err)
 	}
 	slog.Info("trim: completed", "video_id", videoID)
 }

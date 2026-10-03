@@ -24,7 +24,7 @@ var playlistWatchColumns = []string{
 }
 
 var playlistVideosColumns = []string{
-	"id", "title", "duration", "share_token", "content_type", "user_id", "thumbnail_key",
+	"id", "title", "duration", "share_token", "content_type", "file_key", "thumbnail_key",
 }
 
 func playlistWatchRequest(shareToken string) *http.Request {
@@ -80,7 +80,7 @@ func TestPlaylistWatchPage_Success(t *testing.T) {
 		))
 
 	thumbKey := "recordings/user-1/vtoken2abcde.jpg"
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)).
@@ -375,7 +375,7 @@ func TestPlaylistWatchPage_RendersWorkspaceBranding(t *testing.T) {
 			(*string)(nil), (*string)(nil), (*string)(nil), &orgAccent, &footerText, (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
@@ -428,7 +428,7 @@ func TestPlaylistWatchPage_UsesPersonalBrandingWithoutWorkspace(t *testing.T) {
 			(*string)(nil), (*string)(nil), (*string)(nil), (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
@@ -472,7 +472,7 @@ func TestPlaylistWatchPage_DefaultSurfaceWithoutBranding(t *testing.T) {
 			(*string)(nil), (*string)(nil), (*string)(nil), (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
@@ -518,7 +518,7 @@ func TestPlaylistWatchPage_CustomSurfaceOverridesDefault(t *testing.T) {
 			(*string)(nil), (*string)(nil), (*string)(nil), (*string)(nil),
 		))
 
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
@@ -692,7 +692,7 @@ func renderLightPlaylistWatchPage(t *testing.T, shareToken string) (pgxmock.PgxP
 		WithArgs(shareToken).
 		WillReturnRows(pgxmock.NewRows(playlistWatchColumns).
 			AddRow(lightBrandPlaylistRow("Light Playlist", nil, nil)...))
-	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.user_id`).
+	mock.ExpectQuery(`SELECT v.id, v.title, v.duration, v.share_token, v.content_type, v.file_key`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows(playlistVideosColumns).
 			AddRow("vid-1", "First Video", 120, "vtoken1abcde", "video/webm", "user-1", (*string)(nil)))
