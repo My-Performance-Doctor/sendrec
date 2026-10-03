@@ -103,7 +103,9 @@ func (h *Handler) RemoveSegments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, nil, "AND status = 'ready'")
+	// Claim the version that was read: a conversion may have switched the key
+	// since, and the job below would edit the old one.
+	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, []any{fileKey}, "AND status = 'ready' AND file_key = $1")
 	tag, err := h.db.Exec(r.Context(),
 		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere, updateArgs...,
 	)
@@ -217,7 +219,8 @@ func buildRemoveSegmentsArgs(inputPath, outputPath, contentType string, segments
 	return args
 }
 
-func removeSegmentsFromVideo(ctx context.Context, inputPath, outputPath, contentType string, segments []segmentRange, audioPresent bool) error {
+// See transcodeToMP4 for why this is a var.
+var removeSegmentsFromVideo = func(ctx context.Context, inputPath, outputPath, contentType string, segments []segmentRange, audioPresent bool) error {
 	args := buildRemoveSegmentsArgs(inputPath, outputPath, contentType, segments, audioPresent)
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
@@ -246,8 +249,8 @@ func RemoveSegmentsAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND status = 'processing'`,
-			videoID, editFailedMessage,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			videoID, editFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("remove-segments: failed to set fallback ready status", "video_id", videoID, "error", err)
 		}
@@ -288,31 +291,15 @@ func RemoveSegmentsAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		return
 	}
 
-	if err := storage.UploadFile(ctx, fileKey, tmpOutputPath, contentType); err != nil {
-		slog.Error("remove-segments: failed to upload processed video", "video_id", videoID, "error", err)
-		setReadyFallback()
-		return
-	}
-
 	var removedTime float64
 	for _, seg := range segments {
 		removedTime += seg.End - seg.Start
 	}
 	newDuration := int(float64(originalDuration) - removedTime)
 
-	CheckCapture(ctx, db, videoID, tmpOutputPath, newDuration)
-
-	if _, err := db.Exec(ctx,
-		`UPDATE videos SET status = 'ready', duration = $1, processing_started_at = NULL, processing_error = NULL, updated_at = now() WHERE id = $2`,
-		newDuration, videoID,
-	); err != nil {
-		slog.Error("remove-segments: failed to update status", "video_id", videoID, "error", err)
+	if !replaceWithEdit(ctx, db, storage, "remove-segments", videoID, fileKey, thumbnailKey, contentType, tmpOutputPath, newDuration) {
+		setReadyFallback()
 		return
-	}
-
-	GenerateThumbnail(ctx, db, storage, videoID, fileKey, thumbnailKey)
-	if err := EnqueueTranscription(ctx, db, videoID); err != nil {
-		slog.Error("remove-segments: failed to enqueue transcription", "video_id", videoID, "error", err)
 	}
 	slog.Info("remove-segments: completed", "video_id", videoID)
 }

@@ -102,6 +102,7 @@ func StartCleanupLoop(ctx context.Context, db database.DBTX, storage ObjectStora
 			case <-ticker.C:
 				AbandonStaleUploads(ctx, db)
 				PurgeOrphanedFiles(ctx, db, storage)
+				DeleteRetiredObjects(ctx, db, storage)
 			}
 		}
 	}()

@@ -2,7 +2,11 @@ package video
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
@@ -138,6 +142,18 @@ func extensionForContentType(ct string) string {
 
 func videoFileKey(userID, shareToken, contentType string) string {
 	return fmt.Sprintf("recordings/%s/%s%s", userID, shareToken, extensionForContentType(contentType))
+}
+
+// replacementFileKey names a new object next to key for a rewritten copy of
+// the video. A rewrite never goes over the object the row points at: until the
+// row is switched, that object is the only copy of the video. Any earlier
+// rewrite suffix is dropped so repeated edits don't grow the key.
+func replacementFileKey(key, ext string) string {
+	dir, name := path.Split(key)
+	stem, _, _ := strings.Cut(strings.TrimSuffix(name, path.Ext(name)), ".")
+	suffix := make([]byte, 6)
+	_, _ = rand.Read(suffix)
+	return dir + stem + "." + hex.EncodeToString(suffix) + ext
 }
 
 func webcamFileKey(userID, shareToken, contentType string) string {

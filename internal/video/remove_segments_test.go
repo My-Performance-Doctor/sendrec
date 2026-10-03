@@ -29,7 +29,7 @@ func TestRemoveSegments_Success(t *testing.T) {
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
 	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
-		WithArgs(videoID, testUserID).
+		WithArgs("recordings/user/video.webm", videoID, testUserID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	r := chi.NewRouter()
@@ -262,7 +262,7 @@ func TestRemoveSegments_ConcurrentProcessing(t *testing.T) {
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
 	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
-		WithArgs(videoID, testUserID).
+		WithArgs("recordings/user/video.webm", videoID, testUserID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 	r := chi.NewRouter()
@@ -357,7 +357,7 @@ func TestRemoveSegmentsAsync_FailureSaysTheEditWasNotApplied(t *testing.T) {
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
 
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
-		WithArgs("video-123", editFailedMessage).
+		WithArgs("video-123", editFailedMessage, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	RemoveSegmentsAsync(context.Background(), mock, s, "video-123",

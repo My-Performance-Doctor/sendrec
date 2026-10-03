@@ -19,7 +19,7 @@ func TestTrimVideoAsync_DownloadError(t *testing.T) {
 
 	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
-		WithArgs("video-123", editFailedMessage).
+		WithArgs("video-123", editFailedMessage, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
@@ -42,7 +42,7 @@ func TestTrimVideoAsync_FFmpegFailsFallsBackToReady(t *testing.T) {
 
 	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
-		WithArgs("video-123", editFailedMessage).
+		WithArgs("video-123", editFailedMessage, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
@@ -65,7 +65,7 @@ func TestTrimVideoAsync_UploadError(t *testing.T) {
 
 	// A failed edit leaves the video as it was, and now says so. Audit 3.3.
 	mock.ExpectExec(`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = \$2`).
-		WithArgs("video-123", editFailedMessage).
+		WithArgs("video-123", editFailedMessage, pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	TrimVideoAsync(context.Background(), mock, s, "video-123",
