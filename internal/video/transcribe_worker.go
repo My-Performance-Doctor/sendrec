@@ -10,6 +10,11 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 )
 
+// transcriptionJobTimeout bounds one transcription job, download to upload,
+// so a hung whisper-cli or ffmpeg cannot hold the queue. Long recordings on a
+// small CPU are the slow case. A var so tests can shorten it.
+var transcriptionJobTimeout = 30 * time.Minute
+
 func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string) error {
 	if !isTranscriptionEnabled() {
 		return nil
@@ -23,11 +28,13 @@ func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string)
 }
 
 func processNextTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, aiEnabled bool) {
-	// Reset stuck jobs (processing for more than 10 minutes)
+	// Requeue jobs whose worker died. A live job gives up at its deadline, so
+	// anything a minute past it belongs to nobody.
 	if _, err := db.Exec(ctx,
 		`UPDATE videos SET transcript_status = 'pending', transcript_started_at = NULL, updated_at = now()
 		 WHERE transcript_status = 'processing'
-		   AND (transcript_started_at < now() - INTERVAL '10 minutes' OR transcript_started_at IS NULL)`,
+		   AND (transcript_started_at < now() - make_interval(secs => $1) OR transcript_started_at IS NULL)`,
+		(transcriptionJobTimeout + time.Minute).Seconds(),
 	); err != nil {
 		slog.Error("transcribe-worker: failed to reset stuck jobs", "error", err)
 	}
