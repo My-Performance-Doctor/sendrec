@@ -122,7 +122,7 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 		     processing_started_at = NULL, processing_error = NULL,
 		     transcode_attempts = 0, transcode_error = NULL,
 		     capture_warning = CASE WHEN position($6 IN COALESCE(capture_warning, '')) > 0 THEN $6 END,
-		     media_version = media_version + 1, thumbnail_key = NULL,
+		     media_version = media_version + 1, thumbnail_key = NULL, thumbnail_attempts = 0, thumbnail_retry_at = NULL,
 		     transcript_key = NULL, transcript_json = NULL, transcript_status = $7, transcript_started_at = NULL,
 		     updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,

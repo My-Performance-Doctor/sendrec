@@ -8,3 +8,8 @@ ALTER TABLE videos ADD COLUMN media_version INTEGER NOT NULL DEFAULT 0;
 -- Behind media_version means an edit's thumbnail is still owed, for example
 -- because the process died right after the edit; the cleanup loop makes it.
 ALTER TABLE videos ADD COLUMN thumbnail_version INTEGER NOT NULL DEFAULT 0;
+
+-- Retries for an owed thumbnail, reset with each content version: how many
+-- tries failed for a reason that may pass, and when the next one is due.
+ALTER TABLE videos ADD COLUMN thumbnail_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE videos ADD COLUMN thumbnail_retry_at TIMESTAMPTZ;

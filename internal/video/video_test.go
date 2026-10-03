@@ -7008,7 +7008,7 @@ func TestUploadTranscript_HappyPath(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET transcript_key = \$2, transcript_json = \$3`).
-		WithArgs(videoID, pgxmock.AnyArg(), string(segmentsJSON), 0).
+		WithArgs(videoID, pgxmock.AnyArg(), string(segmentsJSON), 0, videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	vtt := "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nAlice: hi\n\n"

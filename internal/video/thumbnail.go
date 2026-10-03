@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -120,16 +121,21 @@ func (h *Handler) CompleteThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The caller's scope is checked again in the publishing statement: the
+	// video may have been transferred while the upload was being checked.
+	scope, args := orgRowFilter(r.Context(), videoID, []any{videoID, req.ThumbnailKey, req.MediaVersion}, "")
 	published, err := publishUpload(r.Context(), h.db, "thumbnail_key",
 		`UPDATE videos SET thumbnail_key = $2, thumbnail_version = $3, updated_at = now()
-		 WHERE id = $1 AND media_version = $3 AND status != 'deleted'`,
-		videoID, req.ThumbnailKey, req.MediaVersion)
+		 WHERE id = $1 AND `+scope+` AND media_version = $3 AND status != 'deleted'`,
+		args...)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update thumbnail")
 		return
 	}
 	if !published {
-		discardReplacement(r.Context(), h.db, req.ThumbnailKey)
+		// Not discarded: the upload URL is still valid, and a PUT after an
+		// early sweep would leave an object nothing tracks. The attempt
+		// record's own deadline outlasts the URL.
 		httputil.WriteError(w, http.StatusConflict, "the video changed while the thumbnail was uploading")
 		return
 	}
@@ -209,25 +215,20 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 	}
 	thumbnailKey := replacementFileKey(thumbnailBase, ".jpg")
 
-	// A thumbnail that can't be made is given up on for this version, so the
-	// cleanup loop doesn't retry it forever; the owner can still reset it. A
-	// cancelled job (shutdown, deadline) or a crash leaves it owed instead.
-	published := false
+	// How this job ends decides what happens to an owed thumbnail: made, given
+	// up on (no usable picture), or tried again later (a failure that may
+	// pass, or the job's deadline). See recordThumbnailOutcome.
+	published, retry := false, false
 	defer func() {
-		if published || ctx.Err() != nil {
-			return
-		}
-		if _, err := db.Exec(ctx,
-			`UPDATE videos SET thumbnail_version = $2 WHERE id = $1 AND media_version = $2 AND thumbnail_version < $2`,
-			videoID, version,
-		); err != nil {
-			slog.Error("thumbnail: failed to record the attempt", "video_id", videoID, "error", err)
+		if !published {
+			recordThumbnailOutcome(ctx, db, videoID, version, retry)
 		}
 	}()
 
 	tmpVideo, err := os.CreateTemp("", "sendrec-thumb-*.webm")
 	if err != nil {
 		slog.Error("thumbnail: failed to create temp video file", "error", err)
+		retry = true
 		return
 	}
 	tmpVideoPath := tmpVideo.Name()
@@ -236,12 +237,14 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpVideoPath); err != nil {
 		slog.Error("thumbnail: failed to download video", "video_id", videoID, "error", err)
+		retry = true
 		return
 	}
 
 	tmpThumb, err := os.CreateTemp("", "sendrec-thumb-*.jpg")
 	if err != nil {
 		slog.Error("thumbnail: failed to create temp thumbnail file", "error", err)
+		retry = true
 		return
 	}
 	tmpThumbPath := tmpThumb.Name()
@@ -272,20 +275,24 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 	// anything else is reclaimed by the sweep. #325, #327.
 	if err := recordReplacementAttempt(ctx, db, thumbnailKey); err != nil {
 		slog.Error("thumbnail: failed to record upload", "video_id", videoID, "error", err)
+		retry = true
 		return
 	}
 	if err := storage.UploadFile(ctx, thumbnailKey, tmpThumbPath, "image/jpeg"); err != nil {
 		slog.Error("thumbnail: failed to upload", "video_id", videoID, "error", err)
 		discardReplacement(ctx, db, thumbnailKey)
+		retry = true
 		return
 	}
 
 	published, err = publishUpload(ctx, db, "thumbnail_key",
-		`UPDATE videos SET thumbnail_key = $2, thumbnail_version = $3, updated_at = now()
+		`UPDATE videos SET thumbnail_key = $2, thumbnail_version = $3,
+		     thumbnail_attempts = 0, thumbnail_retry_at = NULL, updated_at = now()
 		 WHERE id = $1 AND media_version = $3 AND status != 'deleted'`,
 		videoID, thumbnailKey, version)
 	if err != nil {
 		slog.Error("thumbnail: failed to update thumbnail_key", "video_id", videoID, "error", err)
+		retry = true
 		return
 	}
 	if !published {
@@ -294,20 +301,61 @@ func GenerateThumbnail(ctx context.Context, db database.DBTX, storage ObjectStor
 	}
 }
 
+// thumbnailJobTimeout bounds one recovery job; maxThumbnailAttempts bounds
+// how often one content version is retried. Vars and consts so tests can
+// shorten them.
+var thumbnailJobTimeout = 5 * time.Minute
+
+const maxThumbnailAttempts = 5
+
+// recordThumbnailOutcome settles a job that made no thumbnail for version,
+// if that version still owes one. A shutdown is no attempt: the video is
+// released for the next run. A failure that may pass, or the job's
+// deadline, is an attempt, retried with backoff up to maxThumbnailAttempts.
+// Anything else (no usable picture) gives the version up, and the owner can
+// still reset the thumbnail.
+func recordThumbnailOutcome(ctx context.Context, db database.DBTX, videoID string, version int, retry bool) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	sql, args := `UPDATE videos SET thumbnail_version = $2, thumbnail_retry_at = NULL
+	       WHERE id = $1 AND media_version = $2 AND thumbnail_version < $2`, []any{videoID, version}
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		sql = `UPDATE videos SET thumbnail_retry_at = NULL
+		       WHERE id = $1 AND media_version = $2 AND thumbnail_version < $2`
+	case retry || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		sql = `UPDATE videos SET thumbnail_attempts = thumbnail_attempts + 1,
+		           thumbnail_retry_at = now() + make_interval(mins => 10 * power(2, thumbnail_attempts)::int),
+		           thumbnail_version = CASE WHEN thumbnail_attempts + 1 >= $3 THEN $2 ELSE thumbnail_version END
+		       WHERE id = $1 AND media_version = $2 AND thumbnail_version < $2`
+		args = append(args, maxThumbnailAttempts)
+	}
+	if _, err := db.Exec(writeCtx, sql, args...); err != nil {
+		slog.Error("thumbnail: failed to record the outcome", "video_id", videoID, "error", err)
+	}
+}
+
 // RegenerateMissingThumbnails makes the thumbnails still owed for the
 // current content: an edit clears the old one in its switch and makes the
 // new one right after, so a process that dies in between leaves the video
 // without one. Rows are left alone for a while first, so a job still running
-// gets to finish. GenerateThumbnail records the version it gave up on, so a
-// video that can't have a thumbnail is not retried forever.
+// gets to finish; retries are bounded per version (recordThumbnailOutcome).
 // ponytail: scans ready videos every pass; add a partial index on
 // (thumbnail_version < media_version) if the videos table gets large.
 func RegenerateMissingThumbnails(ctx context.Context, db database.DBTX, storage ObjectStorage) {
+	// Claimed with a lease longer than a job, so a run that dies keeps the
+	// video back for a while instead of picking it first again; failing
+	// videos move behind the rest through thumbnail_retry_at.
 	rows, err := db.Query(ctx,
-		`SELECT id, user_id, share_token FROM videos
-		 WHERE status = 'ready' AND thumbnail_version < media_version
-		   AND updated_at < now() - INTERVAL '10 minutes'
-		 ORDER BY updated_at LIMIT 10`)
+		`UPDATE videos SET thumbnail_retry_at = now() + INTERVAL '30 minutes'
+		 WHERE id IN (
+		     SELECT id FROM videos
+		     WHERE status = 'ready' AND thumbnail_version < media_version
+		       AND (thumbnail_retry_at IS NULL OR thumbnail_retry_at <= now())
+		       AND updated_at < now() - INTERVAL '10 minutes'
+		     ORDER BY thumbnail_retry_at NULLS FIRST, updated_at LIMIT 10
+		     FOR UPDATE SKIP LOCKED)
+		 RETURNING id, user_id, share_token`)
 	if err != nil {
 		slog.Error("thumbnail: failed to find missing thumbnails", "error", err)
 		return
@@ -325,7 +373,7 @@ func RegenerateMissingThumbnails(ctx context.Context, db database.DBTX, storage 
 	}
 	rows.Close()
 	for _, v := range videos {
-		jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		jobCtx, cancel := context.WithTimeout(ctx, thumbnailJobTimeout)
 		GenerateThumbnail(jobCtx, db, storage, v.id, thumbnailFileKey(v.userID, v.shareToken))
 		cancel()
 	}

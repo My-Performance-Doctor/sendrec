@@ -1086,9 +1086,12 @@ describe("VideoDetail", () => {
 
   // The thumbnail only changes once the upload is confirmed, so a PUT that
   // fails or never happens leaves the current one in place.
-  async function uploadCustomThumbnail(putOk: boolean) {
+  async function uploadCustomThumbnail(putOk: boolean, completeStatus?: number) {
     setupDefaultMocks();
     mockApiFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/videos/v1/thumbnail/complete" && completeStatus) {
+        throw Object.assign(new Error("the video changed while the thumbnail was uploading"), { status: completeStatus });
+      }
       if (url === "/api/videos/v1/thumbnail") {
         return { uploadUrl: "https://s3.example.com/put", thumbnailKey: "recordings/u/tok.abc.jpg", mediaVersion: 3 };
       }
@@ -1120,6 +1123,15 @@ describe("VideoDetail", () => {
     const calls = await uploadCustomThumbnail(false);
     expect(calls).toHaveLength(0);
     expect(await screen.findByText("Thumbnail upload failed")).toBeInTheDocument();
+  });
+
+  it("explains a rejected thumbnail and shows the video as it is", async () => {
+    await uploadCustomThumbnail(true, 409);
+    expect(
+      await screen.findByText("The video changed while the thumbnail was uploading. Try again."),
+    ).toBeInTheDocument();
+    const refetches = mockApiFetch.mock.calls.filter(([url]) => url === "/api/videos");
+    expect(refetches.length).toBeGreaterThan(0);
   });
 
   it("hides reset thumbnail when no thumbnail", async () => {

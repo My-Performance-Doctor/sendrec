@@ -194,13 +194,23 @@ export function SharingSection({
         return;
       }
       // The current thumbnail stays until the server has seen the upload.
-      await apiFetch(`/api/videos/${video.id}/thumbnail/complete`, {
-        method: "POST",
-        body: JSON.stringify({
-          thumbnailKey: result.thumbnailKey,
-          mediaVersion: result.mediaVersion,
-        }),
-      });
+      try {
+        await apiFetch(`/api/videos/${video.id}/thumbnail/complete`, {
+          method: "POST",
+          body: JSON.stringify({
+            thumbnailKey: result.thumbnailKey,
+            mediaVersion: result.mediaVersion,
+          }),
+        });
+      } catch (err) {
+        if ((err as { status?: number }).status === 409) {
+          toast.show("The video changed while the thumbnail was uploading. Try again.");
+          await onRefetchVideo();
+        } else {
+          toast.show("Thumbnail upload failed");
+        }
+        return;
+      }
       await onRefetchVideo();
       toast.show("Thumbnail updated");
     } finally {

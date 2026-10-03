@@ -449,10 +449,13 @@ func (h *Handler) UploadTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The caller's scope is checked again in the publishing statement: the
+	// video may have been transferred while the transcript was uploading.
+	scope, scopeArgs := orgRowFilter(r.Context(), videoID, []any{videoID, transcriptKey, string(segmentsJSON), version}, "")
 	published, err := publishUpload(r.Context(), h.db, "transcript_key",
 		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now()
-		 WHERE id = $1 AND media_version = $4 AND status != 'deleted'`,
-		videoID, transcriptKey, string(segmentsJSON), version)
+		 WHERE id = $1 AND `+scope+` AND media_version = $4 AND status != 'deleted'`,
+		scopeArgs...)
 	if err != nil {
 		discardReplacement(r.Context(), h.db, transcriptKey)
 		httputil.WriteError(w, http.StatusInternalServerError, "could not update transcript")
