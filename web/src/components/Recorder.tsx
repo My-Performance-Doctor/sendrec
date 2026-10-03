@@ -25,6 +25,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const [systemAudioEnabled, setSystemAudioEnabled] = useState(() => localStorage.getItem("recording-audio") !== "false");
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [micFailed, setMicFailed] = useState(false);
+  const [micLabel, setMicLabel] = useState<string | null>(null);
   const countdownEnabled = useRef(localStorage.getItem("recording-countdown") !== "false");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -200,6 +201,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   async function startRecording() {
     setMediaError(null);
     setMicFailed(false);
+    setMicLabel(null);
     try {
       const displayMediaOptions: DisplayMediaStreamOptions & Record<string, unknown> = {
         video: true,
@@ -273,6 +275,8 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
           audioContext.createMediaStreamSource(micStream).connect(destination);
 
           audioTracks = destination.stream.getAudioTracks();
+          // The browser picks the input; name it so a wrong default is visible.
+          setMicLabel(micStream.getAudioTracks()[0]?.label || "default microphone");
         } catch (micErr) {
           console.warn("Microphone access denied, recording without mic audio", micErr);
           setMicFailed(true);
@@ -530,6 +534,12 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
           </div>
         )}
       </div>
+
+      {isActive && micLabel && (
+        <p data-testid="mic-label" style={{ margin: 0, fontSize: 13, color: "var(--color-text-secondary)" }}>
+          Microphone: {micLabel}
+        </p>
+      )}
 
       {isActive && micFailed && (
         <p role="note" data-testid="mic-note" className="recorder-capture-warning">

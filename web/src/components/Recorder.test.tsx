@@ -498,6 +498,40 @@ describe("Recorder", () => {
     expect(screen.queryByTestId("mic-note")).not.toBeInTheDocument();
   });
 
+  describe("with a working audio mixer", () => {
+    beforeEach(() => {
+      vi.stubGlobal("AudioContext", class {
+        createMediaStreamDestination() {
+          return { stream: { getAudioTracks: () => [{ kind: "audio" }] } };
+        }
+        createMediaStreamSource() {
+          return { connect: vi.fn() };
+        }
+        close() {}
+      });
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it.each([
+      ["Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)", "Microphone: Voicemeeter Out B1 (VB-Audio Voicemeeter VAIO)"],
+      ["", "Microphone: default microphone"],
+    ])("shows the recorded microphone for label %j", async (label, text) => {
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        getTracks: () => [{ stop: vi.fn() }],
+        getAudioTracks: () => [{ label }],
+      });
+
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+
+      expect(screen.getByText(text)).toBeInTheDocument();
+      expect(screen.queryByText(/Microphone unavailable/)).not.toBeInTheDocument();
+    });
+  });
+
   it("dismisses media error when dismiss button is clicked", async () => {
     (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error("Permission denied"),
