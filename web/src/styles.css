@@ -2394,7 +2394,8 @@ textarea.form-input {
 }
 
 .result-url {
-  color: var(--color-text-secondary);
+  color: var(--color-accent);
+  text-decoration: underline;
   font-size: 13px;
   word-break: break-all;
   flex: 1;
