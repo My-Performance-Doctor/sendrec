@@ -26,6 +26,10 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [micFailed, setMicFailed] = useState(false);
   const [micLabel, setMicLabel] = useState<string | null>(null);
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [micId, setMicId] = useState(() => localStorage.getItem("recording-mic") ?? "");
+  // A saved device that is no longer plugged in falls back to the browser default.
+  const selectedMicId = mics.some((m) => m.deviceId === micId) ? micId : "";
   const countdownEnabled = useRef(localStorage.getItem("recording-countdown") !== "false");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -259,7 +263,12 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       let audioTracks = screenStream.getAudioTracks();
       if (systemAudioEnabled) {
         try {
-          const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          const micStream = await navigator.mediaDevices.getUserMedia({
+            audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
+            video: false,
+          });
+          // Names are only exposed after mic permission, so the picker may appear now.
+          refreshMics();
           micStreamRef.current = micStream;
 
           const audioContext = new AudioContext();
@@ -419,6 +428,16 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       stopAllStreams();
     }
   }
+
+  const refreshMics = useCallback(() => {
+    navigator.mediaDevices.enumerateDevices?.().then(
+      // Chrome adds "default"/"communications" aliases; "Browser default" covers them.
+      (devices) => setMics(devices.filter((d) => d.kind === "audioinput" && d.label && !["default", "communications"].includes(d.deviceId))),
+      () => {},
+    );
+  }, []);
+
+  useEffect(refreshMics, [refreshMics]);
 
   useEffect(() => {
     return () => {
@@ -617,6 +636,23 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
             >
               {systemAudioEnabled ? "Audio On" : "Audio Off"}
             </button>
+            {systemAudioEnabled && mics.length > 0 && (
+              <select
+                aria-label="Microphone"
+                className="form-input"
+                style={{ width: "auto", maxWidth: 220 }}
+                value={selectedMicId}
+                onChange={(e) => {
+                  setMicId(e.target.value);
+                  localStorage.setItem("recording-mic", e.target.value);
+                }}
+              >
+                <option value="">Browser default</option>
+                {mics.map((m) => (
+                  <option key={m.deviceId} value={m.deviceId}>{m.label}</option>
+                ))}
+              </select>
+            )}
             <button
               onClick={startRecording}
               aria-label="Start recording"
