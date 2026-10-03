@@ -35,12 +35,16 @@ spec:
             - sh
             - -c
             - |
-              if [ -f {{ .Values.sendrec.transcription.modelPath }} ]; then
-                echo "Transcription model already present at {{ .Values.sendrec.transcription.modelPath }}, skipping download."
+              set -e
+              MODEL={{ .Values.sendrec.transcription.modelPath | quote }}
+              if [ -f "$MODEL" ]; then
+                echo "Transcription model already present at $MODEL, skipping download."
               else
-                curl -L -o {{ .Values.sendrec.transcription.modelPath }} \
-                  {{ .Values.sendrec.transcription.modelUrl }}
-                echo "Transcription model downloaded to {{ .Values.sendrec.transcription.modelPath }}."
+                # Download beside the target and rename only on success, so a
+                # failed or partial download never leaves a model file behind.
+                curl --fail -L -o "$MODEL.part" {{ .Values.sendrec.transcription.modelUrl | quote }}
+                mv "$MODEL.part" "$MODEL"
+                echo "Transcription model downloaded to $MODEL."
               fi
           volumeMounts:
             - name: whisper-models
