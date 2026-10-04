@@ -43,7 +43,11 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const webcamChunksRef = useRef<Blob[]>([]);
   const webcamBlobPromiseRef = useRef<Promise<Blob> | null>(null);
   const mimeTypeRef = useRef("");
+  // Only the latest camera request may become the preview; older ones are stopped.
+  const webcamRequestRef = useRef(0);
+  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
   const webcamVideoCallbackRef = useCallback((node: HTMLVideoElement | null) => {
+    webcamVideoRef.current = node;
     if (node && webcamStreamRef.current) {
       node.srcObject = webcamStreamRef.current;
     }
@@ -70,6 +74,7 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const capture = useCaptureStallWatch();
 
   const stopWebcamStream = useCallback(() => {
+    webcamRequestRef.current++;
     if (webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach((track) => track.stop());
       webcamStreamRef.current = null;
@@ -194,14 +199,11 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
 
   async function switchCamera(deviceId: string) {
     cameras.select(deviceId);
-    if (!webcamEnabled) return;
-    stopWebcamStream();
-    // Remounting the preview hands it the new stream.
-    setWebcamEnabled(false);
-    await startWebcam(deviceId);
+    if (webcamEnabled) await startWebcam(deviceId);
   }
 
   async function startWebcam(deviceId: string) {
+    const request = ++webcamRequestRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: deviceId
@@ -209,10 +211,17 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
           : { width: 320, height: 240, facingMode: "user" },
         audio: false,
       });
+      if (request !== webcamRequestRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      webcamStreamRef.current?.getTracks().forEach((track) => track.stop());
       webcamStreamRef.current = stream;
+      if (webcamVideoRef.current) webcamVideoRef.current.srcObject = stream;
       setWebcamEnabled(true);
       cameras.refresh();
     } catch (err) {
+      if (request !== webcamRequestRef.current) return;
       console.error("Webcam access failed", err);
       setMediaError("Could not access your camera. Please allow camera access and try again.");
     }
