@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Recorder } from "./Recorder";
@@ -654,6 +654,29 @@ describe("Recorder", () => {
 
       expect(screen.getByText(/Could not access your camera/)).toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Camera" })).toBeInTheDocument();
+    });
+
+    it("keeps one camera open, the chosen one, when switching faster than cameras open", async () => {
+      const opened: { label: string; stop: ReturnType<typeof vi.fn> }[] = [];
+      const pending: (() => void)[] = [];
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockImplementation(
+        (c: { video: { deviceId?: { exact: string } } }) => new Promise((resolve) => {
+          const track = { label: c.video.deviceId?.exact ?? "default", stop: vi.fn() };
+          pending.push(() => { opened.push(track); resolve({ getTracks: () => [track] }); });
+        }),
+      );
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await act(async () => { screen.getByRole("button", { name: "Enable camera" }).click(); });
+      await act(async () => { screen.getByRole("button", { name: "Enable camera" }).click(); });
+      await act(async () => { pending[0](); pending[1](); });
+      const select = await screen.findByRole("combobox", { name: "Camera" });
+      fireEvent.change(select, { target: { value: "obs" } });
+      fireEvent.change(select, { target: { value: "cam" } });
+      await act(async () => { pending.slice(2).forEach((open) => open()); });
+
+      const live = opened.filter((t) => t.stop.mock.calls.length === 0);
+      expect(live.map((t) => t.label)).toEqual(["cam"]);
+      expect(screen.getByRole("button", { name: "Disable camera" })).toBeInTheDocument();
     });
 
     it("opens the saved camera when the camera is turned on", async () => {
