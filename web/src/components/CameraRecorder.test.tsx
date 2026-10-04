@@ -101,6 +101,87 @@ describe("CameraRecorder", () => {
     });
   });
 
+  describe("camera picker", () => {
+    beforeEach(() => {
+      Object.assign(navigator.mediaDevices, {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { kind: "videoinput", deviceId: "cam", label: "Integrated Webcam" },
+          { kind: "videoinput", deviceId: "obs", label: "OBS Virtual Camera" },
+        ]),
+      });
+    });
+    afterEach(() => {
+      localStorage.removeItem("recording-camera");
+    });
+
+    it("records from the chosen camera and remembers it", async () => {
+      const user = userEvent.setup();
+      render(<CameraRecorder onRecordingComplete={vi.fn()} />);
+      await user.selectOptions(await screen.findByRole("combobox", { name: "Camera" }), "obs");
+
+      await vi.waitFor(() => {
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+          video: { deviceId: { exact: "obs" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true,
+        });
+      });
+      expect(localStorage.getItem("recording-camera")).toBe("obs");
+    });
+
+    it("stops a camera stream that arrives after the choice changed", async () => {
+      localStorage.setItem("recording-camera", "obs");
+      const lateStop = vi.fn();
+      let resolveFirst: (s: unknown) => void = () => {};
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        () => new Promise((r) => { resolveFirst = r; }),
+      );
+      render(<CameraRecorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Camera" });
+      await vi.waitFor(() => {
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+      });
+
+      await act(async () => {
+        resolveFirst({ getTracks: () => [{ stop: lateStop }], getVideoTracks: () => [] });
+      });
+
+      expect(lateStop).toHaveBeenCalled();
+    });
+
+    it("keeps the picker on the error screen so a broken camera can be swapped", async () => {
+      localStorage.setItem("recording-camera", "obs");
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockImplementation(
+        async (c: { video: { deviceId?: unknown } }) => {
+          if (c.video.deviceId) throw new DOMException("busy", "NotReadableError");
+          return mockStream;
+        },
+      );
+      const user = userEvent.setup();
+      render(<CameraRecorder onRecordingComplete={vi.fn()} />);
+
+      await screen.findByText(/Could not access your camera/);
+      await user.selectOptions(screen.getByRole("combobox", { name: "Camera" }), "");
+
+      expect(await screen.findByRole("button", { name: "Start recording" })).toBeInTheDocument();
+    });
+
+    it("flipping goes back to the browser's camera choice", async () => {
+      localStorage.setItem("recording-camera", "obs");
+      const user = userEvent.setup();
+      render(<CameraRecorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Camera" });
+      await user.click(screen.getByRole("button", { name: "Flip camera" }));
+
+      await vi.waitFor(() => {
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+          video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true,
+        });
+      });
+      expect(screen.getByRole("combobox", { name: "Camera" })).toHaveValue("");
+    });
+  });
+
   it("shows max duration message when maxDurationSeconds is provided", async () => {
     render(<CameraRecorder onRecordingComplete={vi.fn()} maxDurationSeconds={300} />);
 

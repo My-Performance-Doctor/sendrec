@@ -7,6 +7,8 @@ import { getSupportedMimeType, blobTypeFromMimeType } from "../utils/mediaFormat
 import { formatDuration } from "../utils/format";
 import { MAX_CAPTURE_STALL_MS, MIN_RECORDING_BYTES, MIN_RECORDING_SECONDS } from "../utils/recordingLimits";
 import { useCaptureStallWatch } from "../hooks/useCaptureStallWatch";
+import { useDeviceChoice } from "../hooks/useDeviceChoice";
+import { DevicePicker } from "./DevicePicker";
 
 interface CameraRecorderProps {
   onRecordingComplete: (blob: Blob, duration: number) => void;
@@ -18,6 +20,8 @@ export function CameraRecorder({ onRecordingComplete, onRecordingError, maxDurat
   const countdownEnabled = useRef(localStorage.getItem("recording-countdown") !== "false");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const cameras = useDeviceChoice("videoinput", "recording-camera");
+  const { selectedId: cameraId, refresh: refreshCameras } = cameras;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -64,31 +68,46 @@ export function CameraRecorder({ onRecordingComplete, onRecordingError, maxDurat
   });
 
   useEffect(() => {
+    // A slow request for a previous camera must not replace (or leak past) the current one.
+    let cancelled = false;
     async function startPreview() {
       setCameraError(null);
       stopStream();
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: cameraId
+            ? { deviceId: { exact: cameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            : { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: true,
         });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         streamRef.current = stream;
+        refreshCameras();
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.play().catch(() => {});
         }
       } catch {
+        if (cancelled) return;
         setCameraError("Could not access your camera. Please allow camera access and try again.");
       }
     }
     startPreview();
-  }, [facingMode, stopStream]);
+    return () => {
+      cancelled = true;
+    };
+  }, [facingMode, cameraId, refreshCameras, stopStream]);
 
   useEffect(() => {
     return stopStream;
   }, [stopStream]);
 
   function flipCamera() {
+    // Flipping hands the choice back to the browser's front/back camera.
+    cameras.select("");
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
   }
 
@@ -165,6 +184,7 @@ export function CameraRecorder({ onRecordingComplete, onRecordingError, maxDurat
         <p style={{ color: "var(--color-error)", fontSize: 14, marginBottom: 16 }}>
           {cameraError}
         </p>
+        <DevicePicker label="Camera" devices={cameras.devices} value={cameraId} onChange={cameras.select} />
       </div>
     );
   }
@@ -241,6 +261,7 @@ export function CameraRecorder({ onRecordingComplete, onRecordingError, maxDurat
               Maximum recording length: {formatDuration(maxDurationSeconds)}
             </p>
           )}
+          <DevicePicker label="Camera" devices={cameras.devices} value={cameraId} onChange={cameras.select} />
           <button
             onClick={startRecording}
             aria-label="Start recording"
