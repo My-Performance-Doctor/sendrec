@@ -599,6 +599,77 @@ describe("Recorder", () => {
     });
   });
 
+  describe("camera picker", () => {
+    beforeEach(() => {
+      Object.assign(navigator.mediaDevices, {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          { kind: "videoinput", deviceId: "cam", label: "Integrated Webcam" },
+          { kind: "videoinput", deviceId: "obs", label: "OBS Virtual Camera" },
+          { kind: "audioinput", deviceId: "mic", label: "Headset" },
+        ]),
+      });
+    });
+    afterEach(() => {
+      localStorage.removeItem("recording-camera");
+    });
+
+    it("shows the cameras once the camera is on", async () => {
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Microphone" });
+      expect(screen.queryByRole("combobox", { name: "Camera" })).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Enable camera" }));
+
+      const select = await screen.findByRole("combobox", { name: "Camera" });
+      const options = Array.from((select as HTMLSelectElement).options).map((o) => o.text);
+      expect(options).toEqual(["Browser default", "Integrated Webcam", "OBS Virtual Camera"]);
+    });
+
+    it("switches to the chosen camera and remembers it", async () => {
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await user.click(screen.getByRole("button", { name: "Enable camera" }));
+      await user.selectOptions(await screen.findByRole("combobox", { name: "Camera" }), "obs");
+
+      await vi.waitFor(() => {
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({
+          video: { deviceId: { exact: "obs" }, width: 320, height: 240 },
+          audio: false,
+        });
+      });
+      expect(localStorage.getItem("recording-camera")).toBe("obs");
+      expect(screen.getByRole("button", { name: "Disable camera" })).toBeInTheDocument();
+    });
+
+    it("keeps the picker reachable when the saved camera fails to open", async () => {
+      localStorage.setItem("recording-camera", "obs");
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new DOMException("busy", "NotReadableError"),
+      );
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Microphone" });
+      await user.click(screen.getByRole("button", { name: "Enable camera" }));
+
+      expect(screen.getByText(/Could not access your camera/)).toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: "Camera" })).toBeInTheDocument();
+    });
+
+    it("opens the saved camera when the camera is turned on", async () => {
+      localStorage.setItem("recording-camera", "obs");
+      const user = userEvent.setup();
+      render(<Recorder onRecordingComplete={vi.fn()} />);
+      await screen.findByRole("combobox", { name: "Microphone" });
+      await user.click(screen.getByRole("button", { name: "Enable camera" }));
+
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+        video: { deviceId: { exact: "obs" }, width: 320, height: 240 },
+        audio: false,
+      });
+    });
+  });
+
   it("dismisses media error when dismiss button is clicked", async () => {
     (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error("Permission denied"),

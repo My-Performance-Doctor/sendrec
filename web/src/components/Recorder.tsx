@@ -10,6 +10,8 @@ import { getSupportedMimeType, getSupportedWebMMimeType, blobTypeFromMimeType } 
 import { formatDuration } from "../utils/format";
 import { MAX_CAPTURE_STALL_MS, MIN_RECORDING_BYTES, MIN_RECORDING_SECONDS } from "../utils/recordingLimits";
 import { useCaptureStallWatch } from "../hooks/useCaptureStallWatch";
+import { useDeviceChoice } from "../hooks/useDeviceChoice";
+import { DevicePicker } from "./DevicePicker";
 
 interface RecorderProps {
   onRecordingComplete: (blob: Blob, duration: number, webcamBlob?: Blob) => void;
@@ -26,10 +28,8 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [micFailed, setMicFailed] = useState(false);
   const [micLabel, setMicLabel] = useState<string | null>(null);
-  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
-  const [micId, setMicId] = useState(() => localStorage.getItem("recording-mic") ?? "");
-  // A saved device that is no longer plugged in falls back to the browser default.
-  const selectedMicId = mics.some((m) => m.deviceId === micId) ? micId : "";
+  const mics = useDeviceChoice("audioinput", "recording-mic");
+  const cameras = useDeviceChoice("videoinput", "recording-camera");
   const countdownEnabled = useRef(localStorage.getItem("recording-countdown") !== "false");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -189,13 +189,29 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       setWebcamEnabled(false);
       return;
     }
+    await startWebcam(cameras.selectedId);
+  }
+
+  async function switchCamera(deviceId: string) {
+    cameras.select(deviceId);
+    if (!webcamEnabled) return;
+    stopWebcamStream();
+    // Remounting the preview hands it the new stream.
+    setWebcamEnabled(false);
+    await startWebcam(deviceId);
+  }
+
+  async function startWebcam(deviceId: string) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 320, height: 240, facingMode: "user" },
+        video: deviceId
+          ? { deviceId: { exact: deviceId }, width: 320, height: 240 }
+          : { width: 320, height: 240, facingMode: "user" },
         audio: false,
       });
       webcamStreamRef.current = stream;
       setWebcamEnabled(true);
+      cameras.refresh();
     } catch (err) {
       console.error("Webcam access failed", err);
       setMediaError("Could not access your camera. Please allow camera access and try again.");
@@ -264,11 +280,11 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       if (systemAudioEnabled) {
         try {
           const micStream = await navigator.mediaDevices.getUserMedia({
-            audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
+            audio: mics.selectedId ? { deviceId: { exact: mics.selectedId } } : true,
             video: false,
           });
           // Names are only exposed after mic permission, so the picker may appear now.
-          refreshMics();
+          mics.refresh();
           micStreamRef.current = micStream;
 
           const audioContext = new AudioContext();
@@ -428,16 +444,6 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
       stopAllStreams();
     }
   }
-
-  const refreshMics = useCallback(() => {
-    navigator.mediaDevices.enumerateDevices?.().then(
-      // Chrome adds "default"/"communications" aliases; "Browser default" covers them.
-      (devices) => setMics(devices.filter((d) => d.kind === "audioinput" && d.label && !["default", "communications"].includes(d.deviceId))),
-      () => {},
-    );
-  }, []);
-
-  useEffect(refreshMics, [refreshMics]);
 
   useEffect(() => {
     return () => {
@@ -629,6 +635,10 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
             >
               {webcamEnabled ? "Camera On" : "Camera Off"}
             </button>
+            {/* A chosen camera stays switchable even after it failed to open. */}
+            {(webcamEnabled || cameras.selectedId) && (
+              <DevicePicker label="Camera" devices={cameras.devices} value={cameras.selectedId} onChange={switchCamera} />
+            )}
             <button
               onClick={() => setSystemAudioEnabled((prev) => !prev)}
               aria-label={systemAudioEnabled ? "Disable system audio" : "Enable system audio"}
@@ -636,22 +646,8 @@ export function Recorder({ onRecordingComplete, onRecordingError, maxDurationSec
             >
               {systemAudioEnabled ? "Audio On" : "Audio Off"}
             </button>
-            {systemAudioEnabled && mics.length > 0 && (
-              <select
-                aria-label="Microphone"
-                className="form-input"
-                style={{ width: "auto", maxWidth: 220 }}
-                value={selectedMicId}
-                onChange={(e) => {
-                  setMicId(e.target.value);
-                  localStorage.setItem("recording-mic", e.target.value);
-                }}
-              >
-                <option value="">Browser default</option>
-                {mics.map((m) => (
-                  <option key={m.deviceId} value={m.deviceId}>{m.label}</option>
-                ))}
-              </select>
+            {systemAudioEnabled && (
+              <DevicePicker label="Microphone" devices={mics.devices} value={mics.selectedId} onChange={mics.select} />
             )}
             <button
               onClick={startRecording}
