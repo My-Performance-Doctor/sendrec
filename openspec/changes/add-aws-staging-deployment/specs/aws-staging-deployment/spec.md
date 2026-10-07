@@ -16,8 +16,9 @@ The deployment SHALL isolate SendRec storage, database state and application com
 The application SHALL accept browser login and recording traffic only through HTTPS with a valid certificate for its configured hostname.
 
 #### Scenario: Certificate pending
-- **WHEN** the certificate is not issued
-- **THEN** the deployment does not expose the application through an HTTP forwarding listener
+- **WHEN** deployment is attempted while the certificate is not issued
+- **THEN** the deployment preflight rejects the attempt before creating the stack
+- **AND** no application or maintenance endpoint is published
 
 #### Scenario: HTTPS ready
 - **WHEN** DNS and the certificate are ready
