@@ -1,0 +1,28 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'software.amazon.awscdk:aws-cdk-lib:2.235.1'
+    implementation 'software.constructs:constructs:[10.0.0,11.0.0)'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+group = 'com.mpd.sendrec.infrastructure'
+version = '0.1'
+description = 'SendRec on AWS for MPD'
+java.sourceCompatibility = '21'
+
+application {
+    mainClass = 'com.mpd.sendrec.infrastructure.SendRecApp'
+}
+
+test {
+    useJUnitPlatform()
+}

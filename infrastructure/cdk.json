@@ -1,0 +1,11 @@
+{
+  "app": "./gradlew -q run",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "build", ".gradle"]
+  },
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true,
+    "@aws-cdk/aws-ecs:removeDefaultDeploymentAlarm": true
+  }
+}

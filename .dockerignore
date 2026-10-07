@@ -1,5 +1,7 @@
 .git
 .github
+.wattson
+openspec/
 .env
 .env.*
 *.md
@@ -7,3 +9,4 @@
 bin/
 web/node_modules/
 web/dist/
+infrastructure/
