@@ -130,12 +130,15 @@ public class SendRecStack extends Stack {
     ApplicationLoadBalancer alb =
         ApplicationLoadBalancer.Builder.create(this, "Alb")
             .vpc(vpc)
-            .loadBalancerName(prefix + "-alb")
+            .loadBalancerName(prefix + "-private-alb")
             .internetFacing(false)
             .securityGroup(albSecurityGroup)
             .vpcSubnets(SubnetSelection.builder().subnetType(SubnetType.PRIVATE_ISOLATED).build())
             .idleTimeout(Duration.seconds(600))
             .build();
+    // CloudFront appends the verified viewer IP. SendRec trusts the last entry,
+    // so do not append the CloudFront ENI address at the ALB as another hop.
+    alb.setAttribute("routing.http.xff_header_processing.mode", "preserve");
 
     software.amazon.awscdk.services.cloudfront.Function access =
         software.amazon.awscdk.services.cloudfront.Function.Builder.create(this, "ViewerAccess")
@@ -172,7 +175,7 @@ public class SendRecStack extends Stack {
     // Database ----------------------------------------------------------------------------
     DatabaseInstance database =
         DatabaseInstance.Builder.create(this, "Database")
-            .instanceIdentifier(prefix + "-db")
+            .instanceIdentifier(prefix + "-encrypted-db")
             .databaseName("sendrec")
             .engine(
                 DatabaseInstanceEngine.postgres(
@@ -209,6 +212,34 @@ public class SendRecStack extends Stack {
                 SecretStringGenerator.builder().passwordLength(64).excludePunctuation(true).build())
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
+
+    // A controlled evaluation receiver validates HMAC and never forwards messages.
+    software.amazon.awscdk.services.secretsmanager.Secret receiverSecret =
+        software.amazon.awscdk.services.secretsmanager.Secret.Builder.create(this, "SyntheticReceiverSecret")
+            .secretName(prefix + "/synthetic-webhook-verifier")
+            .generateSecretString(SecretStringGenerator.builder().passwordLength(64).excludePunctuation(true).build())
+            .removalPolicy(RemovalPolicy.RETAIN).build();
+    String receiverCode;
+    try {
+      receiverCode = java.nio.file.Files.readString(java.nio.file.Path.of("synthetic-receiver.py"));
+    } catch (java.io.IOException error) {
+      throw new java.io.UncheckedIOException(error);
+    }
+    software.amazon.awscdk.services.lambda.Function receiver =
+        software.amazon.awscdk.services.lambda.Function.Builder.create(this, "SyntheticReceiver")
+            .functionName(prefix + "-synthetic-receiver")
+            .runtime(software.amazon.awscdk.services.lambda.Runtime.PYTHON_3_13)
+            .handler("index.handler")
+            .code(software.amazon.awscdk.services.lambda.Code.fromInline(receiverCode))
+            .timeout(Duration.seconds(20))
+            .environment(Map.of("SECRET_ARN", receiverSecret.getSecretArn(), "TARGET_URL", baseUrl))
+            .build();
+    receiverSecret.grantRead(receiver);
+    software.amazon.awscdk.services.lambda.FunctionUrl receiverUrl = receiver.addFunctionUrl(
+        software.amazon.awscdk.services.lambda.FunctionUrlOptions.builder()
+            .authType(software.amazon.awscdk.services.lambda.FunctionUrlAuthType.NONE).build());
+    CfnOutput.Builder.create(this, "SyntheticReceiverUrl").value(receiverUrl.getUrl()).build();
+    CfnOutput.Builder.create(this, "SyntheticReceiverSecretName").value(receiverSecret.getSecretName()).build();
 
     // Compute -----------------------------------------------------------------------------
     Cluster cluster =

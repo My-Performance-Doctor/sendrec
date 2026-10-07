@@ -28,7 +28,8 @@ class SendRecStackTest {
     assertEquals(StagingConfig.ACCOUNT, stack.getAccount());
     assertEquals(StagingConfig.REGION, stack.getRegion());
     template.resourceCountIs("AWS::CloudFront::VpcOrigin", 1);
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::LoadBalancer", Map.of("Scheme", "internal"));
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::LoadBalancer", Map.of("Scheme", "internal",
+        "LoadBalancerAttributes", Match.arrayWith(List.of(Map.of("Key", "routing.http.xff_header_processing.mode", "Value", "preserve")))));
     template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
         // With no ViewerCertificate or aliases, CloudFront uses its managed certificate.
         "ViewerCertificate", Match.absent(), "Aliases", Match.absent(),

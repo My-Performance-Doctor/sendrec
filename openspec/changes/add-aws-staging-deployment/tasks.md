@@ -14,7 +14,7 @@
 - [x] 3.1 Finish the dedicated database, bucket and service configuration; verify template assertions cover account, region, subnet placement, least-privilege role access, secrets injection and retained state.
 - [x] 3.2 Replace HTTP application forwarding and public registration defaults with the HTTPS and restricted-bootstrap design, using AWS-managed CloudFront HTTPS with a private VPC origin; verify assertions cover disabled caching, restricted bootstrap and disabling registration before widening access.
 - [x] 3.3 Add exact DNS-free deployment, owner-bootstrap and retained-resource instructions; verify the documented commands match the synthesized stack and never put secrets in command arguments.
-- [ ] 3.4 Run relevant Go and entrypoint tests, Java checks, Docker build and CDK synthesis; inspect the complete template and verify every acceptance control is present.
+- [x] 3.4 Run relevant Go and entrypoint tests, Java checks, Docker build and CDK synthesis; inspect the complete template and verify every acceptance control is present.
 - [ ] 3.5 Commit completed task sections by explicit path, open a PR and run the required review loop; verify its review record and checks, link it to this thread and leave merging to a human.
 
 ## 4. Deploy and prove staging behavior
