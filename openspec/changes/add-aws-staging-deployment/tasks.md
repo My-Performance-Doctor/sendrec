@@ -1,0 +1,25 @@
+## 1. Reconcile the interrupted draft
+
+- [ ] 1.1 Obtain proposal approval, inspect the staged draft and bind this change; verify `openspec validate add-aws-staging-deployment --strict` passes before implementation.
+- [ ] 1.2 Add repository operating instructions and reconcile the draft decision log with this approved design; verify scope-check reports no unexplained files.
+
+## 2. Make the container work on AWS
+
+- [ ] 2.1 Finish role-credential fallback and partial-credential validation; verify focused tests cover explicit local keys and temporary AWS credentials in upload and download signing.
+- [ ] 2.2 Make database URL assembly safe for reserved characters and validate required fields; verify synthetic entrypoint tests cover Compose passthrough, ECS fields and invalid input without printing credentials.
+- [ ] 2.3 Pin and verify the local model download and make initialization failures visible; verify missing, cached, checksum-failed and successful model paths with synthetic entrypoint fixtures.
+
+## 3. Complete infrastructure and review
+
+- [ ] 3.1 Finish the dedicated database, bucket and service configuration; verify template assertions cover account, region, subnet placement, least-privilege role access, secrets injection and retained state.
+- [ ] 3.2 Replace HTTP application forwarding and public registration defaults with the HTTPS and restricted-bootstrap design; verify template assertions reject insecure forwarding and unrestricted bootstrap configuration.
+- [ ] 3.3 Add exact deployment, DNS, owner-bootstrap and retained-resource instructions; verify the documented commands match the synthesized stack and never put secrets in command arguments.
+- [ ] 3.4 Run relevant Go and entrypoint tests, Java checks, Docker build and CDK synthesis; inspect the complete template and verify every acceptance control is present.
+- [ ] 3.5 Commit completed task sections by explicit path, open a PR and run the required review loop; verify its review record and checks, link it to this thread and leave merging to a human.
+
+## 4. Deploy and prove staging behavior
+
+- [ ] 4.1 Have the operator add the ACM validation CNAME, then deploy the approved revision under restricted access and add the application CNAME; verify certificate issuance, DNS, trusted HTTPS, healthy targets and completed database migrations.
+- [ ] 4.2 Bootstrap the owner under restricted access, disable registration and open the approved access; verify owner login succeeds, unrestricted registration fails and restricted-bootstrap requests outside the allowed CIDR fail.
+- [ ] 4.3 Run synthetic upload or recording, private-object denial, password-protected playback, local VTT generation and signed-webhook checks; verify every denied request has a successful authorized control and report any transcript limits.
+- [ ] 4.4 Replace the service task and verify synthetic video persistence and processing recovery; save the exact revision, deployed outputs and check results in the deployment handoff, then validate and archive only after required work is complete.
