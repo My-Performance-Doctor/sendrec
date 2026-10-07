@@ -54,6 +54,8 @@ Use synthetic speech and video to check direct signed S3 upload, unsigned-object
 
 RDS takes daily backups retained for seven days. One Fargate task runs at a time, so a deployment or replacement interrupts service briefly. The model is pinned and checksum-verified at task startup. Concurrent ffmpeg encodes are limited to one. The small Whisper model is an evaluation choice, not approval of clinical transcription accuracy.
 
+The transcription worker requeues an abandoned `processing` job after its 30-minute deadline plus one minute. To recover sooner, use the owner's retranscribe action, backed by authenticated `POST /api/videos/<video-id>/retranscribe`. A successful retry returns 202. Verify the job reaches `ready` and its signed VTT contains cues before calling recovery complete. The staging task-replacement check uses this explicit retry; it does not claim to have waited for the automatic stale-job path.
+
 To recover a bad application update, check out the last verified revision and deploy it with the current approved access contexts. Read the CloudFormation diff first. Do not reset a dirty checkout or replace retained state. A failed initial deployment needs resource and failure readback before any cleanup.
 
 ## Retained resources
