@@ -41,6 +41,9 @@ class SendRecStackTest {
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec")))));
     template.resourceCountIs("AWS::IAM::User", 0);
+    for (Object resource : template.findResources("AWS::SecretsManager::Secret").values()) {
+      assertEquals("Retain", ((Map<?, ?>) resource).get("DeletionPolicy"));
+    }
     template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("Cpu", "2048", "Memory", "4096",
         "ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
             "Environment", Match.arrayWith(List.of(Map.of("Name", "REGISTRATION_ENABLED", "Value", "false")))))))));

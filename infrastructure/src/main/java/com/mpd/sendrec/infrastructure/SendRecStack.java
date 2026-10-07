@@ -332,7 +332,7 @@ public class SendRecStack extends Stack {
             .build();
 
     ApplicationTargetGroup targetGroup =
-        ApplicationTargetGroup.Builder.create(this, "TargetGroup")
+        ApplicationTargetGroup.Builder.create(this, "PrivateTargetGroup")
             .vpc(vpc)
             .port(CONTAINER_PORT)
             .protocol(ApplicationProtocol.HTTP)
@@ -367,5 +367,12 @@ public class SendRecStack extends Stack {
     CfnOutput.Builder.create(this, "DatabaseSecret")
         .value(database.getSecret().getSecretName())
         .build();
+    // RDS returns an attached-secret wrapper. Retaining that wrapper alone does
+    // not retain the generated credential resource, so retain every owned secret.
+    for (software.constructs.IConstruct child : getNode().findAll()) {
+      if (child instanceof software.amazon.awscdk.services.secretsmanager.CfnSecret secret) {
+        secret.applyRemovalPolicy(RemovalPolicy.RETAIN);
+      }
+    }
   }
 }

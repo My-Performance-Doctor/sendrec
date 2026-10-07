@@ -24,7 +24,7 @@ None. No OpenSpec capabilities existed in this fork before this change.
 
 ## Impact
 
-The scope includes `infrastructure/`, `internal/storage/storage.go`, its credential tests, `docker-entrypoint.sh`, entrypoint tests, `.dockerignore`, repository operating instructions, the infrastructure validation workflow and this OpenSpec change. Application and deployment dependencies remain Go, the existing web tooling and Java CDK.
+The scope includes `infrastructure/`, `internal/storage/storage.go`, its credential tests, `docker-entrypoint.sh`, entrypoint tests, `.dockerignore`, repository operating instructions, the infrastructure validation workflow and the inherited preview workflow guard and this OpenSpec change. Application and deployment dependencies remain Go, the existing web tooling and Java CDK.
 
 AWS account `537421187871` will gain dedicated SendRec resources. Existing MPD services, patient data, Vimeo reports and `mpd-api` will remain outside this change. External DNS is deferred at the operator's request. CloudFront provides a trusted AWS-managed hostname without it. No production rollout or integration is included.
 
