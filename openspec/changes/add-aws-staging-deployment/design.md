@@ -43,7 +43,7 @@ Non-goals:
 2. Fix the draft's credentials, connection string, model initialization, HTTP exposure and registration defaults. Add focused tests and infrastructure assertions.
 3. Compile, test, build the Docker image and synthesize the stack. Check the account, region, resource list, IAM permissions and retention policy in the resulting template.
 4. Commit by completed task section, open a PR and run the required review loop. A human merges the PR.
-5. Add the ACM validation CNAME through the authoritative DNS administration route:
+5. Re-read the configured certificate's status and validation record from ACM immediately before DNS setup. If validation has timed out, failed or the certificate no longer exists, request a replacement for the same hostname and update the configured ARN. Add the current record through the authoritative DNS administration route. The following record is the 2026-10-07 readback, not a substitute for that fresh check:
 
    Name: `_f707ede91eaeefded06de516e758ce71.staging-video.myperformancedoctor.com.`
 

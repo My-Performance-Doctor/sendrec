@@ -19,7 +19,7 @@
 
 ## 4. Deploy and prove staging behavior
 
-- [ ] 4.1 Have the operator add the ACM validation CNAME, then deploy the approved revision under restricted access and add the application CNAME; verify certificate issuance, DNS, trusted HTTPS, healthy targets and completed database migrations.
-- [ ] 4.2 Bootstrap the owner under restricted access, disable registration and open the approved access; verify owner login succeeds, unrestricted registration fails and restricted-bootstrap requests outside the allowed CIDR fail.
+- [ ] 4.1 Re-read ACM status and the current validation CNAME, request and configure a replacement certificate if needed, and have the operator add that record; deploy the approved revision under restricted access and add the application CNAME, then verify certificate issuance, DNS, trusted HTTPS, healthy targets and completed database migrations.
+- [ ] 4.2 While bootstrap access is restricted, verify requests outside the allowed CIDR fail and owner registration inside it succeeds; then disable registration before opening the approved access, and verify owner login succeeds while unrestricted registration fails.
 - [ ] 4.3 Run synthetic upload or recording, private-object denial, password-protected playback, local VTT generation and signed-webhook checks; verify every denied request has a successful authorized control and report any transcript limits.
 - [ ] 4.4 Replace the service task and verify synthetic video persistence and processing recovery; save the exact revision, deployed outputs and check results in the deployment handoff, then validate and archive only after required work is complete.
