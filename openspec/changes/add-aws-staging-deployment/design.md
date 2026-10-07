@@ -27,6 +27,7 @@ Non-goals:
 6. Run Whisper locally with the small model on one 2-vCPU, 4-GiB task initially. Validate model availability and handle download failures explicitly. Use a pinned model artifact and verify its checksum; a mutable download URL is insufficient. Audio processing stays inside the AWS account. The model download transfers model bytes only.
 7. Deploy directly with the `mpd-staging` profile after proposal approval. A deployment pipeline is deferred. The initial authorized action is a staging evaluation, with no production resources or live sending integrations.
 8. Retain recordings, database state and secrets on stack deletion. Record exactly what remains billable and provide operator-run cleanup instructions. Do not delete those resources automatically.
+9. Accept the certificate ARN as an explicit non-secret CDK context input, `certificateArn`, rather than baking an existing certificate into the application revision. Validate its account, region, hostname and issued status before deployment. Record the ARN and synthesized template with the code revision. A replacement certificate changes this deployment input without changing reviewed code.
 
 ## Risks / Trade-offs
 
@@ -43,13 +44,13 @@ Non-goals:
 2. Fix the draft's credentials, connection string, model initialization, HTTP exposure and registration defaults. Add focused tests and infrastructure assertions.
 3. Compile, test, build the Docker image and synthesize the stack. Check the account, region, resource list, IAM permissions and retention policy in the resulting template.
 4. Commit by completed task section, open a PR and run the required review loop. A human merges the PR.
-5. Re-read the configured certificate's status and validation record from ACM immediately before DNS setup. If validation has timed out, failed or the certificate no longer exists, request a replacement for the same hostname and update the configured ARN. Add the current record through the authoritative DNS administration route. The following record is the 2026-10-07 readback, not a substitute for that fresh check:
+5. Re-read the candidate certificate's status and validation record from ACM immediately before DNS setup. If validation has timed out, failed or the certificate no longer exists, request a replacement for the same hostname. Add the current record through the authoritative DNS administration route. The following record is the 2026-10-07 readback, not a substitute for that fresh check:
 
    Name: `_f707ede91eaeefded06de516e758ce71.staging-video.myperformancedoctor.com.`
 
    Value: `_bd0c303c43067bf417b1129809aff5cc.wzccmgtwzk.acm-validations.aws.`
 
-6. Verify ACM reports `ISSUED`, deploy the approved revision and add the application CNAME to the actual ALB DNS output. Bootstrap the owner under restricted access, then disable registration and verify that anonymous registration fails.
+6. Wait for ACM to report `ISSUED` for the expected hostname before creating the stack. Supply that ARN through the reviewed `certificateArn` context input, synthesize again and inspect the deployment diff. Deploy the approved code revision under restricted access. Verify trusted HTTPS using the configured hostname as the TLS server name and the actual ALB as the connection target before publishing the application CNAME to that ALB. Then verify normal DNS access. Bootstrap the owner under restricted access, then disable registration and verify that anonymous registration fails.
 7. Verify TLS, load-balancer target health, database migrations, S3 upload and private-object denial. Pair each denial with an authorized positive control.
 8. Use synthetic speech and video to check playback, password enforcement, captions and webhook signing. Configure only a synthetic webhook receiver that cannot send patient messages. Never log secret-bearing signed URLs.
 9. Record resource outputs, revision, checks and remaining limits. Revert to the prior task revision if an update fails. For an initial failed deployment, preserve state and report the failed resources before considering cleanup.

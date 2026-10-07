@@ -12,14 +12,14 @@
 ## 3. Complete infrastructure and review
 
 - [ ] 3.1 Finish the dedicated database, bucket and service configuration; verify template assertions cover account, region, subnet placement, least-privilege role access, secrets injection and retained state.
-- [ ] 3.2 Replace HTTP application forwarding and public registration defaults with the HTTPS and restricted-bootstrap design; verify template assertions reject insecure forwarding and unrestricted bootstrap configuration.
+- [ ] 3.2 Replace HTTP application forwarding and public registration defaults with the HTTPS and restricted-bootstrap design, accepting the certificate ARN as an explicit CDK context input; verify assertions reject insecure forwarding, invalid certificate configuration and unrestricted bootstrap access.
 - [ ] 3.3 Add exact deployment, DNS, owner-bootstrap and retained-resource instructions; verify the documented commands match the synthesized stack and never put secrets in command arguments.
 - [ ] 3.4 Run relevant Go and entrypoint tests, Java checks, Docker build and CDK synthesis; inspect the complete template and verify every acceptance control is present.
 - [ ] 3.5 Commit completed task sections by explicit path, open a PR and run the required review loop; verify its review record and checks, link it to this thread and leave merging to a human.
 
 ## 4. Deploy and prove staging behavior
 
-- [ ] 4.1 Re-read ACM status and the current validation CNAME, request and configure a replacement certificate if needed, and have the operator add that record; deploy the approved revision under restricted access and add the application CNAME, then verify certificate issuance, DNS, trusted HTTPS, healthy targets and completed database migrations.
+- [ ] 4.1 Re-read ACM status and the current validation CNAME, request a replacement if needed and have the operator add that record; wait for `ISSUED` before deployment, supply the ARN through the reviewed `certificateArn` context input and inspect the fresh synth/diff, then deploy the approved code revision under restricted access, verify trusted HTTPS through the ALB before publishing the application CNAME, and finally verify DNS, target health and completed migrations.
 - [ ] 4.2 While bootstrap access is restricted, verify requests outside the allowed CIDR fail and owner registration inside it succeeds; then disable registration before opening the approved access, and verify owner login succeeds while unrestricted registration fails.
 - [ ] 4.3 Run synthetic upload or recording, private-object denial, password-protected playback, local VTT generation and signed-webhook checks; verify every denied request has a successful authorized control and report any transcript limits.
 - [ ] 4.4 Replace the service task and verify synthetic video persistence and processing recovery; save the exact revision, deployed outputs and check results in the deployment handoff, then validate and archive only after required work is complete.
