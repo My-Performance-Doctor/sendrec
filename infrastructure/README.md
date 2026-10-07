@@ -20,7 +20,7 @@ python3 cdk-with-session.py synth SendRecStaging
 
 The CDK helper loads short-lived credentials through the AWS CLI because the installed CDK SDK does not resolve this machine's SSO session. It keeps credentials in memory and child-process environment only. Set `AWS_PROFILE` and `JAVA_HOME` before invoking it.
 
-Run the Go suite with the toolchain in `go.mod`, ffmpeg and a dedicated synthetic PostgreSQL database through `TEST_DATABASE_URL`. Build `web/dist` first. Never point tests at patient databases. CDK builds the repository Dockerfile and pushes the asset to its existing staging bootstrap registry.
+Run the Go suite with the toolchain in `go.mod`, ffmpeg and a dedicated synthetic PostgreSQL 18 database through `TEST_DATABASE_URL`. SendRec uses `RETURNING old/new` when publishing thumbnails and transcripts, so PostgreSQL 17 can pass migrations and health checks but fails media processing. The stack uses RDS PostgreSQL 18.6, a verified upgrade target in Sydney. Major upgrades retain the instance and take pre-upgrade and post-upgrade snapshots under the seven-day backup policy. Build `web/dist` first. Never point tests at patient databases. CDK builds the repository Dockerfile and pushes the asset to its existing staging bootstrap registry.
 
 ## First owner
 

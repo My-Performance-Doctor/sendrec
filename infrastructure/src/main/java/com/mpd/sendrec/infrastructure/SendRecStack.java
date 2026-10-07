@@ -180,7 +180,8 @@ public class SendRecStack extends Stack {
             .engine(
                 DatabaseInstanceEngine.postgres(
                     PostgresInstanceEngineProps.builder()
-                        .version(PostgresEngineVersion.VER_17)
+                        // Upstream publishes media with PostgreSQL 18 RETURNING old/new syntax.
+                        .version(PostgresEngineVersion.of("18.6", "18"))
                         .build()))
             .credentials(
                 Credentials.fromGeneratedSecret(
@@ -198,6 +199,7 @@ public class SendRecStack extends Stack {
             .publiclyAccessible(false)
             .multiAz(false)
             .backupRetention(Duration.days(7))
+            .allowMajorVersionUpgrade(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .deletionProtection(false)
             .build();

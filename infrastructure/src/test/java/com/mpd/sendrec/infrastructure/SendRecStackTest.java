@@ -39,7 +39,8 @@ class SendRecStackTest {
         "PublicAccessBlockConfiguration", Map.of("BlockPublicAcls", true, "BlockPublicPolicy", true, "IgnorePublicAcls", true, "RestrictPublicBuckets", true),
         "BucketEncryption", Match.anyValue())))));
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
-        "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec")))));
+        "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec",
+        "EngineVersion", "18.6", "AllowMajorVersionUpgrade", true, "BackupRetentionPeriod", 7)))));
     template.resourceCountIs("AWS::IAM::User", 0);
     for (Object resource : template.findResources("AWS::SecretsManager::Secret").values()) {
       assertEquals("Retain", ((Map<?, ?>) resource).get("DeletionPolicy"));
