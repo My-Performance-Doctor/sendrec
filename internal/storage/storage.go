@@ -35,16 +35,23 @@ type Config struct {
 }
 
 func New(ctx context.Context, cfg Config) (*Storage, error) {
+	if (cfg.AccessKey == "") != (cfg.SecretKey == "") {
+		return nil, fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY must be supplied together")
+	}
 	if cfg.Region == "" {
 		cfg.Region = "eu-central-1"
 	}
 
-	awsCfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(cfg.Region),
-		config.WithCredentialsProvider(
+	// Static keys when the operator supplies them; otherwise the SDK's default
+	// chain, so a container on AWS can use its task or instance role instead
+	// of long-lived keys.
+	loadOpts := []func(*config.LoadOptions) error{config.WithRegion(cfg.Region)}
+	if cfg.AccessKey != "" || cfg.SecretKey != "" {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
-		),
-	)
+		))
+	}
+	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}

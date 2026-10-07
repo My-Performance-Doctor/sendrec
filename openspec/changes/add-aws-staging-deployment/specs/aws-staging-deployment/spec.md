@@ -15,15 +15,12 @@ The deployment SHALL isolate SendRec storage, database state and application com
 ### Requirement: Secure application origin
 The application SHALL accept browser login and recording traffic only through HTTPS with a valid certificate for its configured hostname.
 
-#### Scenario: Certificate pending
-- **WHEN** deployment is attempted while the certificate is not issued
-- **THEN** the deployment preflight rejects the attempt before creating the stack
-- **AND** no application or maintenance endpoint is published
-
-#### Scenario: HTTPS ready
-- **WHEN** DNS and the certificate are ready
-- **THEN** the configured hostname serves the application with a trusted certificate
-- **AND** HTTP requests redirect to that HTTPS hostname
+#### Scenario: DNS-free HTTPS
+- **WHEN** external DNS administration is unavailable
+- **THEN** an AWS-managed CloudFront hostname serves the application with a trusted certificate
+- **AND** HTTP viewer requests redirect to HTTPS
+- **AND** the private load-balancer origin cannot accept public Internet traffic
+- **AND** CloudFront does not cache authenticated application responses
 
 ### Requirement: Private recordings and role credentials
 Recordings SHALL remain private and accessible only through authorized application access or time-limited signed requests. AWS deployment SHALL use role credentials without permanent S3 access keys. Explicit credentials SHALL remain supported for local development.
