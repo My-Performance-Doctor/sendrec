@@ -40,8 +40,9 @@ async function refreshToken(): Promise<string> {
 
 async function apiFetch<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit & { preserveOnUnauthorized?: boolean } = {}
 ): Promise<T | undefined> {
+  const { preserveOnUnauthorized, ...requestOptions } = options;
   const headers = new Headers(options.headers);
   if (options.body && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -56,9 +57,9 @@ async function apiFetch<T>(
     headers.set("X-Organization-Id", orgId);
   }
 
-  let response = await fetch(path, { ...options, headers });
+  let response = await fetch(path, { ...requestOptions, headers });
 
-  if (response.status === 401 && accessToken) {
+  if (response.status === 401 && (accessToken || preserveOnUnauthorized)) {
     try {
       if (!refreshPromise) {
         refreshPromise = refreshToken().finally(() => {
@@ -68,9 +69,10 @@ async function apiFetch<T>(
       const newToken = await refreshPromise;
       setAccessToken(newToken);
       headers.set("Authorization", `Bearer ${newToken}`);
-      response = await fetch(path, { ...options, headers });
+      response = await fetch(path, { ...requestOptions, headers });
     } catch {
       setAccessToken(null);
+      if (preserveOnUnauthorized) throw new ApiError(401, "Sign in again in another tab, then retry. Your recording is kept here.");
       window.location.href = "/login";
       return undefined;
     }

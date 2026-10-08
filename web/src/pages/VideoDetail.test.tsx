@@ -228,6 +228,37 @@ function renderVideoDetail(videoId = "v1") {
   );
 }
 
+describe("Managed recording access", () => {
+ beforeEach(() => {mockApiFetch.mockReset();mockUseOrganization.mockReturnValue({ ...mockUseOrganization(), selectedOrg: null });});
+ function managedMocks(rejectPublication = false) {
+  mockApiFetch.mockImplementation(async (path: string) => {
+   if (path === "/api/videos") return [makeVideo({managed:true,published:false,mediaVersion:3})];
+   if (path === "/api/videos/limits") return defaultLimits;
+   if (path.endsWith("/comments")) return defaultComments;
+   if (path.endsWith("/preview")) return {previewUrl:window.location.origin+"/mpd-preview#handoff=synthetic"};
+   if (path.endsWith("/publication")) {if(rejectPublication) throw new Error("Set a password before publishing");return {published:true,mediaVersion:3};}
+   return [];
+  });
+ }
+ it("previews unpublished media privately and enables copy only after publication", async () => {
+  managedMocks(); renderVideoDetail();
+  expect(await screen.findByTitle("Staff preview")).toHaveAttribute("src", expect.stringContaining("/mpd-preview#"));
+  expect(screen.getByText("Copy share link")).toBeDisabled();
+  expect(screen.getByText("Copy embed")).toBeDisabled();
+  expect(screen.queryByText(/View as viewer/)).not.toBeInTheDocument();
+  expect(mockApiFetch.mock.calls.some(c => String(c[0]).endsWith("/download"))).toBe(false);
+  fireEvent.click(screen.getByText("Publish recording"));
+  await waitFor(() => expect(screen.getByText("Copy share link")).not.toBeDisabled());
+  expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/v1/publication",expect.objectContaining({body:JSON.stringify({mediaVersion:3,published:true})}));
+ });
+ it("keeps sharing disabled when publication fails", async () => {
+  managedMocks(true);renderVideoDetail();
+  fireEvent.click(await screen.findByText("Publish recording"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Set a password before publishing");
+  expect(screen.getByText("Copy share link")).toBeDisabled();
+ });
+});
+
 describe("VideoDetail", () => {
   beforeEach(() => {
     mockApiFetch.mockReset();

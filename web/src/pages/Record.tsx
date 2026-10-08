@@ -11,6 +11,9 @@ interface CreateVideoResponse {
   uploadUrl: string;
   shareToken: string;
   webcamUploadUrl?: string;
+  managed?: boolean;
+  screenUploaded?: boolean;
+  webcamUploaded?: boolean;
 }
 
 function uploadWithProgress(
@@ -50,7 +53,7 @@ export function Record() {
   const [error, setError] = useState<string | null>(null);
   // A take whose upload failed. Kept until it uploads or the user discards it:
   // the recorder is unmounted by then, so this is the only copy. Audit C2.
-  const [failedTake, setFailedTake] = useState<{ blob: Blob; duration: number; webcamBlob?: Blob } | null>(null);
+  const [failedTake, setFailedTake] = useState<{ blob: Blob; duration: number; webcamBlob?: Blob; upload?: CreateVideoResponse } | null>(null);
   const [limits, setLimits] = useState<LimitsResponse | null>(null);
   const [loadingLimits, setLoadingLimits] = useState(true);
 
@@ -71,7 +74,7 @@ export function Record() {
   async function handleRecordingComplete(blob: Blob, duration: number, webcamBlob?: Blob) {
     setUploading(true);
     setError(null);
-    let videoId: string | null = null;
+    let pending: CreateVideoResponse | undefined = failedTake?.upload;
 
     try {
       setUploadStep("Creating video...");
@@ -85,7 +88,8 @@ export function Record() {
         createBody.webcamContentType = webcamBlob.type || "video/webm";
       }
 
-      const result = await apiFetch<CreateVideoResponse>("/api/videos", {
+      const result = pending ?? await apiFetch<CreateVideoResponse>("/api/videos", {
+        preserveOnUnauthorized: true,
         method: "POST",
         body: JSON.stringify(createBody),
       });
@@ -94,32 +98,44 @@ export function Record() {
         throw new Error("Failed to create video");
       }
 
-      videoId = result.id;
+      pending = result;
 
       setUploadStep("Uploading recording...");
       setUploadPercent(0);
-      await uploadWithProgress(result.uploadUrl, blob, contentType, setUploadPercent);
+      if (!result.screenUploaded) {
+        if (failedTake?.upload) {
+          const fresh = await apiFetch<{uploadUrl:string}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen", contentType, fileSize:blob.size})});
+          if (!fresh) throw new Error("Sign in again, then retry");
+          result.uploadUrl = fresh.uploadUrl;
+        }
+        await uploadWithProgress(result.uploadUrl, blob, contentType, setUploadPercent);
+        result.screenUploaded = true;
+      }
 
-      if (webcamBlob && result.webcamUploadUrl) {
+      if (webcamBlob && result.webcamUploadUrl && !result.webcamUploaded) {
         setUploadStep("Uploading camera...");
         setUploadPercent(0);
+        if (result.managed) {
+          const fresh = await apiFetch<{uploadUrl:string}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"webcam", contentType:webcamBlob.type || "video/webm", fileSize:webcamBlob.size})});
+          if (!fresh) throw new Error("Sign in again, then retry");
+          result.webcamUploadUrl=fresh.uploadUrl;
+        }
         await uploadWithProgress(result.webcamUploadUrl, webcamBlob, webcamBlob.type || "video/webm", setUploadPercent);
+        result.webcamUploaded=true;
       }
 
       setUploadStep("Finalizing...");
       await apiFetch(`/api/videos/${result.id}`, {
         method: "PATCH",
+        preserveOnUnauthorized: true,
         body: JSON.stringify({ status: "ready" }),
       });
 
       setRecordedVideoId(result.id);
-      setShareUrl(`${window.location.origin}/watch/${result.shareToken}`);
+      setShareUrl(result.managed ? null : `${window.location.origin}/watch/${result.shareToken}`);
       setFailedTake(null);
     } catch (err) {
-      if (videoId) {
-        apiFetch(`/api/videos/${videoId}`, { method: "DELETE" }).catch(() => {});
-      }
-      setFailedTake({ blob, duration, webcamBlob });
+      setFailedTake({ blob, duration, webcamBlob, upload:pending });
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
@@ -143,6 +159,7 @@ export function Record() {
   }
 
   function discardFailedTake() {
+    if (failedTake?.upload) apiFetch(`/api/videos/${failedTake.upload.id}`, {method:"DELETE"}).catch(() => {});
     setFailedTake(null);
     recordAnother();
   }
@@ -202,6 +219,10 @@ export function Record() {
     );
   }
 
+  if (recordedVideoId && !shareUrl && !uploading) {
+    return <div className="record-page"><h2>Recording saved</h2><p>Unpublished. Preview the recording and set its password before publishing.</p><Link to={`/videos/${recordedVideoId}`}>Preview and sharing settings</Link></div>;
+  }
+
   if (uploading) {
     return (
       <div className="page-container page-container--centered">
@@ -228,6 +249,7 @@ export function Record() {
         {failedTake ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
             <p className="max-duration-label">Your recording is safe. Retry, or save a copy first.</p>
+            <a href="/login" target="_blank" rel="noopener noreferrer">Sign in again in another tab</a>
             <button className="btn-record" onClick={retryFailedTake}>Retry upload</button>
             <button className="detail-btn" onClick={downloadFailedTake}>Download recording</button>
             <button className="detail-btn" onClick={discardFailedTake}>Record again</button>

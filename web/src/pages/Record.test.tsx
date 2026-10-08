@@ -677,7 +677,7 @@ describe("Record", () => {
     expect(screen.queryByText("Upload failed")).not.toBeInTheDocument();
   });
 
-  it("deletes created video when upload fails", async () => {
+  it("retains the created video when upload fails", async () => {
     class FailingXHR extends MockXHR {
       status = 500;
       send = vi.fn().mockImplementation(function (this: FailingXHR) {
@@ -703,8 +703,7 @@ describe("Record", () => {
       shareToken: "token-cleanup",
     });
 
-    // Mock the DELETE cleanup
-    mockApiFetch.mockResolvedValueOnce(undefined);
+    // Temporary upload failures retain the server recording for retry.
 
     const blob = new Blob(["video"], { type: "video/webm" });
     await act(async () => {
@@ -715,13 +714,13 @@ describe("Record", () => {
       expect(screen.getByText("Upload failed")).toBeInTheDocument();
     });
 
-    // Verify DELETE was called for cleanup
+    // Only explicit discard may delete the pending recording.
     const deleteCall = mockApiFetch.mock.calls.find(
       (call: unknown[]) =>
         call[0] === "/api/videos/video-cleanup" &&
         (call[1] as { method: string })?.method === "DELETE"
     );
-    expect(deleteCall).toBeDefined();
+    expect(deleteCall).toBeUndefined();
   });
 
   it("shows error when create API returns null", async () => {
@@ -1199,7 +1198,6 @@ describe("Record", () => {
       await waitFor(() => expect(screen.getByTestId("recorder")).toBeInTheDocument());
 
       mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t1" });
-      mockApiFetch.mockResolvedValueOnce(undefined); // DELETE of the failed video
       await act(async () => {
         capturedOnRecordingComplete!(take, 30);
       });
@@ -1215,13 +1213,15 @@ describe("Record", () => {
 
     it("retries the same recording", async () => {
       const user = await failFirstUpload(userEvent.setup());
-      mockApiFetch.mockResolvedValueOnce({ id: "video-2", uploadUrl: "https://s3.example.com/2", shareToken: "t2" });
+      mockApiFetch.mockResolvedValueOnce({ uploadUrl: "https://s3.example.com/renewed" });
       mockApiFetch.mockResolvedValueOnce(undefined); // PATCH ready
 
       await user.click(screen.getByText("Retry upload"));
 
-      await waitFor(() => expect(screen.getByDisplayValue(/watch\/t2/)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByDisplayValue(/watch\/t1/)).toBeInTheDocument());
       expect(sentBodies).toEqual([take, take]);
+      expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(1);
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.objectContaining({method:"POST",preserveOnUnauthorized:true}));
     });
 
     it("offers the recording as a download", async () => {

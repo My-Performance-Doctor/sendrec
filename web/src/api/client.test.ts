@@ -267,3 +267,17 @@ describe("apiFetch", () => {
     });
   });
 });
+
+it("recovers a retained upload after another tab signs in", async () => {
+  setAccessToken("expired-session");
+  const failure = () => new Response(JSON.stringify({error:"expired"}),{status:401});
+  const fetcher=vi.fn().mockResolvedValueOnce(failure()).mockResolvedValueOnce(failure());
+  globalThis.fetch=fetcher;
+  await expect(apiFetch("/api/videos/synthetic",{method:"PATCH",preserveOnUnauthorized:true})).rejects.toThrow("Sign in again");
+  // Another tab changes the HttpOnly cookie, not this tab's in-memory token.
+  fetcher.mockResolvedValueOnce(failure()).mockResolvedValueOnce(new Response(JSON.stringify({accessToken:"renewed-session"}),{status:200})).mockResolvedValueOnce(new Response(null,{status:204}));
+  await expect(apiFetch("/api/videos/synthetic",{method:"PATCH",preserveOnUnauthorized:true})).resolves.toBeUndefined();
+  const retry=fetcher.mock.calls[4][1];
+  expect(new Headers(retry.headers).get("Authorization")).toBe("Bearer renewed-session");
+  setAccessToken(null);
+});

@@ -38,19 +38,15 @@ vi.mock("../api/client", () => ({
 }));
 
 function mockHealthResponse(registrationEnabled: boolean) {
-  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-    new Response(JSON.stringify({ registrationEnabled }), { status: 200 })
-  );
+  mockHealthAndProviders(registrationEnabled, []);
 }
 
 function mockHealthAndProviders(registrationEnabled: boolean, providers: string[]) {
-  vi.spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ registrationEnabled }), { status: 200 })
-    )
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ providers }), { status: 200 })
-    );
+  vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+    const path=String(input);
+    const data=path==="/api/health" ? {registrationEnabled} : path==="/api/auth/sso/providers" ? {providers} : {enabled:false};
+    return new Response(JSON.stringify(data),{status:200});
+  });
 }
 
 function renderLogin(initialEntries: string[] = ["/"]) {

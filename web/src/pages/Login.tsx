@@ -17,9 +17,22 @@ export function Login() {
   // Register sends people here when no email confirmation is needed.
   const registered = useLocation().state as { email?: string; justRegistered?: boolean } | null;
   const [registrationEnabled, setRegistrationEnabled] = useState(true);
+  const [mpdEnabled, setMpdEnabled] = useState(false);
   const [ssoProviders, setSsoProviders] = useState<string[]>([]);
   const [ssoError, setSsoError] = useState("");
   const [ssoEnforcement, setSsoEnforcement] = useState<SsoEnforcement | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/mpd/info").then(r => r.ok ? r.json() : {enabled:false}).then(data => setMpdEnabled(data.enabled === true)).catch(() => {});
+    const code = new URLSearchParams(window.location.hash.slice(1)).get("mpd_code");
+    if (code) {
+      history.replaceState(null,"",window.location.pathname);
+      fetch("/api/auth/mpd/handoff", {method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"}, body:JSON.stringify({code})}).then(async r => {
+        if (!r.ok) throw new Error("MPD sign-in expired. Please try again.");
+        const result=await r.json(); setAccessToken(result.accessToken); navigate("/");
+      }).catch(e => setSsoError(e.message));
+    }
+  }, [navigate]);
 
   useEffect(() => {
     fetch("/api/health")
@@ -103,8 +116,9 @@ export function Login() {
   const redirect = searchParams.get("redirect");
   const registerPath = redirect ? `/register?redirect=${encodeURIComponent(redirect)}` : "/register";
 
-  const ssoSection = (ssoProviders.length > 0 || ssoError || ssoEnforcement) ? (
+  const ssoSection = (mpdEnabled || ssoProviders.length > 0 || ssoError || ssoEnforcement) ? (
     <>
+      {mpdEnabled && <a className="btn btn--secondary btn--sso" href="/api/auth/mpd/login">Sign in with MPD</a>}
       {ssoError && (
         <div className="auth-error-banner">{ssoError}</div>
       )}

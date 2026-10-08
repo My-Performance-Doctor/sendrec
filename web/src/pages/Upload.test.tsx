@@ -183,6 +183,7 @@ describe("Upload", () => {
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/limits");
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/upload", {
+      preserveOnUnauthorized:true,
       method: "POST",
       body: JSON.stringify({
         title: "demo",
