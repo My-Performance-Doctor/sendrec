@@ -1,0 +1,327 @@
+{
+  "description": "Synthetic SendRec and mpd-api contract fixtures. Local producer/consumer verification is recorded in verification.md; staging activation remains separate.",
+  "schemas": {
+    "VideoAccessResponse": {
+      "$defs": {
+        "VideoCapabilities": {
+          "properties": {
+            "record": {
+              "title": "Record",
+              "type": "boolean"
+            },
+            "read": {
+              "title": "Read",
+              "type": "boolean"
+            },
+            "manageOwn": {
+              "title": "Manageown",
+              "type": "boolean"
+            },
+            "manageWorkspace": {
+              "title": "Manageworkspace",
+              "type": "boolean"
+            },
+            "readPassword": {
+              "title": "Readpassword",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "record",
+            "read",
+            "manageOwn",
+            "manageWorkspace",
+            "readPassword"
+          ],
+          "title": "VideoCapabilities",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "schemaVersion": {
+          "const": 1,
+          "default": 1,
+          "title": "Schemaversion",
+          "type": "integer"
+        },
+        "staffId": {
+          "format": "uuid",
+          "title": "Staffid",
+          "type": "string"
+        },
+        "tenantId": {
+          "format": "uuid",
+          "title": "Tenantid",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/VideoCapabilities"
+        },
+        "validUntil": {
+          "format": "date-time",
+          "title": "Validuntil",
+          "type": "string"
+        }
+      },
+      "required": [
+        "staffId",
+        "tenantId",
+        "capabilities",
+        "validUntil"
+      ],
+      "title": "VideoAccessResponse",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "const": 1,
+          "title": "Schemaversion",
+          "type": "integer"
+        },
+        "eventId": {
+          "format": "uuid",
+          "title": "Eventid",
+          "type": "string"
+        },
+        "eventType": {
+          "enum": [
+            "video.ready",
+            "video.transcript_ready",
+            "video.playback_started",
+            "video.deleted"
+          ],
+          "title": "Eventtype",
+          "type": "string"
+        },
+        "occurredAt": {
+          "format": "date-time",
+          "title": "Occurredat",
+          "type": "string"
+        },
+        "videoId": {
+          "format": "uuid",
+          "title": "Videoid",
+          "type": "string"
+        },
+        "mediaVersion": {
+          "minimum": 1,
+          "title": "Mediaversion",
+          "type": "integer"
+        },
+        "ownerStaffId": {
+          "format": "uuid",
+          "title": "Ownerstaffid",
+          "type": "string"
+        },
+        "tenantId": {
+          "format": "uuid",
+          "title": "Tenantid",
+          "type": "string"
+        },
+        "data": {
+          "additionalProperties": true,
+          "title": "Data",
+          "type": "object"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "eventType",
+        "occurredAt",
+        "videoId",
+        "mediaVersion",
+        "ownerStaffId",
+        "tenantId",
+        "data"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "videoId": {
+          "format": "uuid",
+          "title": "Videoid",
+          "type": "string"
+        },
+        "ownerStaffId": {
+          "format": "uuid",
+          "title": "Ownerstaffid",
+          "type": "string"
+        },
+        "tenantId": {
+          "format": "uuid",
+          "title": "Tenantid",
+          "type": "string"
+        },
+        "mediaVersion": {
+          "minimum": 1,
+          "title": "Mediaversion",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "processing",
+            "ready",
+            "deleted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "published": {
+          "title": "Published",
+          "type": "boolean"
+        },
+        "publishedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Publishedat"
+        },
+        "passwordProtected": {
+          "title": "Passwordprotected",
+          "type": "boolean"
+        },
+        "watchUrl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Watchurl"
+        },
+        "embedUrl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Embedurl"
+        }
+      },
+      "required": [
+        "videoId",
+        "ownerStaffId",
+        "tenantId",
+        "mediaVersion",
+        "status",
+        "published",
+        "publishedAt",
+        "passwordProtected",
+        "watchUrl",
+        "embedUrl"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "Transcript": {
+      "additionalProperties": false,
+      "properties": {
+        "videoId": {
+          "format": "uuid",
+          "title": "Videoid",
+          "type": "string"
+        },
+        "mediaVersion": {
+          "minimum": 1,
+          "title": "Mediaversion",
+          "type": "integer"
+        },
+        "transcriptVersion": {
+          "minimum": 1,
+          "title": "Transcriptversion",
+          "type": "integer"
+        },
+        "vtt": {
+          "maxLength": 1000000,
+          "title": "Vtt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "videoId",
+        "mediaVersion",
+        "transcriptVersion",
+        "vtt"
+      ],
+      "title": "Transcript",
+      "type": "object"
+    }
+  },
+  "examples": {
+    "videoAccess": {
+      "schemaVersion": 1,
+      "staffId": "22222222-2222-4222-8222-222222222222",
+      "tenantId": "33333333-3333-4333-8333-333333333333",
+      "capabilities": {
+        "record": true,
+        "read": true,
+        "manageOwn": true,
+        "manageWorkspace": false,
+        "readPassword": true
+      },
+      "validUntil": "2030-01-01T00:00:30Z"
+    },
+    "readyEvent": {
+      "schemaVersion": 1,
+      "eventId": "44444444-4444-4444-8444-444444444444",
+      "eventType": "video.ready",
+      "occurredAt": "2030-01-01T00:00:00Z",
+      "videoId": "11111111-1111-4111-8111-111111111111",
+      "mediaVersion": 1,
+      "ownerStaffId": "22222222-2222-4222-8222-222222222222",
+      "tenantId": "33333333-3333-4333-8333-333333333333",
+      "data": {}
+    },
+    "metadata": {
+      "videoId": "11111111-1111-4111-8111-111111111111",
+      "ownerStaffId": "22222222-2222-4222-8222-222222222222",
+      "tenantId": "33333333-3333-4333-8333-333333333333",
+      "mediaVersion": 1,
+      "status": "ready",
+      "published": true,
+      "publishedAt": "2030-01-01T00:00:00Z",
+      "passwordProtected": true,
+      "watchUrl": "https://sendrec.example.test/watch/synthetic",
+      "embedUrl": "https://sendrec.example.test/embed/synthetic"
+    },
+    "transcript": {
+      "videoId": "11111111-1111-4111-8111-111111111111",
+      "mediaVersion": 1,
+      "transcriptVersion": 1,
+      "vtt": "WEBVTT\n\n00:00.000 --> 00:01.000\nSynthetic captions.\n"
+    },
+    "passwordRequest": {
+      "mediaVersion": 1,
+      "password": "synthetic-only"
+    },
+    "passwordResponse": {
+      "mediaVersion": 1,
+      "passwordProtected": true
+    },
+    "publicationRequest": {
+      "mediaVersion": 1,
+      "published": true
+    }
+  },
+  "mutationHeaders": {
+    "Idempotency-Key": "Stable logical effect identity; replay returns the original receipt without reapplying",
+    "X-MPD-Work-Version": "Positive integer, monotonic across recording leases; reject lower than highest accepted atomically before any mutation; excluded from idempotency body comparison"
+  }
+}
