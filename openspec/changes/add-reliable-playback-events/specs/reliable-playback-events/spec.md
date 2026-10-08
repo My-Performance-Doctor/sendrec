@@ -115,3 +115,11 @@ Every allowed managed-video deletion SHALL commit a tombstone and deletion outbo
 #### Scenario: Lifecycle bypass attempt
 - **WHEN** a managed staff member tries account deletion or automatic retention
 - **THEN** the operation is refused and no media disappears without a deletion event
+
+### Requirement: Managed events require trusted ownership
+
+The managed stream SHALL include only admitted media with verified MPD owner and tenant bindings, retained as event snapshots. Unlinked evaluation media SHALL remain outside this stream.
+
+#### Scenario: Unlinked owner
+- **WHEN** an operation attempts to admit media without a verified MPD owner or tenant
+- **THEN** admission fails before managed recording/publication and no incomplete identity event is emitted
