@@ -95,3 +95,23 @@ The system SHALL store the staff and tenant identity required for media ownershi
 #### Scenario: Recording payload
 - **WHEN** a client tries to set a patient association on a recording
 - **THEN** SendRec does not persist that association or infer one from a thumbnail
+
+### Requirement: Playback survives URL expiry
+
+Watch and embed SHALL renew expiring signed URLs after repeating their access checks, preserve playback position and paused state, and stop if renewal is refused.
+
+#### Scenario: Long protected playback
+- **WHEN** a recipient plays a synthetic recording longer than 15 minutes or pauses and seeks across URL expiry
+- **THEN** authorized renewal allows playback to continue without a stale-signature failure
+
+#### Scenario: Access withdrawn before renewal
+- **WHEN** publication or the required access grant is withdrawn before URL renewal
+- **THEN** renewal fails and no new media URL is issued
+
+### Requirement: Managed account lifecycle preserves media
+
+Managed staff SHALL NOT delete their account or managed workspace through self-service paths or change automatic source-retention settings. Offboarding SHALL revoke access without deleting workspace media.
+
+#### Scenario: Self-service lifecycle bypass
+- **WHEN** managed staff call account deletion, workspace deletion or personal/workspace retention updates directly
+- **THEN** the request is refused and existing media remains unchanged
