@@ -115,3 +115,19 @@ Managed staff SHALL NOT delete their account or managed workspace through self-s
 #### Scenario: Self-service lifecycle bypass
 - **WHEN** managed staff call account deletion, workspace deletion or personal/workspace retention updates directly
 - **THEN** the request is refused and existing media remains unchanged
+
+### Requirement: Auxiliary sharing obeys each video policy
+
+Shared playlists, oEmbed, thumbnails, comments and playback/progress endpoints SHALL enforce each managed video's publication and password requirements. A playlist token SHALL NOT confer broader video access.
+
+#### Scenario: Unpublished playlist item
+- **WHEN** a shared playlist contains unpublished or password-protected managed media
+- **THEN** the item cannot reveal media or protected metadata without satisfying its own policy
+
+### Requirement: Explicit adoption of existing media
+
+Initial managed activation SHALL use an empty workspace. Existing media SHALL not become managed through account linking alone. Any later adoption SHALL require an explicit audited operation, verified owner/tenant, unpublished state, all sharing paths checked and prior signed URLs expired.
+
+#### Scenario: Evaluation-owner link
+- **WHEN** the evaluation owner links an MPD identity
+- **THEN** old personal media remains outside the managed workspace and no old share token gains managed-publication status
