@@ -123,3 +123,27 @@ The managed stream SHALL include only admitted media with verified MPD owner and
 #### Scenario: Unlinked owner
 - **WHEN** an operation attempts to admit media without a verified MPD owner or tenant
 - **THEN** admission fails before managed recording/publication and no incomplete identity event is emitted
+
+### Requirement: Preview classification survives renewal and client navigation
+
+Successful native renewal SHALL renew classification after current MPD authorization. Future-client top-level previews SHALL redeem a video-bound one-use handoff before playback, as staff embeds do. Logout SHALL revoke the classification session.
+
+#### Scenario: Long-lived native use
+- **WHEN** a native session renews after the original classification cookie would expire
+- **THEN** a subsequent authenticated preview still emits staff_preview
+
+#### Scenario: Future-client new tab
+- **WHEN** the synthetic authenticated client opens a top-level preview through the approved handoff
+- **THEN** playback is classified staff_preview before any playback event is accepted
+
+### Requirement: Versions represent requested work
+
+Media versions SHALL exist before upload. Transcript generations SHALL be allocated atomically at request time, and only the latest requested generation SHALL publish its transcript and readiness event.
+
+#### Scenario: Older transcription finishes last
+- **WHEN** two requests finish in reverse order
+- **THEN** the older request cannot replace or emit readiness for the newer transcript
+
+#### Scenario: Abandoned upload
+- **WHEN** an upload is deliberately cancelled before any ready event
+- **THEN** deletion carries its valid media version and identity, allowing a receiver to retain a tombstone without creating a report
