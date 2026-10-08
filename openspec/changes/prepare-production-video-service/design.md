@@ -1,0 +1,27 @@
+## Context
+
+The deployed staging service runs one private Fargate task with encrypted RDS PostgreSQL 18.6 and private S3. Core synthetic upload, playback, password protection, local captions and manual recovery passed. The operator reports browser recording works; that does not establish a three-browser matrix. Automatic stale-job recovery, backup restoration and production rollout are not yet verified. The older retained database is outside cleanup scope.
+
+## Goals / Non-Goals
+
+Prepare a reproducible, supportable production release of the existing SendRec backend and standalone app. Validate all four integration changes together. This proposal does not itself authorize production activation, patient-media tests, Vimeo migration, deletion of retained resources or Josh's frontend.
+
+## Decisions
+
+1. Extend existing Java CDK environment configuration for staging and production with explicit account/region, VPC, Cognito and secret references. Keep Sydney hosting and environment isolation. Plan two application tasks across availability zones and Multi-AZ encrypted RDS for production, subject to the reviewed deployment diff and cost estimate. First prove existing media workers and the new outbox handle concurrent tasks without duplicate processing. No new recording service is introduced.
+2. Build an immutable image, run migrations in one controlled task, deploy staging, then require a named human production approval in the release pipeline. Compare the live stack against synthesis, verify private origins and storage, keep registrations closed and configure exact CORS/callback origins. Use managed CloudFront HTTPS for the initial release; custom DNS is optional follow-up work. Secrets come from Secrets Manager, not generated files or CLI arguments.
+3. Add health and readiness checks for API, database, storage and workers, plus alarms for 5xx, failed uploads, old processing jobs, outbox age/dead letters, database pressure and backup failure. Route alerts to an explicitly configured operational destination and test receipt with synthetic events. Logs exclude tokens, signed URLs, captions and patient identifiers. A passing /health alone is insufficient.
+4. Enable production RDS point-in-time recovery with 35-day retention and S3 versioning. Proposed recovery objectives for review are RPO no more than 15 minutes and RTO no more than four hours. Prove them by restoring synthetic database/media state into an isolated environment, including versions, password protection, transcripts, identity links and pending events. Source-media retention is indefinite until the operator approves a clinical retention policy; keep automatic source deletion disabled. Do not change the seven-day staging backup policy as a side effect.
+5. Verify Chrome, Safari and Firefox screen-plus-camera recording, camera-only recording, MP4/WebM upload, denied devices, interrupted network, signed direct upload, watch/embed password controls, captions and retranscription. Record browser/OS versions and actual results. Use a supported host or a manual operator checklist where this host blocks browser automation; do not weaken AppArmor or mark an unrun check passed. Verify the future-client API with a synthetic client and no Staff OS UI.
+6. Exercise staff onboarding, permissions, email change without identity duplication, logout, offboarding, service-token rotation, delayed events, replay, duplicate events, restore and deployment rollback. Use only synthetic recipients and controlled side-effect sinks. Record the real account, revision, artifact digests and measured recovery times privately or in redacted deployment evidence as appropriate.
+7. Close the prior staging change honestly before production readiness is declared. PR #2 merged, so its old review-loop command is no longer runnable. Review the merged deployment source through the current workflow, resolve any follow-up in a PR, retain the missing final-review fact, then complete and archive the staging artifacts. No fabricated review or backdated check.
+
+## Risks / Trade-offs
+
+- Two application tasks can expose worker races hidden by staging. Concurrency and interrupted-job tests must pass before scaling production.
+- Restoring only PostgreSQL misses S3 consistency and pending events. Restore both and test decoding, not file existence.
+- Production account access, alert routing and pilot participants are deployment inputs supplied before activation. Their absence does not block the reviewable infrastructure implementation, but it blocks a live rollout.
+
+## Migration Plan
+
+Apply after the other four implementation changes are reviewed and their producer/consumer fixtures agree. Rehearse on staging, publish browser/recovery/security evidence and the costed production diff, then obtain explicit rollout approval. Deploy an empty production service before any authorized pilot content. Roll back to the last verified image with forward-compatible migrations and retained state; never reverse a migration by dropping recordings. Keep Vimeo serving its existing reports throughout the pilot.
