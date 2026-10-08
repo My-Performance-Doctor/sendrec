@@ -1,0 +1,27 @@
+## Context
+
+Current `video.viewed` is emitted from page access. `internal/webhook/webhook.go` retries three times in memory; `video_helpers.go` dispatches in a goroutine. MPD cannot use those delivery semantics as its only record of processing or playback. Reuse the existing players, progress tracking and media processing.
+
+## Goals / Non-Goals
+
+Provide an integration event stream with stable meaning and recoverable delivery. Keep existing user notification webhooks compatible. Do not identify patients, add clinical metadata to recordings, change the transcript provider or claim that a share link identifies its viewer.
+
+## Decisions
+
+1. The operator selected first actual playback on 2026-10-08. Add `video.playback_started` after the native watch/embed player observes playing and advancing media time, once per video media version and playback session. Page rendering, buffering without progress, preload, a seek and failed password challenges do not count. Existing video.viewed remains a page-access notification for existing consumers. Reuse the milestone/segment infrastructure rather than building another player.
+2. Issue a short playback-session proof after watch access checks; bind it to video, media version, expiry and viewer class. Classify active authenticated staff as staff_preview, an MPD-issued recipient grant as recipient, otherwise anonymous. Recipient classification is reserved for a separately implemented and verified grant; these changes add no patient authentication or recipient-grant issuer. Initial shared-link playback is anonymous. Client input cannot promote its class. MPD can treat anonymous playback as evidence that the shared video played, but never as proof of a named patient's viewing. Owner and other staff previews never set MPD's watched flag. A signed playback proof limits spoofing but is not proof a human paid attention.
+3. The managed event envelope is `{schemaVersion: 1, eventId, eventType, occurredAt, videoId, mediaVersion, ownerStaffId, tenantId, data}`. eventId is a UUID, IDs are server-derived, timestamps are RFC3339 UTC and mediaVersion increases when media is replaced. Events are video.ready, video.transcript_ready, video.playback_started and video.deleted. Playback data includes playbackSessionId and viewerClass. Transcript-ready data includes a monotonically increasing transcriptVersion within the media version; re-transcription does not pretend the media changed. No patient ID, caption content, password, raw token or signed media URL enters the event. SendRec owns this contract; mpd-api's proposal consumes it verbatim.
+4. Persist the state transition and outbox row in one transaction. Processing transitions, transcript publication and soft deletion each enqueue the appropriate event. Persist a playback fact and event atomically with a uniqueness constraint for its session/version. Rollback emits nothing. Workers claim rows with leases so crashes and concurrent tasks recover safely. Delivery is at least once and ordering is not promised.
+5. Use one deployment-managed MPD destination for the managed workspace, separate from editable per-user notification settings. Each delivery carries X-SendRec-Delivery-Timestamp, X-SendRec-Key-Id and X-SendRec-Signature containing `sha256=` plus HMAC-SHA256 of `<deliveryTimestamp>.<rawBody>`. Timestamp is Unix seconds refreshed on each delivery; event body and eventId remain immutable. Receiver tolerance is five minutes. Support old/new signing-key overlap during rotation. The server-configured destination may use an explicitly approved private route, without weakening the SSRF controls for arbitrary user webhooks.
+6. Retry timeouts, throttling and 5xx with bounded exponential backoff for 24 hours. Mark persistent auth/contract errors visibly blocked and alert. Exhaustion enters a retained dead-letter state; never discard silently. Replaying sends the same eventId. Keep acknowledged event evidence at least 30 days, do not purge unacknowledged rows automatically, and use metadata-only logs. The receiver acknowledges only durable acceptance. A deployment or restart must not lose pending events.
+7. In-flight recording recovery is unchanged except where needed to make state/event publication atomic. Publishing video.ready does not imply captions exist; video.transcript_ready carries their version separately. Replacements and deletion cannot let old playback or late caption events revive stale media state.
+
+## Risks / Trade-offs
+
+- Web clients can fabricate media activity. Authentication and bound session proofs limit replay; the clinical meaning remains playback observed, not verified human attention.
+- S3 and Postgres cannot commit together. Store upload/processing intent, reconcile orphaned artifacts, and emit readiness only after durable media publication succeeds.
+- API downtime can create backlog. Age/count alarms, retained dead letters and operator replay expose the condition.
+
+## Migration Plan
+
+Implement behind a managed-events switch. Dependency: `add-mpd-staff-sign-in` supplies trusted staff/workspace identity and the backend adapter. Enable a synthetic receiver, prove tamper rejection and crash recovery, then connect the reviewed mpd-api consumer. Disable delivery on rollback but retain the outbox. Existing Vimeo polling remains for Vimeo; no SendRec playback-state dependency is enabled until event recovery passes.
