@@ -138,7 +138,7 @@ Successful native renewal SHALL renew classification after current MPD authoriza
 
 ### Requirement: Versions represent requested work
 
-Media versions SHALL exist before upload. Transcript generations SHALL be allocated atomically at request time, and only the latest requested generation SHALL publish its transcript and readiness event.
+Media versions SHALL exist before upload. Media-changing edits SHALL advance mediaVersion at acceptance. Transcript generations SHALL be allocated atomically when jobs or direct transcript uploads/edits are accepted, and only the latest requested generation SHALL publish its transcript and readiness event.
 
 #### Scenario: Older transcription finishes last
 - **WHEN** two requests finish in reverse order
@@ -147,3 +147,11 @@ Media versions SHALL exist before upload. Transcript generations SHALL be alloca
 #### Scenario: Abandoned upload
 - **WHEN** an upload is deliberately cancelled before any ready event
 - **THEN** deletion carries its valid media version and identity, allowing a receiver to retain a tombstone without creating a report
+
+#### Scenario: Corrected transcript uploaded during a job
+- **WHEN** a direct transcript upload publishes a newer generation while an older job is running
+- **THEN** the older completion cannot replace it or emit readiness as the newest transcript
+
+#### Scenario: Edited recording
+- **WHEN** trim, remove-segments or silence removal changes media
+- **THEN** its accepted mutation has a new mediaVersion and stale processing/playback facts cannot alter that version
