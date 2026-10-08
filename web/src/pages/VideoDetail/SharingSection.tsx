@@ -34,6 +34,25 @@ export function SharingSection({
   onRefetchVideo,
 }: SharingSectionProps) {
   const toast = useToast();
+  const [publishing, setPublishing] = useState(false);
+  const [publicationError, setPublicationError] = useState("");
+  const unpublished = !!video.managed && !video.published;
+  async function publish() {
+    setPublishing(true); setPublicationError("");
+    try {
+      const result = await apiFetch<{ published: boolean; mediaVersion: number }>(`/api/videos/${video.id}/publication`, {
+        method: "PUT", body: JSON.stringify({ mediaVersion: video.mediaVersion, published: !video.published }),
+      });
+      if (!result) throw new Error("Publication unavailable");
+      onVideoUpdate(prev => prev ? {
+        ...prev,
+        published: result.published,
+        mediaVersion: result.mediaVersion,
+        shareUrl: result.published ? `${window.location.origin}/watch/${encodeURIComponent(prev.shareToken)}` : "",
+      } : prev);
+    } catch (err) { setPublicationError(err instanceof Error ? err.message : "Publication unavailable"); }
+    finally { setPublishing(false); }
+  }
 
   const [uploadingThumbnail, setUploadingThumbnail] = useState(false);
   const [brandingOpen, setBrandingOpen] = useState(false);
@@ -61,11 +80,13 @@ export function SharingSection({
   const embedSnippet = `<iframe src="${window.location.origin}/embed/${video.shareToken}" width="640" height="360" frameborder="0" allowfullscreen></iframe>`;
 
   async function copyLink() {
+    if (unpublished) return;
     await copyToClipboard(video.shareUrl);
     toast.show("Link copied");
   }
 
   async function copyEmbed() {
+    if (unpublished) return;
     await copyToClipboard(embedSnippet);
     toast.show("Embed code copied");
   }
@@ -123,13 +144,13 @@ export function SharingSection({
       submitLabel: "Set password",
       onSubmit: async (password) => {
         setPromptDialog(null);
-        await apiFetch(`/api/videos/${video.id}/password`, {
-          method: "PUT",
-          body: JSON.stringify({ password }),
-        });
-        onVideoUpdate((prev) =>
-          prev ? { ...prev, hasPassword: true } : prev,
-        );
+        try {
+          setPublicationError("");
+          await apiFetch(`/api/videos/${video.id}/password`, {
+            method: "PUT", body: JSON.stringify({ password }),
+          });
+          onVideoUpdate(prev => prev ? { ...prev, hasPassword: true } : prev);
+        } catch (err) { setPublicationError(err instanceof Error ? err.message : "Password update failed"); }
       },
     });
   }
@@ -141,13 +162,14 @@ export function SharingSection({
       danger: true,
       onConfirm: async () => {
         setConfirmDialog(null);
-        await apiFetch(`/api/videos/${video.id}/password`, {
-          method: "PUT",
-          body: JSON.stringify({ password: "" }),
-        });
-        onVideoUpdate((prev) =>
-          prev ? { ...prev, hasPassword: false } : prev,
-        );
+        try {
+          setPublicationError("");
+          await apiFetch(`/api/videos/${video.id}/password`, {
+            method: "PUT", body: JSON.stringify({ password: "" }),
+          });
+          onVideoUpdate(prev => prev ? { ...prev, hasPassword: false } : prev);
+          if (video.managed) await onRefetchVideo();
+        } catch (err) { setPublicationError(err instanceof Error ? err.message : "Password update failed"); }
       },
     });
   }
@@ -307,6 +329,14 @@ export function SharingSection({
     <>
       <div className="video-detail-section">
         <h2 className="video-detail-section-title">Share Settings</h2>
+        {video.managed && <div className="detail-setting-row">
+          <span className="detail-setting-label">{video.published ? "Published" : "Unpublished"}</span>
+          {!isViewer && <button className="detail-btn" onClick={publish} disabled={publishing || video.status !== "ready"}>
+            {publishing ? "Saving..." : video.published ? "Unpublish" : "Publish recording"}
+          </button>}
+          {unpublished && <p>Set the required password, then publish to enable sharing.</p>}
+        </div>}
+        {publicationError && <p role="alert">{publicationError}</p>}
 
         <div className="detail-setting-row">
           <span className="detail-setting-label">Share link</span>
@@ -324,7 +354,7 @@ export function SharingSection({
               <input
                 type="text"
                 readOnly
-                value={video.shareUrl}
+                value={unpublished ? "Available after publication" : video.shareUrl}
                 aria-label="Share link"
                 style={{
                   flex: 1,
@@ -337,7 +367,7 @@ export function SharingSection({
                   color: "var(--color-text)",
                 }}
               />
-              <button onClick={copyLink} className="detail-btn">
+              <button onClick={copyLink} disabled={unpublished} className="detail-btn">
                 Copy link
               </button>
             </div>
@@ -350,7 +380,7 @@ export function SharingSection({
             <input
               type="text"
               readOnly
-              value={embedSnippet}
+              value={unpublished ? "Available after publication" : embedSnippet}
               aria-label="Embed code"
               style={{
                 flex: 1,
@@ -363,7 +393,7 @@ export function SharingSection({
                 color: "var(--color-text)",
               }}
             />
-            <button onClick={copyEmbed} className="detail-btn">
+            <button onClick={copyEmbed} disabled={unpublished} className="detail-btn">
               Copy embed
             </button>
           </div>

@@ -13,9 +13,10 @@ const (
 )
 
 type Claims struct {
-	UserID    string `json:"userId"`
-	TokenID   string `json:"jti"`
-	TokenType string `json:"type"`
+	UserID           string `json:"userId"`
+	ManagedSessionID string `json:"mpdSessionId,omitempty"`
+	TokenID          string `json:"jti"`
+	TokenType        string `json:"type"`
 	jwt.RegisteredClaims
 }
 
@@ -61,4 +62,10 @@ func generateToken(secret string, userID string, tokenType string, duration time
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
+}
+
+// GenerateManagedAccessToken binds the local token to server-side Cognito state.
+func GenerateManagedAccessToken(secret, userID, sessionID string, expiry time.Time) (string, error) {
+	c := &Claims{UserID: userID, ManagedSessionID: sessionID, TokenType: "access", RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(expiry), IssuedAt: jwt.NewNumericDate(time.Now())}}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(secret))
 }

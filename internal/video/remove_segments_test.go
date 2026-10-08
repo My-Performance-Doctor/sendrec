@@ -28,9 +28,9 @@ func TestRemoveSegments_Success(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"duration", "file_key", "share_token", "status", "content_type", "user_id"}).
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
-	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'processing', processing_started_at = now\(\).* RETURNING media_version`).
 		WithArgs("recordings/user/video.webm", videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"media_version"}).AddRow(1))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/videos/{id}/remove-segments", handler.RemoveSegments)
@@ -261,9 +261,9 @@ func TestRemoveSegments_ConcurrentProcessing(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"duration", "file_key", "share_token", "status", "content_type", "user_id"}).
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
-	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'processing', processing_started_at = now\(\).* RETURNING media_version`).
 		WithArgs("recordings/user/video.webm", videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"media_version"}))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/videos/{id}/remove-segments", handler.RemoveSegments)

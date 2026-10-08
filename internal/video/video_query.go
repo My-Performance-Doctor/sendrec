@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/organization"
 	"github.com/sendrec/sendrec/internal/plans"
 	"github.com/sendrec/sendrec/internal/validate"
@@ -25,6 +26,9 @@ const defaultPageSize = 50
 const maxPageSize = 100
 
 type listItem struct {
+	Managed               bool               `json:"managed,omitempty"`
+	Published             bool               `json:"published"`
+	MediaVersion          int                `json:"mediaVersion,omitempty"`
 	ID                    string             `json:"id"`
 	Title                 string             `json:"title"`
 	Status                string             `json:"status"`
@@ -252,6 +256,10 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		 FROM videos v
 		 WHERE v.status != 'deleted'`
 
+	_, managedRequest := mpd.PrincipalFromContext(r.Context())
+	if managedRequest {
+		baseQuery = strings.Replace(baseQuery, " FROM videos v", ", ms.published, ms.media_version FROM videos v LEFT JOIN mpd_video_state ms ON ms.video_id=v.id AND ms.deleted_at IS NULL", 1)
+	}
 	var args []any
 	paramIdx := 1
 
@@ -310,7 +318,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		var sharePassword *string
 		var tagsJSON string
 		var playlistsJSON string
-		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &item.Duration, &item.ShareToken, &createdAt, &shareExpiresAt, &item.ViewCount, &item.UniqueViewCount, &thumbnailKey, &sharePassword, &item.CommentMode, &item.CommentCount, &item.TranscriptStatus, &item.ViewNotification, &item.DownloadEnabled, &item.CtaText, &item.CtaUrl, &item.EmailGateEnabled, &item.SummaryStatus, &item.DocumentStatus, &item.SuggestedTitle, &item.FolderID, &item.TranscriptionLanguage, &item.NoiseReduction, &item.Pinned, &item.CaptureWarning, &tagsJSON, &playlistsJSON); err != nil {
+		scanArgs := []any{&item.ID, &item.Title, &item.Status, &item.Duration, &item.ShareToken, &createdAt, &shareExpiresAt, &item.ViewCount, &item.UniqueViewCount, &thumbnailKey, &sharePassword, &item.CommentMode, &item.CommentCount, &item.TranscriptStatus, &item.ViewNotification, &item.DownloadEnabled, &item.CtaText, &item.CtaUrl, &item.EmailGateEnabled, &item.SummaryStatus, &item.DocumentStatus, &item.SuggestedTitle, &item.FolderID, &item.TranscriptionLanguage, &item.NoiseReduction, &item.Pinned, &item.CaptureWarning, &tagsJSON, &playlistsJSON}
+		var published *bool
+		var mediaVersion *int
+		if managedRequest {
+			scanArgs = append(scanArgs, &published, &mediaVersion)
+		}
+		if err := rows.Scan(scanArgs...); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to scan video")
 			return
 		}
@@ -333,8 +347,25 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		item.ShareURL = h.baseURL + "/watch/" + item.ShareToken
 		item.HasPassword = sharePassword != nil
+		if managedRequest {
+			if published == nil || mediaVersion == nil {
+				httputil.WriteError(w, 503, "recording state unavailable")
+				return
+			}
+			item.Managed = true
+			item.Published = *published
+			item.MediaVersion = *mediaVersion
+			if !item.Published {
+				item.ShareURL = ""
+			}
+		}
+
 		if thumbnailKey != nil {
-			thumbURL, err := h.storage.GenerateDownloadURL(r.Context(), *thumbnailKey, 1*time.Hour)
+			signingContext := r.Context()
+			if managedRequest {
+				signingContext = knownMPDObject(signingContext, *thumbnailKey, true)
+			}
+			thumbURL, err := h.storage.GenerateDownloadURL(signingContext, *thumbnailKey, 1*time.Hour)
 			if err == nil {
 				item.ThumbnailURL = thumbURL
 			}

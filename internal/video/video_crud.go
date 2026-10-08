@@ -3,14 +3,18 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/organization"
 	"github.com/sendrec/sendrec/internal/plans"
 	"github.com/sendrec/sendrec/internal/validate"
@@ -27,10 +31,14 @@ type createRequest struct {
 }
 
 type createResponse struct {
-	ID              string `json:"id"`
-	UploadURL       string `json:"uploadUrl"`
-	ShareToken      string `json:"shareToken"`
-	WebcamUploadURL string `json:"webcamUploadUrl,omitempty"`
+	UploadHeaders   map[string]string `json:"uploadHeaders,omitempty"`
+	Managed         bool              `json:"managed,omitempty"`
+	MediaVersion    int               `json:"mediaVersion,omitempty"`
+	Published       bool              `json:"published"`
+	ID              string            `json:"id"`
+	UploadURL       string            `json:"uploadUrl"`
+	ShareToken      string            `json:"shareToken"`
+	WebcamUploadURL string            `json:"webcamUploadUrl,omitempty"`
 }
 
 type updateRequest struct {
@@ -168,20 +176,22 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	uploadURL, err := h.storage.GenerateUploadURL(r.Context(), fileKey, contentType, req.FileSize, 30*time.Minute)
+	uploadURL, uploadHeaders, err := h.recordingUploadURL(r.Context(), fileKey, contentType, req.FileSize)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate upload URL")
 		return
 	}
 
+	_, managed := mpd.PrincipalFromContext(r.Context())
 	resp := createResponse{
+		Managed: managed, MediaVersion: 1, UploadHeaders: uploadHeaders,
 		ID:         videoID,
 		UploadURL:  uploadURL,
 		ShareToken: shareToken,
 	}
 
 	if webcamKey != nil {
-		webcamURL, err := h.storage.GenerateUploadURL(r.Context(), *webcamKey, webcamContentType, req.WebcamFileSize, 30*time.Minute)
+		webcamURL, _, err := h.recordingUploadURL(r.Context(), *webcamKey, webcamContentType, req.WebcamFileSize)
 		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to generate webcam upload URL")
 			return
@@ -279,13 +289,15 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uploadURL, err := h.storage.GenerateUploadURL(r.Context(), fileKey, req.ContentType, req.FileSize, 30*time.Minute)
+	uploadURL, uploadHeaders, err := h.recordingUploadURL(r.Context(), fileKey, req.ContentType, req.FileSize)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate upload URL")
 		return
 	}
 
+	_, managed := mpd.PrincipalFromContext(r.Context())
 	httputil.WriteJSON(w, http.StatusCreated, createResponse{
+		Managed: managed, MediaVersion: 1, UploadHeaders: uploadHeaders,
 		ID:         videoID,
 		UploadURL:  uploadURL,
 		ShareToken: shareToken,
@@ -325,6 +337,17 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			videoID, userID,
 		).Scan(&fileKey, &fileSize, &shareToken, &webcamKey, &expectedContentType, &duration)
 		if err != nil {
+			if req.Title == "" && errors.Is(err, pgx.ErrNoRows) {
+				completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
+				if replayErr != nil {
+					httputil.WriteError(w, 503, "finalization state unavailable")
+					return
+				}
+				if completed {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
 			httputil.WriteError(w, http.StatusNotFound, "video not found")
 			return
 		}
@@ -356,14 +379,32 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			newStatus = "processing"
 		}
 
-		tag, err := h.db.Exec(r.Context(),
-			`UPDATE videos SET status = $1,
-			     processing_started_at = CASE WHEN $1 = 'processing' THEN now() ELSE NULL END,
-			     updated_at = now()
-			 WHERE id = $2 AND user_id = $3 AND status = 'uploading'`,
-			newStatus, videoID, userID,
-		)
+		acceptedVersion := 0
+		updateSQL := `UPDATE videos SET status = $1,
+                 processing_started_at = CASE WHEN $1 = 'processing' THEN now() ELSE NULL END,
+                 updated_at = now()
+             WHERE id = $2 AND user_id = $3 AND status = 'uploading'`
+		var tag pgconn.CommandTag
+		if _, managed := mpd.PrincipalFromContext(r.Context()); managed {
+			err = h.db.QueryRow(r.Context(), updateSQL+` RETURNING media_version`, newStatus, videoID, userID).Scan(&acceptedVersion)
+			if err == nil {
+				tag = pgconn.NewCommandTag("UPDATE 1")
+			}
+		} else {
+			tag, err = h.db.Exec(r.Context(), updateSQL, newStatus, videoID, userID)
+		}
 		if err != nil {
+			if req.Title == "" && errors.Is(err, pgx.ErrNoRows) {
+				completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
+				if replayErr != nil {
+					httputil.WriteError(w, 503, "finalization state unavailable")
+					return
+				}
+				if completed {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to update video")
 			return
 		}
@@ -398,6 +439,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 		if webcamKey != nil {
 			h.EnqueueJob(r.Context(), JobTypeComposite, videoID, map[string]any{
+				"mediaVersion": acceptedVersion,
 				"fileKey":      fileKey,
 				"webcamKey":    *webcamKey,
 				"thumbnailKey": thumbnailFileKey(userID, shareToken),
@@ -519,20 +561,21 @@ func (h *Handler) Trim(w http.ResponseWriter, r *http.Request) {
 	// Claim the version that was read: a conversion may have switched the key
 	// since, and the job below would edit the old one.
 	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, []any{fileKey}, "AND status = 'ready' AND file_key = $1")
-	tag, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere, updateArgs...,
-	)
+	var acceptedVersion int
+	err = h.db.QueryRow(r.Context(),
+		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere+` RETURNING media_version`, updateArgs...,
+	).Scan(&acceptedVersion)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update video status")
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		httputil.WriteError(w, http.StatusConflict, "video is already being processed")
+		if errors.Is(err, pgx.ErrNoRows) {
+			httputil.WriteError(w, 409, "video is already being processed")
+		} else {
+			httputil.WriteError(w, 500, "processing unavailable")
+		}
 		return
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), editVersionKey{}, acceptedVersion), 10*time.Minute)
 		defer cancel()
 		TrimVideoAsync(ctx, h.db, h.storage, videoID, fileKey, thumbnailFileKey(videoOwnerID, shareToken), contentType, req.StartSeconds, req.EndSeconds)
 	}()

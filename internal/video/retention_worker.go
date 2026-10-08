@@ -24,6 +24,8 @@ func processRetentionWarnings(ctx context.Context, db database.DBTX, sender Rete
 		 LEFT JOIN organizations o ON o.id = v.organization_id
 		 WHERE v.status = 'ready'
 		   AND v.pinned = false
+		   AND NOT EXISTS (SELECT 1 FROM mpd_managed_workspaces m WHERE m.organization_id=v.organization_id)
+		   AND NOT EXISTS (SELECT 1 FROM mpd_video_state m WHERE m.video_id=v.id)
 		   AND v.retention_warned_at IS NULL
 		   AND COALESCE(o.retention_days, u.retention_days) > 0
 		   AND v.created_at < now() - make_interval(days => COALESCE(o.retention_days, u.retention_days) - 7)
@@ -107,6 +109,8 @@ func processRetentionDeletions(ctx context.Context, db database.DBTX) {
 		   AND v.retention_warned_at < now() - interval '7 days'
 		   AND v.status = 'ready'
 		   AND v.pinned = false
+		   AND NOT EXISTS (SELECT 1 FROM mpd_managed_workspaces m WHERE m.organization_id=v.organization_id)
+		   AND NOT EXISTS (SELECT 1 FROM mpd_video_state m WHERE m.video_id=v.id)
 		   AND COALESCE(o.retention_days, u.retention_days) > 0
 		 LIMIT 100`)
 	if err != nil {
@@ -140,7 +144,9 @@ func processRetentionDeletions(ctx context.Context, db database.DBTX) {
 	}
 
 	result, err := db.Exec(ctx,
-		"UPDATE videos SET status = 'deleted' WHERE id = ANY($1)",
+		`UPDATE videos SET status = 'deleted' WHERE id = ANY($1)
+ AND NOT EXISTS (SELECT 1 FROM mpd_video_state m WHERE m.video_id=videos.id)
+ AND NOT EXISTS (SELECT 1 FROM mpd_managed_workspaces m WHERE m.organization_id=videos.organization_id)`,
 		videoIDs,
 	)
 	if err != nil {

@@ -162,6 +162,7 @@ export function VideoGrid({
                   <img src={video.thumbnailUrl} alt="" />
                 )}
                 <div className="video-card-play" />
+                {video.managed && !video.published && <span className="video-card-status">Unpublished</span>}
                 {video.status === "ready" && (
                   <span className="video-card-duration">{formatDuration(video.duration)}</span>
                 )}
@@ -258,6 +259,7 @@ export function VideoGrid({
               <div className="video-card-actions">
                 <button
                   onClick={() => onCopyLink(video.shareUrl)}
+                  disabled={!!video.managed && !video.published}
                   className="card-action-btn"
                 >
                   Copy link
@@ -314,7 +316,7 @@ export function VideoGrid({
                       >
                         {downloadingId === video.id ? "Downloading..." : "Download"}
                       </button>
-                      {!isViewer && (
+                      {!isViewer && !video.managed && (
                         <button
                           onClick={() => { onSetTransferVideoId(video.id); onSetOpenMenuId(null); }}
                           className="action-link"

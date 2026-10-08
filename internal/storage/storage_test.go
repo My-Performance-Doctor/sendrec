@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -685,5 +686,96 @@ func TestEnsureCORS_SetsRulesOnGaragesNotFound(t *testing.T) {
 	}
 	if len(*puts) != 1 {
 		t.Fatalf("want one CORS configuration sent, got %d", len(*puts))
+	}
+}
+
+func TestImmutableUploadSignsRequiredConditionAndCannotOverwrite(t *testing.T) {
+	var mu sync.Mutex
+	objects := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signed := strings.Split(r.URL.Query().Get("X-Amz-SignedHeaders"), ";")
+		hasCondition := false
+		for _, name := range signed {
+			hasCondition = hasCondition || name == "if-none-match"
+		}
+		if !hasCondition || r.Header.Get("If-None-Match") != "*" {
+			w.WriteHeader(403)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if _, exists := objects[r.URL.Path]; exists {
+			w.WriteHeader(412)
+			return
+		}
+		objects[r.URL.Path] = string(body)
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+	store := newTestStorage(t, storage.Config{Endpoint: server.URL})
+	signed, err := store.GenerateImmutableUploadURL(context.Background(), "synthetic.mp4", "video/mp4", 4, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(parsed.Query().Get("X-Amz-SignedHeaders"), "if-none-match") {
+		t.Fatal("write-once condition not signed")
+	}
+	for _, tc := range []struct {
+		condition, body string
+		status          int
+	}{{"", "test", 403}, {"*", "test", 200}, {"*", "evil", 412}} {
+		req, _ := http.NewRequest("PUT", signed, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "video/mp4")
+		if tc.condition != "" {
+			req.Header.Set("If-None-Match", tc.condition)
+		}
+		response, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != tc.status {
+			t.Fatalf("status %d want %d", response.StatusCode, tc.status)
+		}
+	}
+	mu.Lock()
+	body := objects[parsed.Path]
+	mu.Unlock()
+	if body != "test" {
+		t.Fatal("object overwritten")
+	}
+	ordinary, err := store.GenerateUploadURL(context.Background(), "ordinary.mp4", "video/mp4", 4, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ := url.Parse(ordinary)
+	if strings.Contains(legacy.Query().Get("X-Amz-SignedHeaders"), "if-none-match") {
+		t.Fatal("ordinary upload behavior changed")
+	}
+}
+
+func TestHeadObjectDistinguishesMissingFromDenied(t *testing.T) {
+	for _, status := range []int{404, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
+			defer server.Close()
+			store := newTestStorage(t, storage.Config{Endpoint: server.URL})
+			_, _, err := store.HeadObject(context.Background(), "synthetic.mp4")
+			if err == nil {
+				t.Fatal("missing expected HEAD error")
+			}
+			if errors.Is(err, storage.ErrObjectNotFound) != (status == 404) {
+				t.Fatalf("HEAD status %d classified incorrectly: %v", status, err)
+			}
+		})
 	}
 }

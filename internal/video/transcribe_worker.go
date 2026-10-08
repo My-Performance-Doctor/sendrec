@@ -20,7 +20,7 @@ func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string)
 		return nil
 	}
 	_, err := db.Exec(ctx,
-		`UPDATE videos SET transcript_status = 'pending', updated_at = now()
+		`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation + 1, updated_at = now()
 		 WHERE id = $1 AND status != 'deleted'`,
 		videoID,
 	)
@@ -31,7 +31,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	// Requeue jobs whose worker died. A live job gives up at its deadline, so
 	// anything a minute past it belongs to nobody.
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET transcript_status = 'pending', transcript_started_at = NULL, updated_at = now()
+		`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation + 1, transcript_started_at = NULL, updated_at = now()
 		 WHERE transcript_status = 'processing'
 		   AND (transcript_started_at < now() - make_interval(secs => $1) OR transcript_started_at IS NULL)`,
 		(transcriptionJobTimeout + time.Minute).Seconds(),
@@ -41,7 +41,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 
 	// Claim the next pending job
 	var videoID, fileKey, userID, shareToken, language string
-	var version int
+	var version, generation int
 	err := db.QueryRow(ctx,
 		`UPDATE videos SET transcript_status = 'processing', transcript_started_at = now(), updated_at = now()
 		 WHERE id = (
@@ -51,8 +51,8 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		     FOR UPDATE SKIP LOCKED
 		 )
 		 RETURNING id, file_key, media_version, user_id, share_token,
-		     COALESCE(transcription_language, (SELECT transcription_language FROM users WHERE id = videos.user_id), 'auto')`,
-	).Scan(&videoID, &fileKey, &version, &userID, &shareToken, &language)
+		     COALESCE(transcription_language, (SELECT transcription_language FROM users WHERE id = videos.user_id), 'auto'), transcript_generation`,
+	).Scan(&videoID, &fileKey, &version, &userID, &shareToken, &language, &generation)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("transcribe-worker: failed to claim job", "error", err)
@@ -61,7 +61,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	}
 
 	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
-	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, userID, shareToken, language, aiEnabled)
+	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, userID, shareToken, language, aiEnabled, generation)
 }
 
 func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, interval time.Duration, aiEnabled bool) {

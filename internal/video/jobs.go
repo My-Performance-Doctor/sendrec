@@ -63,8 +63,13 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 		thumbKey, _ := payload["thumbnailKey"].(string)
 		contentType, _ := payload["contentType"].(string)
 		duration, _ := payload["duration"].(int)
+		version, hasVersion := payload["mediaVersion"].(int)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), compositeTimeout(duration))
+			jobContext := context.Background()
+			if hasVersion {
+				jobContext = context.WithValue(jobContext, editVersionKey{}, version)
+			}
+			ctx, cancel := context.WithTimeout(jobContext, compositeTimeout(duration))
 			defer cancel()
 			CompositeWithWebcam(ctx, h.db, h.storage, videoID, fileKey, webcamKey, thumbKey, contentType)
 			// Overlaid or fallen back, the video is watchable now. On a context

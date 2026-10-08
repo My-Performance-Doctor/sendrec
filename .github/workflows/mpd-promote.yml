@@ -1,0 +1,68 @@
+name: MPD approved immutable promotion
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: Reviewed release manifest path on main
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: mpd-immutable-release
+  cancel-in-progress: false
+jobs:
+  staging:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require production reviewers before any release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/production" > "$RUNNER_TEMP/environment.json"
+          python3 - "$RUNNER_TEMP/environment.json" <<'PY'
+          import json,sys
+          rules=json.load(open(sys.argv[1])).get('protection_rules',[])
+          assert any(r.get('type')=='required_reviewers' and r.get('reviewers') and r.get('prevent_self_review') for r in rules), 'Production must require human reviewers and prevent self-review'
+          PY
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.MPD_STAGING_RELEASE_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - name: Migrate once and verify staging
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: python3 infrastructure/promote-release.py --manifest "$MANIFEST" --target staging --output staging-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-staging-release
+          path: staging-evidence.json
+  production:
+    needs: staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-staging-release
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.MPD_PRODUCTION_RELEASE_ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - name: Promote the verified digest after human approval
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: python3 infrastructure/promote-release.py --manifest "$MANIFEST" --target production --staging-evidence staging-evidence.json --output production-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-production-release
+          path: production-evidence.json

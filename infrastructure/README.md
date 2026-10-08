@@ -65,3 +65,7 @@ Stack deletion retains the recordings bucket, database instance and all Secrets 
 The ECS service, private ALB, CloudFront distribution, viewer function, synthetic receiver and log group follow the stack lifecycle. The existing VPC and CDK asset registry are shared and must remain untouched.
 
 Before any operator-run teardown, list the stack resources, verify backups and export the synthetic evaluation record. Deleting the stack does not delete retained recordings or the database. Do not automate their deletion or delete the shared bootstrap registry.
+
+## Production preparation
+
+The optional production stack and immutable release controls are documented in [the production runbook](../docs/production/README.md). Production remains unactivated, with zero application tasks and integration flags disabled by default.

@@ -17,6 +17,10 @@ import (
 func Middleware(db database.DBTX) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if auth.ManagedSessionFromContext(r.Context()) != "" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			orgID := r.Header.Get("X-Organization-Id")
 			if orgID == "" {
 				next.ServeHTTP(w, r)
@@ -77,6 +81,10 @@ func RequireRole(w http.ResponseWriter, r *http.Request, allowed ...string) stri
 // Personal context (no org) always passes through.
 func RequireWriter(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth.ManagedSessionFromContext(r.Context()) != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		orgID := auth.OrgIDFromContext(r.Context())
 		if orgID != "" && auth.OrgRoleFromContext(r.Context()) == "viewer" {
 			httputil.WriteError(w, http.StatusForbidden, "viewers cannot perform this action")

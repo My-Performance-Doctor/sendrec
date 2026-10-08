@@ -5,6 +5,9 @@ export interface VideoTag {
 }
 
 export interface Video {
+  managed?: boolean;
+  published?: boolean;
+  mediaVersion?: number;
   id: string;
   title: string;
   status: string;

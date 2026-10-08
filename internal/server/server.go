@@ -17,6 +17,7 @@ import (
 	"github.com/sendrec/sendrec/internal/docs"
 	"github.com/sendrec/sendrec/internal/geoip"
 	"github.com/sendrec/sendrec/internal/integration"
+	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/organization"
 	"github.com/sendrec/sendrec/internal/ratelimit"
 	"github.com/sendrec/sendrec/internal/scim"
@@ -30,6 +31,9 @@ type Pinger interface {
 }
 
 type Config struct {
+	MPD                       mpd.Config
+	MPDService                video.MPDServiceConfig
+	Readiness                 http.Handler
 	DB                        database.DBTX
 	Pinger                    Pinger
 	Storage                   video.ObjectStorage
@@ -77,6 +81,9 @@ type Config struct {
 }
 
 type Server struct {
+	watchLimiter        *ratelimit.Limiter
+	mpdMediaPolicy      bool
+	mpdHandler          *mpd.Handler
 	router              chi.Router
 	pinger              Pinger
 	authHandler         *auth.Handler
@@ -103,6 +110,7 @@ func New(cfg Config) *Server {
 	r.Use(slogMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders(SecurityConfig{
+		MPDPreviewOrigins:     cfg.MPD.AllowedOrigins,
 		BaseURL:               cfg.BaseURL,
 		StorageEndpoint:       cfg.S3PublicEndpoint,
 		AllowedFrameAncestors: cfg.AllowedFrameAncestors,
@@ -125,6 +133,15 @@ func New(cfg Config) *Server {
 		secureCookies := strings.HasPrefix(baseURL, "https://")
 		s.authHandler = auth.NewHandler(cfg.DB, jwtSecret, secureCookies)
 		s.authHandler.SetRegistrationEnabled(cfg.RegistrationEnabled)
+		cfg.MPD.BaseURL = baseURL
+		cfg.MPD.JWTSecret = jwtSecret
+		var mpdErr error
+		s.mpdHandler, mpdErr = mpd.NewHandler(context.Background(), cfg.DB, cfg.MPD)
+		if mpdErr != nil {
+			panic(mpdErr)
+		}
+		s.authHandler.SetManagedSessionHooks(s.mpdHandler.Guard, s.mpdHandler.Refresh, s.mpdHandler.Logout)
+		r.Use(s.mpdHandler.CORS)
 		if cfg.EmailSender != nil {
 			s.authHandler.SetEmailSender(cfg.EmailSender, baseURL)
 		}
@@ -219,7 +236,9 @@ func New(cfg Config) *Server {
 		}
 	}
 
+	s.mpdMediaPolicy = s.videoHandler != nil
 	s.routes()
+	s.registerMPDMediaRoutes(cfg)
 	return s
 }
 
@@ -227,7 +246,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
 }
 
-func apiKeyOrJWTMiddleware(db database.DBTX, jwtMiddleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+func apiKeyOrJWTMiddleware(db database.DBTX, jwtMiddleware func(http.Handler) http.Handler, guards ...func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -236,7 +255,11 @@ func apiKeyOrJWTMiddleware(db database.DBTX, jwtMiddleware func(http.Handler) ht
 				userID, err := auth.LookupAPIKey(r.Context(), db, token)
 				if err == nil {
 					ctx := auth.ContextWithUserID(r.Context(), userID)
-					next.ServeHTTP(w, r.WithContext(ctx))
+					if len(guards) > 0 {
+						guards[0](next).ServeHTTP(w, r.WithContext(ctx))
+					} else {
+						next.ServeHTTP(w, r.WithContext(ctx))
+					}
 					return
 				}
 			}
@@ -257,6 +280,10 @@ func maxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 }
 
 func (s *Server) routes() {
+	publicGuard := func(next http.Handler) http.Handler { return next }
+	if s.mpdMediaPolicy {
+		publicGuard = s.videoHandler.MPDPublicAccess
+	}
 	s.router.Get("/api/health", s.handleHealth)
 	s.router.Get("/robots.txt", s.handleRobotsTxt)
 	if s.enableDocs {
@@ -277,6 +304,14 @@ func (s *Server) routes() {
 				r.Use(sessionLimiter.Middleware)
 				r.Post("/refresh", s.authHandler.Refresh)
 				r.Post("/logout", s.authHandler.Logout)
+				r.Get("/mpd/info", s.mpdHandler.Info)
+				r.Get("/mpd/login", s.mpdHandler.Login)
+				r.Get("/mpd/callback", s.mpdHandler.Callback)
+				r.Options("/mpd/session", s.mpdHandler.Preflight)
+				r.Post("/mpd/session", s.mpdHandler.Exchange)
+				r.Post("/mpd/handoff", s.mpdHandler.Handoff)
+				r.Post("/mpd/refresh", s.mpdHandler.Refresh)
+				r.Post("/mpd/logout", s.mpdHandler.Logout)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(authLimiter.Middleware)
@@ -311,6 +346,7 @@ func (s *Server) routes() {
 		if s.scimHandler != nil {
 			s.router.Route("/api/organizations/{orgId}/scim/v2", func(r chi.Router) {
 				r.Use(scim.BearerAuth(s.db))
+				r.Use(s.mpdHandler.GuardSCIM)
 				r.Get("/ServiceProviderConfig", s.scimHandler.ServiceProviderConfig)
 				r.Get("/Schemas", s.scimHandler.Schemas)
 				r.Get("/Users", s.scimHandler.ListUsers)
@@ -421,7 +457,7 @@ func (s *Server) routes() {
 			r.Use(videoLimiter.Middleware)
 			r.Use(maxBodySize(64 * 1024))
 			// List accepts API key OR JWT
-			r.With(apiKeyOrJWTMiddleware(s.db, s.authHandler.Middleware), organization.Middleware(s.db)).Get("/", s.videoHandler.List)
+			r.With(apiKeyOrJWTMiddleware(s.db, s.authHandler.Middleware, s.mpdHandler.Guard), organization.Middleware(s.db)).Get("/", s.videoHandler.List)
 			// All other endpoints require JWT
 			r.Group(func(r chi.Router) {
 				r.Use(s.authHandler.Middleware)
@@ -553,18 +589,19 @@ func (s *Server) routes() {
 		// Unauthenticated watch surface: every GET records a view and can notify
 		// the owner, and the beacons write analytics rows, so they need the same
 		// throttling and body caps their siblings already had (SR-03).
-		watchLimiter := ratelimit.NewLimiter(5, 20)
-		s.router.With(watchLimiter.Middleware).Get("/api/watch/{shareToken}", s.videoHandler.Watch)
-		s.router.With(watchLimiter.Middleware).Get("/api/watch/{shareToken}/download", s.videoHandler.WatchDownload)
-		s.router.With(watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/verify", s.videoHandler.VerifyWatchPassword)
-		s.router.With(commentReadLimiter.Middleware).Get("/api/watch/{shareToken}/comments", s.videoHandler.ListWatchComments)
-		s.router.With(commentLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/comments", s.videoHandler.PostWatchComment)
-		s.router.With(watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/identify", s.videoHandler.IdentifyViewer)
-		s.router.With(watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/cta-click", s.videoHandler.RecordCTAClick)
-		s.router.With(watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/milestone", s.videoHandler.RecordMilestone)
-		s.router.With(watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/segments", s.videoHandler.RecordSegments)
-		s.router.With(watchLimiter.Middleware).Get("/api/watch/{shareToken}/thumbnail", s.videoHandler.WatchThumbnail)
-		s.router.With(watchLimiter.Middleware).Get("/api/videos/{shareToken}/oembed", s.videoHandler.OEmbed)
+		s.watchLimiter = ratelimit.NewLimiter(5, 20)
+		watchLimiter := s.watchLimiter
+		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/watch/{shareToken}", s.videoHandler.Watch)
+		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/watch/{shareToken}/download", s.videoHandler.WatchDownload)
+		s.router.With(publicGuard, watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/verify", s.videoHandler.VerifyWatchPassword)
+		s.router.With(publicGuard, commentReadLimiter.Middleware).Get("/api/watch/{shareToken}/comments", s.videoHandler.ListWatchComments)
+		s.router.With(publicGuard, commentLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/comments", s.videoHandler.PostWatchComment)
+		s.router.With(publicGuard, watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/identify", s.videoHandler.IdentifyViewer)
+		s.router.With(publicGuard, watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/cta-click", s.videoHandler.RecordCTAClick)
+		s.router.With(publicGuard, watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/milestone", s.videoHandler.RecordMilestone)
+		s.router.With(publicGuard, watchLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/segments", s.videoHandler.RecordSegments)
+		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/watch/{shareToken}/thumbnail", s.videoHandler.WatchThumbnail)
+		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/videos/{shareToken}/oembed", s.videoHandler.OEmbed)
 		// The id is minted only by an authenticated settings request and expires
 		// in minutes, so this needs no auth of its own — which is what lets the
 		// settings iframe load it and get its own CSP nonce. It renders as often
@@ -572,13 +609,13 @@ func (s *Server) routes() {
 		// Unauthenticated and backed by a query, it takes the same throttle as
 		// the rest of the surface a stranger can reach.
 		s.router.With(watchLimiter.Middleware).Get("/branding/preview/{id}", s.videoHandler.BrandingPreviewPage)
-		s.router.Get("/watch/{shareToken}", s.videoHandler.WatchPage)
-		s.router.Get("/embed/{shareToken}", s.videoHandler.EmbedPage)
+		s.router.With(publicGuard).Get("/watch/{shareToken}", s.videoHandler.WatchPage)
+		s.router.With(publicGuard).Get("/embed/{shareToken}", s.videoHandler.EmbedPage)
 
-		s.router.Get("/watch/playlist/{shareToken}", s.videoHandler.PlaylistWatchPage)
-		s.router.Get("/embed/playlist/{shareToken}", s.videoHandler.PlaylistEmbedPage)
-		s.router.With(watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/playlist/{shareToken}/verify", s.videoHandler.VerifyPlaylistWatchPassword)
-		s.router.With(watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/playlist/{shareToken}/identify", s.videoHandler.IdentifyPlaylistViewer)
+		s.router.With(publicGuard).Get("/watch/playlist/{shareToken}", s.videoHandler.PlaylistWatchPage)
+		s.router.With(publicGuard).Get("/embed/playlist/{shareToken}", s.videoHandler.PlaylistEmbedPage)
+		s.router.With(publicGuard, watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/playlist/{shareToken}/verify", s.videoHandler.VerifyPlaylistWatchPassword)
+		s.router.With(publicGuard, watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/playlist/{shareToken}/identify", s.videoHandler.IdentifyPlaylistViewer)
 
 		if s.billingHandlers != nil {
 			s.router.Post("/api/webhooks/creem", s.billingHandlers.Webhook)

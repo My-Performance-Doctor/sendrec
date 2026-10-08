@@ -79,4 +79,88 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::CloudFront::Function", Map.of("FunctionCode", Match.stringLikeRegexp("192\\.0\\.2\\.10")));
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("bootstrap", "false", "bootstrapCidr", "0.0.0.0/0")));
   }
+  @Test void productionIsIsolatedImmutableAndUnactivated() {
+    App app = new App(AppProps.builder().outdir("build/synthetic-production").build());
+    Stack network = new Stack(app, "ProductionSyntheticNetwork", props);
+    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
+        SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
+        SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
+        SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production", image,
+        "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations");
+    Template template = Template.fromStack(new SendRecStack(app, "Production", props, config, vpc));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
+        "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
+    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("MultiAZ", true, "BackupRetentionPeriod", 35,
+        "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"), "LifecycleConfiguration", Match.absent()));
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
+    template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
+    String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(allTasks.contains("MPD_IDENTITY_ENABLED, Value=false"));
+    assertTrue(allTasks.contains("MPD_EVENTS_ENABLED, Value=false"));
+    assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
+    template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+        "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 9);
+    template.resourceCountIs("AWS::Events::Rule", 1);
+    for (var task : template.findResources("AWS::ECS::TaskDefinition").values()) {
+      String definition = task.toString();
+      assertTrue(definition.contains("537421187871.dkr.ecr.ap-southeast-2."));
+      assertTrue(definition.contains("/sendrec@sha256:" + "a".repeat(64)));
+      assertFalse(definition.contains("REGISTRATION_ENABLED, Value=true"));
+    }
+    for (var alarm : template.findResources("AWS::CloudWatch::Alarm").values()) {
+      String definition = alarm.toString();
+      assertTrue(definition.contains(config.alertTopicArn()));
+      assertTrue(definition.contains("TreatMissingData=breaching") || definition.contains("TreatMissingData=notBreaching"));
+    }
+    // Desired count comes from the independent probe, not this dormant template.
+    template.hasResourceProperties("AWS::Lambda::Function", Map.of("Environment", Match.objectLike(Map.of(
+        "Variables", Match.objectLike(Map.of("SERVICE_ARN", Match.anyValue(), "CLUSTER_ARN", Match.anyValue()))))));
+    template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+        "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecs:DescribeServices"))))))));
+    int gated = 0;
+    for (var alarm : template.findResources("AWS::CloudWatch::Alarm").entrySet()) {
+      String definition = alarm.getValue().toString();
+      if (alarm.getKey().startsWith("DatabaseCPU") || alarm.getKey().startsWith("BackupAgeSeconds")) {
+        assertFalse(definition.contains("Expression="));
+      } else {
+        gated++;
+        double missing = alarm.getKey().startsWith("Target5xx") ? 0.0
+            : alarm.getKey().startsWith("OutboxOldestSeconds") ? 300.0 : 1.0;
+        assertTrue(definition.contains("Expression=IF(desired > 0, FILL(signal, " + missing + "), 0)"));
+        assertTrue(definition.contains("MetricName=ServiceDesiredCount"));
+      }
+    }
+    assertEquals(7, gated);
+    app.synth();
+  }
+
+  @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    Template template = Template.fromStack(stack(Map.of("releaseImage", image)));
+    template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
+    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("BackupRetentionPeriod", 7, "MultiAZ", false));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 1));
+    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
+    String tasks = template.findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(tasks.contains("MIGRATIONS_MODE, Value=only"));
+    assertTrue(tasks.contains("MIGRATIONS_MODE, Value=skip"));
+    assertTrue(tasks.contains("MPD_IDENTITY_ENABLED, Value=false"));
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("releaseImage", image.replace("@sha256:" + "a".repeat(64), ":latest"))));
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "true")));
+  }
+
+  @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", StagingConfig.INSTANCE.vpcId(), "pl-123", "isolated-bucket", image, topic));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", StagingConfig.INSTANCE.recordingsBucketName(), image, topic));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, ""));
+    assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App()));
+  }
+
 }

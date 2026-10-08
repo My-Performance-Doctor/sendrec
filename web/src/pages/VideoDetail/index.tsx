@@ -15,6 +15,7 @@ import type { TranscriptSegment } from "../../types/transcript";
 import { LimitsResponse } from "../../types/limits";
 import { formatDuration, formatDate, expiryLabel } from "../../utils/format";
 import { copyToClipboard } from "../../utils/clipboard";
+import { ManagedPreview } from "./ManagedPreview";
 import { SharingSection } from "./SharingSection";
 import { TranscriptSection } from "./TranscriptSection";
 import { CommentsSection } from "./CommentsSection";
@@ -110,6 +111,10 @@ export function VideoDetail() {
           ]);
         const found = videos?.find((v) => v.id === id) ?? null;
         setVideo(found);
+        if (found && !found.managed) {
+          apiFetch<{ downloadUrl: string }>(`/api/videos/${id}/download`)
+            .then(resp => setVideoUrl(resp?.downloadUrl ?? null)).catch(() => {});
+        }
         if (found?.transcriptionLanguage) {
           setRetranscribeLanguage(found.transcriptionLanguage);
         }
@@ -151,9 +156,6 @@ export function VideoDetail() {
     }
 
     fetchData();
-    apiFetch<{ downloadUrl: string }>(`/api/videos/${id}/download`)
-      .then(resp => setVideoUrl(resp?.downloadUrl ?? null))
-      .catch(() => {});
   }, [id]);
 
   async function createIssue(provider: string) {
@@ -198,6 +200,7 @@ export function VideoDetail() {
   }
 
   async function copyLink() {
+    if (video?.managed && !video.published) return;
     if (!video) return;
     await copyToClipboard(video.shareUrl);
     toast.show("Link copied");
@@ -444,7 +447,7 @@ export function VideoDetail() {
         <Link to="/library" className="back-link">
           &larr; Library
         </Link>
-        <a
+        {(!video.managed || video.published) && <a
           href={`/watch/${video.shareToken}`}
           target="_blank"
           rel="noopener noreferrer"
@@ -455,12 +458,14 @@ export function VideoDetail() {
           }}
         >
           View as viewer &rarr;
-        </a>
+        </a>}
       </div>
 
       <div className="video-detail-hero">
         <div style={{ position: "relative" }}>
-          {videoUrl ? (
+          {video.managed && video.status === "ready" ? (
+            <ManagedPreview id={video.id} mediaVersion={video.mediaVersion} />
+          ) : videoUrl ? (
             videoError ? (
               <div className="video-detail-thumbnail video-error-placeholder">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-secondary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -656,7 +661,7 @@ export function VideoDetail() {
         <button
           className="detail-btn detail-btn--accent"
           onClick={copyLink}
-          disabled={video.status === "processing"}
+          disabled={video.status !== "ready" || !!video.managed && !video.published}
           style={{ opacity: video.status === "processing" ? 0.5 : undefined }}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -671,7 +676,12 @@ export function VideoDetail() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
           View analytics
         </button>
-        {video.status === "ready" && videoUrl && (
+        {video.managed && video.status === "ready" && <button className="detail-btn" onClick={async () => {
+          try { const result = await apiFetch<{ downloadUrl: string }>(`/api/videos/${video.id}/download`);
+            if (result?.downloadUrl) window.location.assign(result.downloadUrl);
+          } catch (err) { toast.show(err instanceof Error ? err.message : "Download unavailable"); }
+        }}>Download</button>}
+        {video.status === "ready" && !video.managed && videoUrl && (
           <a href={videoUrl} download className="detail-btn" style={{ textDecoration: "none" }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             Download

@@ -10,6 +10,7 @@ import (
 )
 
 type SecurityConfig struct {
+	MPDPreviewOrigins     []string
 	BaseURL               string
 	StorageEndpoint       string
 	AllowedFrameAncestors string
@@ -49,6 +50,10 @@ func securityHeaders(cfg SecurityConfig) func(http.Handler) http.Handler {
 			w.Header().Set("Permissions-Policy", "camera=self, microphone=self, geolocation=(), screen-wake-lock=(), display-capture=self")
 
 			cspFrameAncestors := frameAncestors
+			if r.URL.Path == "/mpd-preview" {
+				w.Header().Del("X-Frame-Options")
+				cspFrameAncestors = "'self' " + strings.Join(cfg.MPDPreviewOrigins, " ")
+			}
 			if strings.HasPrefix(r.URL.Path, "/embed/") {
 				cspFrameAncestors = "*"
 			}

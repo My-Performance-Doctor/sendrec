@@ -7,6 +7,9 @@ interface UploadResponse {
   id: string;
   uploadUrl: string;
   shareToken: string;
+  managed?: boolean;
+  uploaded?: boolean;
+  completed?: boolean;
 }
 
 interface FileEntry {
@@ -18,6 +21,8 @@ interface UploadResult {
   fileName: string;
   shareUrl: string;
   error?: string;
+  videoId?: string;
+  managed?: boolean;
 }
 
 const MAX_FILES = 10;
@@ -31,6 +36,7 @@ export function Upload() {
   const [results, setResults] = useState<UploadResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const pending = useRef(new Map<File, UploadResponse>());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
 
@@ -123,8 +129,9 @@ export function Upload() {
     try {
       const limits = await apiFetch<LimitsResponse>("/api/videos/limits");
       if (limits && limits.maxVideosPerMonth > 0) {
-        const remaining = limits.maxVideosPerMonth - limits.videosUsedThisMonth;
-        if (files.length > remaining) {
+        const remaining = Math.max(0, limits.maxVideosPerMonth - limits.videosUsedThisMonth);
+        const newRecordings = files.filter(entry => !pending.current.has(entry.file)).length;
+        if (newRecordings > remaining) {
           setError(
             remaining <= 0
               ? "Monthly video limit reached"
@@ -147,7 +154,7 @@ export function Upload() {
       setCurrentFileIndex(i);
       setProgress(0);
       const entry = files[i];
-      let videoId: string | null = null;
+
 
       try {
         const fileContentType =
@@ -159,7 +166,8 @@ export function Upload() {
 
         setProgress(10);
 
-        const result = await apiFetch<UploadResponse>("/api/videos/upload", {
+        const result = pending.current.get(entry.file) ?? await apiFetch<UploadResponse>("/api/videos/upload", {
+          preserveOnUnauthorized:true,
           method: "POST",
           body: JSON.stringify({
             title: entry.title || entry.file.name.replace(/\.[^.]+$/, ""),
@@ -172,13 +180,22 @@ export function Upload() {
           throw new Error("Failed to create upload");
         }
 
-        videoId = result.id;
+        const retrying=pending.current.has(entry.file);
+        pending.current.set(entry.file,result);
         setProgress(20);
 
-        await new Promise<void>((resolve, reject) => {
+        if (!result.uploaded) {
+        if (retrying) {
+          const fresh=await apiFetch<{uploadUrl?:string; uploaded?:boolean}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen",contentType:fileContentType,fileSize:entry.file.size})});
+          if(!fresh)throw new Error("Sign in again, then retry");
+          if(fresh.uploadUrl) result.uploadUrl=fresh.uploadUrl;
+          result.uploaded=fresh.uploaded === true;
+        }
+        if (!result.uploaded) await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", result.uploadUrl);
           xhr.setRequestHeader("Content-Type", fileContentType);
+          if (result.managed) xhr.setRequestHeader("If-None-Match", "*");
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
               setProgress(20 + Math.round((e.loaded / e.total) * 60));
@@ -191,20 +208,31 @@ export function Upload() {
           xhr.onerror = () => reject(new Error("Upload failed"));
           xhr.send(entry.file);
         });
+        result.uploaded=true;
+        }
 
-        await apiFetch(`/api/videos/${result.id}`, {
+        if (!result.completed) await apiFetch(`/api/videos/${result.id}`, {
+          preserveOnUnauthorized:true,
           method: "PATCH",
           body: JSON.stringify({ status: "ready" }),
         });
 
+        result.completed=true;
         setProgress(100);
         uploadResults.push({
           fileName: entry.file.name,
-          shareUrl: `${window.location.origin}/watch/${result.shareToken}`,
+          shareUrl: result.managed ? "" : `${window.location.origin}/watch/${result.shareToken}`,
+          managed:result.managed,videoId:result.id,
         });
       } catch (err) {
-        if (videoId) {
-          apiFetch(`/api/videos/${videoId}`, { method: "DELETE" }).catch(() => {});
+        const failed = pending.current.get(entry.file);
+        if (failed && !failed.managed) {
+          try {
+            await apiFetch(`/api/videos/${failed.id}`, { method: "DELETE" });
+          } catch {
+            // Preserve the original upload error if cleanup is unavailable.
+          }
+          pending.current.delete(entry.file);
         }
         uploadResults.push({
           fileName: entry.file.name,
@@ -238,6 +266,7 @@ export function Upload() {
   }
 
   function uploadAnother() {
+    pending.current.clear();
     setFiles([]);
     setResults(null);
     setError(null);
@@ -308,7 +337,7 @@ export function Upload() {
 
             {succeeded.map((result, i) => (
               <div key={i} className="result-row">
-                <a href={result.shareUrl} target="_blank" rel="noopener noreferrer" className="result-url">
+                {result.managed ? <Link to={`/videos/${result.videoId}`}>Unpublished. Preview and sharing settings</Link> : <><a href={result.shareUrl} target="_blank" rel="noopener noreferrer" className="result-url">
                   {result.shareUrl}
                 </a>
                 <button
@@ -317,7 +346,7 @@ export function Upload() {
                   className="result-copy-btn"
                 >
                   {copiedIndex === i ? "Copied!" : "Copy"}
-                </button>
+                </button></>}
               </div>
             ))}
 
@@ -329,6 +358,7 @@ export function Upload() {
               </div>
             ))}
 
+            {failed.length>0 && <p><a href="/login" target="_blank" rel="noopener noreferrer">Sign in again in another tab</a> <button onClick={handleUpload}>Retry failed uploads</button></p>}
             <div className="result-actions">
               <button onClick={uploadAnother} className="btn-primary">
                 Upload more

@@ -77,6 +77,13 @@ async function openOverflowMenu(user?: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("Library", () => {
+ it("marks managed drafts unpublished and disables copying", async () => {
+  mockApiFetch.mockReset();
+  mockFetch([makeVideo({ managed: true, published: false })]);renderLibrary();
+  expect(await screen.findByText("Unpublished")).toBeInTheDocument();
+  expect(screen.getByRole("button", {name:"Copy link"})).toBeDisabled();
+ });
+
   beforeEach(() => {
     mockApiFetch.mockReset();
     mockUseOrganization.mockReturnValue({

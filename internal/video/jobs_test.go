@@ -64,7 +64,7 @@ func TestEnqueueJob_TranscribeType(t *testing.T) {
 
 	// EnqueueTranscription does: UPDATE videos SET transcript_status = 'pending', updated_at = now()
 	// WHERE id = $1 AND status != 'deleted'
-	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', updated_at = now\(\)`).
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1, updated_at = now\(\)`).
 		WithArgs("video-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 

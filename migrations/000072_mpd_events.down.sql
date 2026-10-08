@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS mpd_event_evidence_guard ON mpd_event_outbox;
+DROP FUNCTION IF EXISTS mpd_guard_event_evidence();
+DROP TRIGGER IF EXISTS mpd_video_after_trigger ON videos;
+DROP TRIGGER IF EXISTS mpd_video_before_trigger ON videos;
+DROP FUNCTION IF EXISTS mpd_video_after();
+DROP FUNCTION IF EXISTS mpd_video_before();
+DROP FUNCTION IF EXISTS mpd_enqueue_event(UUID,TEXT,INTEGER,JSONB,TEXT);
+DROP TABLE IF EXISTS mpd_playback_facts,mpd_playback_sessions,mpd_event_outbox,mpd_video_state;
+ALTER TABLE videos DROP COLUMN IF EXISTS transcript_generation;
+ALTER TABLE videos DROP COLUMN IF EXISTS transcript_published_generation;
