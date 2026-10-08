@@ -7,12 +7,12 @@
 
 ## 2. Enforcement and media integration
 
-- [ ] 2.1 Project MPD capabilities into workspace roles and enforce them across management routes; test personal context, header tampering, API keys, local passwords and alternate SSO bypass attempts. Refuse managed account/workspace deletion and retention changes; verify offboarding retains media.
+- [ ] 2.1 Project MPD capabilities into workspace roles and enforce them across management routes; test personal context, header tampering, API keys, local passwords and alternate SSO bypass attempts. Refuse managed account/workspace deletion, retention changes, cross-boundary video transfer, SSO reconfiguration and SCIM provisioning; verify offboarding retains media.
 - [ ] 2.2 Implement bounded access checks and native/future-client renewal rules; verify expired grants fail closed and offboarding blocks existing sessions within 60 seconds.
 - [ ] 2.3 Add hashed scoped MPD service credentials and metadata/transcript/password/publication endpoints; test allowed actions, token rotation, wrong-workspace denial and forbidden deletion/impersonation.
 - [ ] 2.4 Add managed unpublished state and enforce it on watch/embed, captions, thumbnails and downloads; inventory shared playlists, oEmbed/thumbnails, comments and progress endpoints too. Test an unpublished/password-protected item in a public playlist and refuse any publication or password bypass.
 - [ ] 2.5 Cap playback/download GET URLs at five minutes while preserving or renewing screen/webcam PUT URLs at their bounded upload lifetime and protect credential storage; implement authorized URL renewal that preserves playback position and paused state. Verify watch/embed, playlist and library/detail long playback, pause/seek across expiry, download resume, delayed sequential uploads, denied renewal and redacted errors with synthetic fixtures.
-- [ ] 2.6 Add standalone unpublished/publish/copy-link states and the MPD sign-in entry and explicit operator identity-linking procedure; verify the recorder works and a matching email alone cannot transfer evaluation-owner media. Activate an empty managed workspace; block automatic adoption of old media or owners without verified bindings.
+- [ ] 2.6 Add the authorized unpublished staff-preview route and standalone unpublished/publish/copy-link states and the MPD sign-in entry and explicit operator identity-linking procedure; verify the recorder works and a matching email alone cannot transfer evaluation-owner media. Activate an empty managed workspace; block automatic adoption of old media or owners without verified bindings.
 
 ## 3. Compatibility and handoff
 

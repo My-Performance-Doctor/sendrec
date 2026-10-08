@@ -78,7 +78,7 @@ The system SHALL provide a separate service credential for MPD metadata, transcr
 
 ### Requirement: Managed publication and protected links
 
-A new managed recording SHALL remain unavailable through public share/watch/embed routes until an authorized sharing action publishes it. Password and publication state SHALL be enforced on watch, embed, transcript, download and derived media access. New signed playback/download GET URLs SHALL expire within five minutes. Upload PUT URLs SHALL retain bounded upload lifetimes and support authorized per-part renewal for delayed screen/webcam uploads.
+A new managed recording SHALL remain unavailable through public share/watch/embed routes until an authorized sharing action publishes it. Password and publication state SHALL be enforced on watch, embed, transcript, download and derived media access. New signed playback/download GET URLs SHALL expire within five minutes. Upload PUT URLs SHALL retain bounded upload lifetimes and support authorized per-object renewal for existing single-PUT screen/webcam uploads, without introducing multipart upload for delayed screen/webcam uploads.
 
 #### Scenario: Unpublished share token
 - **WHEN** a caller knows a new managed recording's share token before publication
@@ -151,3 +151,23 @@ Clients SHALL retain local recording blobs and resumable state during temporary 
 #### Scenario: Delayed webcam upload
 - **WHEN** a slow screen upload finishes after the originally issued webcam PUT URL expires
 - **THEN** an authorized client obtains a fresh webcam upload URL and completes without deleting the take
+
+### Requirement: Managed identity and transfer boundaries
+
+Managed workspace SSO configuration, SCIM provisioning/token issuance and account linking SHALL remain deployment-controlled. Normal video transfer SHALL refuse movement into or out of managed workspaces. Staff access tokens SHALL validate client_id against the approved list and SHALL not require an ID-token aud claim.
+
+#### Scenario: Alternate provisioning path
+- **WHEN** a managed administrator changes SSO, issues a SCIM token or uses an old token to upsert a managed user by email
+- **THEN** the operation is refused without altering identity or membership
+
+#### Scenario: Transfer bypass
+- **WHEN** a caller transfers personal media into managed scope or moves managed media to personal scope
+- **THEN** the normal transfer route refuses the request and keeps publication/retention policy intact
+
+### Requirement: Authorized unpublished preview
+
+A separate staff-preview operation SHALL check current read and workspace access before granting short video/version/session-bound preview authorization. It SHALL support unpublished media without enabling public share routes. Classification-only proofs SHALL not supply that authorization.
+
+#### Scenario: Preview before publication
+- **WHEN** authorized staff use the native or synthetic future-client preview of an unpublished recording
+- **THEN** the protected preview plays as staff_preview while the public share token remains unavailable
