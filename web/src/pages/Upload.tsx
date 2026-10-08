@@ -225,7 +225,15 @@ export function Upload() {
           managed:result.managed,videoId:result.id,
         });
       } catch (err) {
-
+        const failed = pending.current.get(entry.file);
+        if (failed && !failed.managed) {
+          try {
+            await apiFetch(`/api/videos/${failed.id}`, { method: "DELETE" });
+          } catch {
+            // Preserve the original upload error if cleanup is unavailable.
+          }
+          pending.current.delete(entry.file);
+        }
         uploadResults.push({
           fileName: entry.file.name,
           shareUrl: "",
@@ -258,6 +266,7 @@ export function Upload() {
   }
 
   function uploadAnother() {
+    pending.current.clear();
     setFiles([]);
     setResults(null);
     setError(null);

@@ -16,7 +16,7 @@ type Checker struct {
 	Workers  Probe
 }
 
-// ServeHTTP requires all dependencies, including the worker supervisor. A missing
+// ServeHTTP requires all dependencies, including the monitoring probe. A missing
 // probe is an incomplete configuration and must not make a release healthy.
 func (c Checker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

@@ -677,7 +677,7 @@ describe("Record", () => {
     expect(screen.queryByText("Upload failed")).not.toBeInTheDocument();
   });
 
-  it("retains the created video when upload fails", async () => {
+  it("retains the managed video when upload fails", async () => {
     class FailingXHR extends MockXHR {
       status = 500;
       send = vi.fn().mockImplementation(function (this: FailingXHR) {
@@ -699,6 +699,7 @@ describe("Record", () => {
 
     mockApiFetch.mockResolvedValueOnce({
       id: "video-cleanup",
+      managed: true,
       uploadUrl: "https://s3.example.com/upload",
       shareToken: "token-cleanup",
     });
@@ -1212,17 +1213,18 @@ describe("Record", () => {
       sentBodies = [];
     });
 
-    it("retries the same recording", async () => {
+    it("cleans up a failed legacy upload and retries the same local recording", async () => {
       const user = await failFirstUpload(userEvent.setup());
-      mockApiFetch.mockResolvedValueOnce({ uploadUrl: "https://s3.example.com/renewed" });
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1", {method:"DELETE"});
+      mockApiFetch.mockResolvedValueOnce({ id: "video-2", uploadUrl: "https://s3.example.com/renewed", shareToken: "t1" });
       mockApiFetch.mockResolvedValueOnce(undefined); // PATCH ready
 
       await user.click(screen.getByText("Retry upload"));
 
       await waitFor(() => expect(screen.getByDisplayValue(/watch\/t1/)).toBeInTheDocument());
       expect(sentBodies).toEqual([take, take]);
-      expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(1);
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.objectContaining({method:"POST",preserveOnUnauthorized:true}));
+      expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(2);
+      expect(mockApiFetch).not.toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.anything());
     });
 
     it("recovers a managed upload whose storage acknowledgement was lost without another PUT", async () => {

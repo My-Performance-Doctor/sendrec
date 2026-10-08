@@ -31,13 +31,15 @@ func (h *Handler) loadPlaylistVideos(ctx context.Context, playlistID string) ([]
 			return nil, err
 		}
 
-		videoURL, err := h.storage.GenerateDownloadURL(ctx, fileKey, 1*time.Hour)
+		managed := managedShare(ctx, videoShareToken)
+		videoURL, err := h.storage.GenerateDownloadURL(knownMPDObject(ctx, fileKey, managed), fileKey, 1*time.Hour)
 		if err != nil {
 			slog.Error("playlist: failed to generate video URL", "video_id", id, "error", err)
 			continue
 		}
 
 		item := playlistWatchVideoItem{
+			Managed:     managed,
 			ID:          id,
 			Title:       videoTitle,
 			Duration:    duration,
@@ -47,7 +49,7 @@ func (h *Handler) loadPlaylistVideos(ctx context.Context, playlistID string) ([]
 		}
 
 		if thumbnailKey != nil {
-			thumbURL, err := h.storage.GenerateDownloadURL(ctx, *thumbnailKey, 1*time.Hour)
+			thumbURL, err := h.storage.GenerateDownloadURL(knownMPDObject(ctx, *thumbnailKey, managed), *thumbnailKey, 1*time.Hour)
 			if err == nil {
 				item.ThumbnailURL = thumbURL
 			}

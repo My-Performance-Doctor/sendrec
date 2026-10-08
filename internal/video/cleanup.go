@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
+	"github.com/sendrec/sendrec/internal/mpd"
 )
 
 // PurgeOrphanedFiles retries the storage cleanup of deleted videos whose
@@ -117,6 +118,9 @@ func StartCleanupLoop(ctx context.Context, db database.DBTX, storage ObjectStora
 				slog.Info("cleanup: shutting down")
 				return
 			case <-ticker.C:
+				if err := mpd.CleanupExpired(ctx, db, 10000); err != nil {
+					slog.Error("cleanup: expired MPD access cleanup unavailable")
+				}
 				AbandonStaleUploads(ctx, db)
 				PurgeOrphanedFiles(ctx, db, storage)
 				DeleteRetiredObjects(ctx, db, storage)

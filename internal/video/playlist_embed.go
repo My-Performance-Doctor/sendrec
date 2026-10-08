@@ -447,7 +447,7 @@ var playlistEmbedTemplate = template.Must(template.New("playlist-embed").Funcs(t
         var videos = {{.VideosJSON}};
         var currentIndex = 0;
         var player = document.getElementById('player');
-        if(videos.length)player.dataset.shareToken=videos[0].shareToken;
+        if(videos.length){player.dataset.shareToken=videos[0].shareToken;player.dataset.mpdManaged=String(videos[0].managed===true);}
         var container = document.getElementById('player-container');
         var nextOverlay = document.getElementById('next-overlay');
         var nextTitleEl = document.getElementById('next-title');

@@ -936,6 +936,12 @@ func ContextWithOrg(ctx context.Context, orgID, role string) context.Context {
 // root path. It also clears the legacy cookie at /api/auth to prevent
 // duplicate cookies from older client sessions.
 func SetRefreshTokenCookie(w http.ResponseWriter, token string, secureCookies bool) {
+	// A successful local or ordinary SSO login replaces any older managed login.
+	// Clear only browser cookies; persisted MPD authorization guards still apply.
+	for name, path := range map[string]string{"mpd_refresh": "/api/auth", "mpd_classification": "/", "mpd_login": "/api/auth/mpd"} {
+		http.SetCookie(w, &http.Cookie{Name: name, Path: path, Secure: secureCookies, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    "",

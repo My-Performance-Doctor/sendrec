@@ -1,6 +1,7 @@
 package mpd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -57,10 +58,9 @@ func (h *Handler) populateDisplay(r *http.Request, raw string, id *Identity) err
 		return ErrDenied
 	}
 	var c struct {
-		Name          string `json:"name"`
-		EmailVerified bool   `json:"email_verified"`
+		Name string `json:"name"`
 	}
-	if info.Claims(&c) != nil || !c.EmailVerified || info.Email == "" {
+	if info.Claims(&c) != nil || !info.EmailVerified || info.Email == "" {
 		return ErrDenied
 	}
 	id.Email = info.Email
@@ -248,11 +248,17 @@ func (h *Handler) Handoff(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "mpd_login", Path: "/api/auth/mpd", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	h.respondSession(w, r, sid, true)
 }
-func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid string, native bool) {
-	s, err := h.validateSession(r.Context(), sid)
+
+type sessionResponse struct {
+	session                         *session
+	access, refresh, classification string
+	expiry                          time.Time
+}
+
+func (h *Handler) prepareSession(ctx context.Context, sid string, native bool) (*sessionResponse, error) {
+	s, err := h.validateSession(ctx, sid)
 	if err != nil {
-		identityError(w, err)
-		return
+		return nil, err
 	}
 	expiry := time.Now().Add(15 * time.Minute)
 	if expiry.After(s.CognitoExpiry) {
@@ -260,29 +266,48 @@ func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid str
 	}
 	access, err := auth.GenerateManagedAccessToken(h.cfg.JWTSecret, s.UserID, sid, expiry)
 	if err != nil {
-		identityError(w, ErrUnavailable)
-		return
+		return nil, ErrUnavailable
 	}
+	result := &sessionResponse{session: s, access: access, expiry: expiry}
 	if native {
-		refresh, e := randomSecret()
+		result.refresh, err = randomSecret()
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		result.classification, err = randomSecret()
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		tag, e := h.db.Exec(ctx, `UPDATE mpd_sessions SET refresh_hash=$2,classification_hash=$3,classification_expires_at=$4 WHERE id=$1 AND NOT revoked`, sid, hash(result.refresh), hash(result.classification), expiry)
 		if e != nil {
-			identityError(w, ErrUnavailable)
-			return
+			return nil, ErrUnavailable
 		}
-		classification, e := randomSecret()
-		if e != nil {
-			identityError(w, ErrUnavailable)
-			return
+		if tag.RowsAffected() != 1 {
+			return nil, ErrDenied
 		}
-		if _, e = h.db.Exec(r.Context(), `UPDATE mpd_sessions SET refresh_hash=$2,classification_hash=$3,classification_expires_at=$4 WHERE id=$1 AND NOT revoked`, sid, hash(refresh), hash(classification), expiry); e != nil {
-			identityError(w, ErrUnavailable)
-			return
+	}
+	return result, nil
+}
+func (h *Handler) writeSession(w http.ResponseWriter, result *sessionResponse) {
+	s := result.session
+	if result.refresh != "" {
+		// Switching to managed sign-in cannot leave a competing local session cookie.
+		for _, path := range []string{"/", "/api/auth"} {
+			http.SetCookie(w, &http.Cookie{Name: "refresh_token", Path: path, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 		}
-		http.SetCookie(w, &http.Cookie{Name: "mpd_refresh", Value: refresh, Path: "/api/auth", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(time.Until(s.Expiry).Seconds())})
-		http.SetCookie(w, &http.Cookie{Name: "mpd_classification", Value: classification, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(time.Until(expiry).Seconds())})
+		http.SetCookie(w, &http.Cookie{Name: "mpd_refresh", Value: result.refresh, Path: "/api/auth", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(time.Until(s.Expiry).Seconds())})
+		http.SetCookie(w, &http.Cookie{Name: "mpd_classification", Value: result.classification, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(time.Until(result.expiry).Seconds())})
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	httputil.WriteJSON(w, 200, map[string]any{"accessToken": access, "expiresAt": expiry, "organizationId": s.OrganizationID, "capabilities": s.Capabilities, "managed": true})
+	httputil.WriteJSON(w, 200, map[string]any{"accessToken": result.access, "expiresAt": result.expiry, "organizationId": s.OrganizationID, "capabilities": s.Capabilities, "managed": true})
+}
+func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid string, native bool) {
+	result, err := h.prepareSession(r.Context(), sid, native)
+	if err != nil {
+		identityError(w, err)
+		return
+	}
+	h.writeSession(w, result)
 }
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	if !h.allowedOrigin(w, r, true) {
@@ -293,13 +318,29 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		identityError(w, ErrDenied)
 		return
 	}
+	b, ok := h.db.(beginner)
+	if !ok {
+		identityError(w, ErrUnavailable)
+		return
+	}
+	// Serialize refreshes using the row lock. A failed upstream request leaves the
+	// cookie valid; a committed rotation makes a concurrent replay fail its lookup.
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	tx, e := b.Begin(ctx)
+	if e != nil {
+		identityError(w, ErrUnavailable)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var sid string
-	// Consume before use. Concurrent replay cannot rotate the same credential twice.
-	if h.db.QueryRow(r.Context(), `UPDATE mpd_sessions SET refresh_hash=NULL WHERE refresh_hash=$1 AND NOT revoked AND expires_at>now() RETURNING id`, hash(c.Value)).Scan(&sid) != nil {
+	if tx.QueryRow(ctx, `SELECT id FROM mpd_sessions WHERE refresh_hash=$1 AND NOT revoked AND expires_at>now() FOR UPDATE`, hash(c.Value)).Scan(&sid) != nil {
 		identityError(w, ErrDenied)
 		return
 	}
-	s, e := h.loadSession(r.Context(), sid)
+	scoped := *h
+	scoped.db = tx
+	s, e := scoped.loadSession(ctx, sid)
 	if e != nil || s.RefreshEncrypted == "" {
 		identityError(w, ErrDenied)
 		return
@@ -309,27 +350,18 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		identityError(w, ErrDenied)
 		return
 	}
-	token, e := h.oauth.TokenSource(oidc.ClientContext(r.Context(), h.client), &oauth2.Token{RefreshToken: raw}).Token()
+	token, e := h.oauth.TokenSource(oidc.ClientContext(ctx, h.client), &oauth2.Token{RefreshToken: raw}).Token()
 	if e != nil {
 		identityError(w, ErrUnavailable)
 		return
 	}
-	id, e := h.VerifyAccess(r.Context(), token.AccessToken)
+	id, e := h.VerifyAccess(ctx, token.AccessToken)
 	if e != nil {
 		identityError(w, e)
 		return
 	}
 	var subject string
-	if h.db.QueryRow(r.Context(), `SELECT subject FROM mpd_external_identities WHERE user_id=$1 AND issuer=$2`, s.UserID, id.Issuer).Scan(&subject) != nil || subject != id.Subject {
-		identityError(w, ErrDenied)
-		return
-	}
-	g, e := h.Access(r.Context(), token.AccessToken, id)
-	if e != nil {
-		identityError(w, e)
-		return
-	}
-	if g.StaffID != s.StaffID || g.TenantID != s.TenantID {
+	if tx.QueryRow(ctx, `SELECT subject FROM mpd_external_identities WHERE user_id=$1 AND issuer=$2`, s.UserID, id.Issuer).Scan(&subject) != nil || subject != id.Subject {
 		identityError(w, ErrDenied)
 		return
 	}
@@ -346,13 +378,64 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		identityError(w, ErrUnavailable)
 		return
 	}
-	js, _ := json.Marshal(g)
-	_, e = h.db.Exec(r.Context(), `UPDATE mpd_sessions SET access_encrypted=$2,refresh_encrypted=$3,cognito_expires_at=$4,grant_json=$5,grant_expires_at=$6 WHERE id=$1 AND NOT revoked`, sid, enc, refresh, id.ExpiresAt, js, g.ValidUntil)
-	if e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE mpd_sessions SET access_encrypted=$2,refresh_encrypted=$3,cognito_expires_at=$4 WHERE id=$1 AND NOT revoked`, sid, enc, refresh, id.ExpiresAt); e != nil {
 		identityError(w, ErrUnavailable)
 		return
 	}
-	h.respondSession(w, r, sid, true)
+	g, e := h.Access(ctx, token.AccessToken, id)
+	if e != nil {
+		// Preserve a newly rotated Cognito credential after an MPD outage, while
+		// granting no local access and keeping the same browser cookie retryable.
+		if e == ErrDenied {
+			_, e = tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid)
+			if e != nil {
+				identityError(w, ErrUnavailable)
+				return
+			}
+			e = ErrDenied
+		}
+		failure := e
+		if tx.Commit(ctx) != nil {
+			identityError(w, ErrUnavailable)
+			return
+		}
+		identityError(w, failure)
+		return
+	}
+	if g.StaffID != s.StaffID || g.TenantID != s.TenantID {
+		identityError(w, ErrDenied)
+		return
+	}
+	// A local cookie-write failure must not discard credentials already rotated
+	// upstream. The savepoint preserves them without granting local access.
+	if _, e = tx.Exec(ctx, `SAVEPOINT local_session_rotation`); e != nil {
+		identityError(w, ErrUnavailable)
+		return
+	}
+	preserveRetry := func() {
+		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT local_session_rotation`); err == nil {
+			_ = tx.Commit(ctx)
+		}
+	}
+	js, _ := json.Marshal(g)
+	if _, e = tx.Exec(ctx, `UPDATE mpd_sessions SET grant_json=$2,grant_expires_at=$3 WHERE id=$1 AND NOT revoked`, sid, js, g.ValidUntil); e != nil {
+		preserveRetry()
+		identityError(w, ErrUnavailable)
+		return
+	}
+	result, e := scoped.prepareSession(ctx, sid, true)
+	if e != nil {
+		if e == ErrUnavailable {
+			preserveRetry()
+		}
+		identityError(w, e)
+		return
+	}
+	if tx.Commit(ctx) != nil {
+		identityError(w, ErrUnavailable)
+		return
+	}
+	h.writeSession(w, result)
 }
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if !h.allowedOrigin(w, r, true) {

@@ -206,8 +206,8 @@ func (h *Handler) GuardSCIM(next http.Handler) http.Handler {
 			httputil.WriteError(w, 403, "managed provisioning is deployment controlled")
 			return
 		}
-		if len(parts) > 5 && validUUID(parts[5]) {
-			if h.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM mpd_external_identities WHERE user_id=$1)`, parts[5]).Scan(&managed) != nil {
+		if len(parts) > 6 && parts[5] == "Users" && validUUID(parts[6]) {
+			if h.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM mpd_external_identities WHERE user_id=$1)`, parts[6]).Scan(&managed) != nil {
 				identityError(w, ErrUnavailable)
 				return
 			}

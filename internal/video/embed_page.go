@@ -12,6 +12,7 @@ import (
 )
 
 type embedPageData struct {
+	Managed       bool
 	Title         string
 	VideoURL      string
 	ThumbnailURL  string
@@ -190,7 +191,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
             </div>
 {{else}}
             <div class="player-container" id="player-container">
-                <video id="player" playsinline webkit-playsinline{{if .TranscriptURL}} crossorigin="anonymous"{{end}} controlsList="nodownload" src="{{.VideoURL}}"{{if .ThumbnailURL}} poster="{{.ThumbnailURL}}"{{end}}>{{if .TranscriptURL}}<track kind="subtitles" src="{{.TranscriptURL}}" srclang="en" label="Subtitles">{{end}}</video>
+                <video data-mpd-managed="{{.Managed}}" id="player" playsinline webkit-playsinline{{if .TranscriptURL}} crossorigin="anonymous"{{end}} controlsList="nodownload" src="{{.VideoURL}}"{{if .ThumbnailURL}} poster="{{.ThumbnailURL}}"{{end}}>{{if .TranscriptURL}}<track kind="subtitles" src="{{.TranscriptURL}}" srclang="en" label="Subtitles">{{end}}</video>
 ` + playerControlsHTML + `
             </div>
 {{end}}
@@ -734,6 +735,7 @@ func (h *Handler) EmbedPage(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := embedPageTemplate.Execute(w, embedPageData{
+		Managed:       managedShare(r.Context(), shareToken),
 		Title:         title,
 		VideoURL:      videoURL,
 		ThumbnailURL:  thumbnailURL,

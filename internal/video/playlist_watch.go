@@ -26,6 +26,7 @@ type playlistWatchData struct {
 }
 
 type playlistWatchVideoItem struct {
+	Managed      bool   `json:"managed"`
 	ID           string `json:"id"`
 	Title        string `json:"title"`
 	Duration     int    `json:"duration"`
@@ -650,7 +651,7 @@ var playlistWatchTemplate = template.Must(template.New("playlist-watch").Funcs(t
         var videos = {{.VideosJSON}};
         var currentIndex = 0;
         var player = document.getElementById('player');
-        if(videos.length)player.dataset.shareToken=videos[0].shareToken;
+        if(videos.length){player.dataset.shareToken=videos[0].shareToken;player.dataset.mpdManaged=String(videos[0].managed===true);}
         var container = document.getElementById('player-container');
         var titleEl = document.getElementById('current-title');
         var counterEl = document.getElementById('player-counter');

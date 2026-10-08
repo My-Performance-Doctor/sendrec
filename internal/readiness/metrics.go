@@ -13,13 +13,14 @@ import (
 
 // Monitor emits aggregate counts only. It never logs query errors or row data.
 // It checks work overdue beyond the documented media and event recovery bounds.
-// It cannot prove an idle worker is running; the process supervisor supplies that.
+// A successful sample proves monitoring is alive, not that every idle worker is.
+// Backlog alarms must not remove a serving API from its load balancer.
 type Monitor struct {
-	Pool        *pgxpool.Pool
-	Output      io.Writer
-	mu          sync.RWMutex
-	lastSuccess time.Time
-	healthy     bool
+	Pool          *pgxpool.Pool
+	Output        io.Writer
+	mu            sync.RWMutex
+	lastSuccess   time.Time
+	sampleHealthy bool
 }
 
 type Metrics struct {
@@ -39,34 +40,44 @@ func (m *Monitor) Sample(ctx context.Context) (Metrics, error) {
  (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(created_at))::bigint,0) FROM mpd_event_outbox WHERE state IN ('pending','leased','blocked')),
  (SELECT count(*) FROM mpd_event_outbox WHERE state IN ('dead','blocked'))`).Scan(
 		&result.ProcessingFailures, &result.UploadFailures, &result.OldProcessingJobs, &result.OutboxOldestSeconds, &result.OutboxDeadLetters)
-	m.mu.Lock()
-	if err == nil {
-		m.lastSuccess = time.Now()
-		m.healthy = result.OldProcessingJobs == 0 && result.OutboxOldestSeconds < 300 && result.OutboxDeadLetters == 0
-	} else {
-		m.healthy = false
-	}
-	m.mu.Unlock()
 	if err == nil && m.Output != nil {
 		err = json.NewEncoder(m.Output).Encode(result)
 	}
+	m.mu.Lock()
+	if err == nil {
+		m.lastSuccess = time.Now()
+		m.sampleHealthy = true
+	} else {
+		m.sampleHealthy = false
+	}
+	m.mu.Unlock()
 	return result, err
 }
 
-// WorkersProbe fails closed before the first sample and after a stopped monitor.
+// WorkersProbe checks recent successful monitoring, independently of queue depth.
+// It fails closed before the first sample, on a sample failure, or after monitoring
+// stops. It does not assert liveness of each individual processing loop.
 func (m *Monitor) WorkersProbe(context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if !m.healthy || time.Since(m.lastSuccess) > 2*time.Minute {
+	if !m.sampleHealthy || time.Since(m.lastSuccess) > 2*time.Minute {
 		return errors.New("worker monitoring unavailable")
 	}
 	return nil
 }
 
 func (m *Monitor) Run(ctx context.Context) {
+	defer func() {
+		m.mu.Lock()
+		m.sampleHealthy = false
+		m.mu.Unlock()
+	}()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, _ = m.Sample(probe)
 		cancel()

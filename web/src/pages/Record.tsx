@@ -139,6 +139,14 @@ export function Record() {
       setShareUrl(result.managed ? null : `${window.location.origin}/watch/${result.shareToken}`);
       setFailedTake(null);
     } catch (err) {
+      if (pending && !pending.managed) {
+        try {
+          await apiFetch(`/api/videos/${pending.id}`, { method: "DELETE" });
+        } catch {
+          // Preserve the original upload error if cleanup is unavailable.
+        }
+        pending = undefined;
+      }
       setFailedTake({ blob, duration, webcamBlob, upload:pending });
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {

@@ -136,7 +136,10 @@ func (h *Handler) loadSession(ctx context.Context, id string) (*session, error) 
 	var js []byte
 	err := h.db.QueryRow(ctx, `SELECT s.id,s.user_id,i.organization_id,i.staff_id,i.tenant_id,s.access_encrypted,s.refresh_encrypted,s.cognito_expires_at,s.expires_at,s.grant_json,s.grant_expires_at FROM mpd_sessions s JOIN mpd_external_identities i ON i.user_id=s.user_id JOIN mpd_managed_workspaces w ON w.organization_id=i.organization_id WHERE s.id=$1 AND NOT s.revoked AND w.enabled AND w.issuer=$2 AND s.expires_at>now()`, id, h.cfg.Issuer).Scan(&s.SessionID, &s.UserID, &s.OrganizationID, &s.StaffID, &s.TenantID, &s.AccessEncrypted, &s.RefreshEncrypted, &s.CognitoExpiry, &s.Expiry, &js, &s.GrantExpiry)
 	if err != nil {
-		return nil, ErrDenied
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrDenied
+		}
+		return nil, ErrUnavailable
 	}
 	if json.Unmarshal(js, &s.Grant) != nil {
 		return nil, ErrDenied

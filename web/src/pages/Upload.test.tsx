@@ -354,6 +354,30 @@ describe("Upload", () => {
     });
   });
 
+  it("cleans up a failed legacy upload before starting another", async () => {
+    const user = userEvent.setup();
+    class FailedXHR extends MockXMLHttpRequest {
+      send = vi.fn().mockImplementation(() => {
+        this.status = 500;
+        this.onload?.();
+      });
+    }
+    globalThis.XMLHttpRequest = FailedXHR as any;
+    mockApiFetch.mockImplementation(async (path: string, options?: {method?: string}) => {
+      if (path === "/api/videos/limits") return {maxVideosPerMonth: 25, videosUsedThisMonth: 0};
+      if (path === "/api/videos/upload") return {id: "legacy-one", uploadUrl: "https://storage.example.test/upload", shareToken: "synthetic"};
+      if (options?.method === "DELETE") return;
+      throw new Error("Unexpected request");
+    });
+    renderUpload();
+    await user.upload(screen.getByTestId("file-input"), createMockFile("synthetic.mp4", 1024));
+    await user.click(screen.getByText("Upload 1 video"));
+    await waitFor(() => expect(screen.getByText("Retry failed uploads")).toBeInTheDocument());
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/legacy-one", {method: "DELETE"});
+    await user.click(screen.getByText("Upload more"));
+    expect(screen.getByTestId("file-input")).toBeInTheDocument();
+  });
+
   it("recovers a managed upload after a lost PUT acknowledgement even at its monthly quota", async () => {
     const user=userEvent.setup();
     let puts=0;

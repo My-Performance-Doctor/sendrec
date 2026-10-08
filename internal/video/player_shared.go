@@ -937,6 +937,8 @@ const playlistJS = `
             spinner.classList.remove('visible');
 
             player.dataset.shareToken = v.shareToken;
+ player.dataset.mpdManaged = String(v.managed === true);
+ player.dispatchEvent(new Event('mpd-recording-change'));
             player.src = v.videoUrl;
             player.load();
             bindCaptions();

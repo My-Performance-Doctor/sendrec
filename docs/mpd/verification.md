@@ -38,6 +38,17 @@ Managed upload links now sign `If-None-Match: *`. Actual AWS SDK tests verify th
 
 The final expanded Go run passed 1,806 checks and hit one stale test fixture compiled before its last correction. The failure was `ordinary storage changed: "" map[] <nil>` because the ordinary-storage positive control had no URL configured. The corrected control passed its focused rerun. The complete video-package rerun then passed 1,060 checks, with only the separately exercised cross-service harness skipped. All other packages passed the expanded full run.
 
-## Delivery blocker
+## Delivery
 
-The implementation is committed on `feat/apply-mpd-video-integration`. GitHub rejected the push because the installed CLI OAuth token lacks `workflow` scope. The existing SSH key also returned read-only denial. No implementation PR or GitHub CI run exists for this branch yet, so the required PR review loop has not run. Refresh the authorized GitHub CLI credential with workflow access, then push this branch, open the prepared implementation PR and complete review/CI. Do not remove release workflows to bypass the missing permission.
+The operator refreshed GitHub access on 2026-10-08. The verified `workflow` scope allowed the full branch, including release workflows, to push. [Implementation PR 4](https://github.com/My-Performance-Doctor/sendrec/pull/4) is open. At implementation revision `58504bc8116d259b49672e0e69597f69d34e2ff5`, Application, Docker build and AWS infrastructure CI passed. The application job included Go race/coverage tests and vulnerability scanning. Browser E2E and preview deployment skipped under the PR workflow. Formal review is pending. No deployment occurred.
+
+
+## PR review corrections
+
+The first review invocation inherited the upstream repository selection and was stopped. The next invocation reviewed the MPD fork, but the helper rejected its fenced JSON array and saved only a truncated excerpt. The complete ten-finding report was recovered from that exact reviewer session. Neither failed invocation counts as a completed review round.
+
+Corrections address backlog-driven readiness failure, managed SCIM target checks, Cognito verified-email decoding, retryable native refresh, stale cookies after changing login type, legacy upload cleanup, managed-only URL expiry and player renewal, expired temporary access records, and per-recording library queries. Persistent authorization checks remain active during rollback. The suggestion to bypass them based on disabled configuration was rejected because retained managed identities and media still require protection.
+
+The final allowed review attempt uses the same Claude review at high effort through a temporary JSON-format adapter. It preserves every finding, treats unspecified severity as high, and leaves unreadable or error output as a failure. It does not change global review tooling. Final correction checks and review results are recorded in the PR.
+
+Correction verification: the full Go suite passed, with the optional cross-service harness skipped. Identity/auth packages passed again after the last refresh-savepoint edit. All 892 frontend tests, TypeScript/Vite build, Go lint, staged secret scan and scope checks passed. The existing Vite bundle-size warning remains.

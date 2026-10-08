@@ -3,6 +3,7 @@ package mpd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -119,5 +120,37 @@ func TestUserInfoSubjectMismatchDoesNotFallBack(t *testing.T) {
 	h := &Handler{cfg: Config{Issuer: "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_Synthetic"}, provider: p, client: client}
 	if e = h.populateDisplay(httptest.NewRequest("POST", "/", nil), "synthetic-access-token", &Identity{Issuer: h.cfg.Issuer, Subject: "verified-sub"}); e != ErrDenied {
 		t.Fatalf("subject mismatch: %v", e)
+	}
+}
+
+func TestUserInfoVerificationBooleanAndCognitoString(t *testing.T) {
+	for _, value := range []any{true, "true", false, "false"} {
+		t.Run(fmt.Sprint(value)+fmt.Sprintf("-%T", value), func(t *testing.T) {
+			var issuer string
+			fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/.well-known/openid-configuration" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "jwks_uri": issuer + "/keys", "userinfo_endpoint": issuer + "/userinfo"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"sub": "verified-sub", "email": "synthetic@example.test", "email_verified": value, "name": "Synthetic"})
+			}))
+			defer fixture.Close()
+			issuer = fixture.URL
+			p, e := oidc.NewProvider(context.Background(), issuer)
+			if e != nil {
+				t.Fatal(e)
+			}
+			h := &Handler{provider: p, client: fixture.Client(), cfg: Config{Issuer: issuer}}
+			id := &Identity{Issuer: issuer, Subject: "verified-sub"}
+			e = h.populateDisplay(httptest.NewRequest("POST", "/", nil), "synthetic-access", id)
+			want := value == true || value == "true"
+			if (e == nil) != want {
+				t.Fatalf("verification %v: %v", value, e)
+			}
+			if want && id.Email != "synthetic@example.test" {
+				t.Fatal("verified profile lost")
+			}
+		})
 	}
 }

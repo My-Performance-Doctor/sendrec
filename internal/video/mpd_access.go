@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/sendrec/sendrec/internal/auth"
+	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/mpd"
 	objectstore "github.com/sendrec/sendrec/internal/storage"
 	"net/http"
@@ -25,6 +26,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 			httputil.WriteError(w, 404, "recording unavailable")
 			return
 		}
+		managedTokens := map[string]bool{}
 		if strings.Contains(r.URL.Path, "/playlist/") {
 			rows, err := h.db.Query(r.Context(), `SELECT v.share_token,s.published,s.deleted_at,v.share_password,v.email_gate_enabled,v.share_expires_at FROM playlists p JOIN playlist_videos pv ON pv.playlist_id=p.id JOIN videos v ON v.id=pv.video_id JOIN mpd_video_state s ON s.video_id=v.id WHERE p.share_token=$1`, token)
 			if err != nil {
@@ -43,6 +45,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 					httputil.WriteError(w, 503, "access unavailable")
 					return
 				}
+				managedTokens[share] = true
 				if !published || deleted != nil || expires != nil && time.Now().After(*expires) {
 					httputil.WriteError(w, 403, "a playlist recording requires individual access")
 					return
@@ -67,6 +70,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 				return
 			}
 			if err == nil {
+				managedTokens[token] = true
 				w.Header().Set("Cache-Control", "private, no-store")
 				if !published || deleted != nil || expires != nil && time.Now().After(*expires) {
 					httputil.WriteError(w, 404, "recording unavailable")
@@ -81,19 +85,63 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 				}
 			}
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mpdManagedTokensKey{}, managedTokens)))
 	})
 }
 
-type boundedMPDStorage struct{ ObjectStorage }
+type mpdManagedTokensKey struct{}
+type mpdKnownObjectsKey struct{}
 
+func managedShare(ctx context.Context, token string) bool {
+	tokens, _ := ctx.Value(mpdManagedTokensKey{}).(map[string]bool)
+	return tokens[token]
+}
+
+func knownMPDObject(ctx context.Context, key string, managed bool) context.Context {
+	return context.WithValue(ctx, mpdKnownObjectsKey{}, map[string]bool{key: managed})
+}
+
+type boundedMPDStorage struct {
+	ObjectStorage
+	db database.DBTX
+}
+
+// Policy follows persisted recording membership, even when MPD flags are off.
+// Explicit per-row state avoids another lookup when a list already loaded it.
+func (s boundedMPDStorage) downloadExpiry(ctx context.Context, key string, expiry time.Duration) (time.Duration, error) {
+	if expiry <= 5*time.Minute {
+		return expiry, nil
+	}
+	known, _ := ctx.Value(mpdKnownObjectsKey{}).(map[string]bool)
+	managed, ok := known[key]
+	if !ok {
+		err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM videos v JOIN mpd_video_state s ON s.video_id=v.id WHERE $1 IN (v.file_key,v.thumbnail_key,v.transcript_key,v.webcam_key))`, key).Scan(&managed)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if managed {
+		return 5 * time.Minute, nil
+	}
+	return expiry, nil
+}
 func (s boundedMPDStorage) GenerateDownloadURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	return s.ObjectStorage.GenerateDownloadURL(ctx, key, min(expiry, 5*time.Minute))
+	expiry, err := s.downloadExpiry(ctx, key, expiry)
+	if err != nil {
+		return "", err
+	}
+	return s.ObjectStorage.GenerateDownloadURL(ctx, key, expiry)
 }
 func (s boundedMPDStorage) GenerateDownloadURLWithDisposition(ctx context.Context, key, filename string, expiry time.Duration) (string, error) {
-	return s.ObjectStorage.GenerateDownloadURLWithDisposition(ctx, key, filename, min(expiry, 5*time.Minute))
+	expiry, err := s.downloadExpiry(ctx, key, expiry)
+	if err != nil {
+		return "", err
+	}
+	return s.ObjectStorage.GenerateDownloadURLWithDisposition(ctx, key, filename, expiry)
 }
-func (h *Handler) BoundMPDMediaURLs() { h.storage = boundedMPDStorage{h.storage} }
+func (h *Handler) BoundMPDMediaURLs() {
+	h.storage = boundedMPDStorage{ObjectStorage: h.storage, db: h.db}
+}
 
 // RenewWatchMedia repeats publication middleware plus the existing password,
 // expiry and email policy without recording a page view.

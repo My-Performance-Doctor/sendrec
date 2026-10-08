@@ -11,7 +11,7 @@ async function flush(){for(let i=0;i<12;i++)await Promise.resolve();}
 beforeEach(()=>{
  vi.useFakeTimers({toFake:['Date','performance','setInterval','clearInterval']});
  history.replaceState(null,'','/watch/synthetic');
- document.body.innerHTML='<video id="player"></video>';
+ document.body.innerHTML='<video id="player" data-mpd-managed="true"></video>';
  player=document.getElementById('player') as HTMLVideoElement;
  paused=true;
  Object.defineProperty(player,'paused',{get:()=>paused,configurable:true});
@@ -61,4 +61,36 @@ it('renews four times across a sixteen-minute paused playback interval',async()=
  await vi.advanceTimersByTimeAsync(16*60*1000);await flush();
  expect(request.mock.calls.filter(c=>c[0].endsWith('/renew'))).toHaveLength(4);
  expect(player.currentTime).toBe(117);expect(player.play).not.toHaveBeenCalled();
+});
+
+it('leaves legacy playback untouched without session requests or renewal',async()=>{
+ await flush();player.dataset.mpdManaged='false';player.dispatchEvent(new Event('mpd-recording-change'));await flush();request.mockClear();
+ player.src='https://storage.example.test/legacy';paused=false;player.dispatchEvent(new Event('playing'));
+ await vi.advanceTimersByTimeAsync(20*60*1000);player.currentTime=1200;player.dispatchEvent(new Event('timeupdate'));await flush();
+ expect(request).not.toHaveBeenCalled();expect(player.load).not.toHaveBeenCalled();expect(player.pause).not.toHaveBeenCalled();expect(player.src).toBe('https://storage.example.test/legacy');
+});
+it('activates only the managed item in a mixed playlist',async()=>{
+ await flush();player.dataset.shareToken='legacy';player.dataset.mpdManaged='false';player.dispatchEvent(new Event('mpd-recording-change'));await flush();request.mockClear();
+ await vi.advanceTimersByTimeAsync(240000);await flush();expect(request).not.toHaveBeenCalled();
+ player.dataset.shareToken='managed-next';player.dataset.mpdManaged='true';player.dispatchEvent(new Event('mpd-recording-change'));await flush();
+ expect(request.mock.calls[0][0]).toBe('/api/watch/managed-next/playback-session');
+ await vi.advanceTimersByTimeAsync(240000);await flush();expect(request.mock.calls.some(c=>c[0]==='/api/watch/managed-next/renew')).toBe(true);
+});
+it('ignores a late managed renewal after switching to a legacy item',async()=>{
+ await flush();let finish:(response:Response)=>void=()=>{};
+ request.mockImplementation(()=>new Promise<Response>(resolve=>{finish=resolve;}));
+ await vi.advanceTimersByTimeAsync(240000);player.dataset.shareToken='legacy';player.dataset.mpdManaged='false';player.src='https://storage.example.test/legacy';player.dispatchEvent(new Event('mpd-recording-change'));
+ finish(new Response(JSON.stringify({videoUrl:'https://storage.example.test/old-managed'}),{status:200}));await flush();
+ expect(player.src).toBe('https://storage.example.test/legacy');expect(player.load).not.toHaveBeenCalled();
+});
+
+it('does not start any managed behavior on an initially legacy page',async()=>{
+ await flush();vi.clearAllTimers();request.mockClear();
+ document.body.innerHTML='<video id="player" data-mpd-managed="false" src="https://storage.example.test/legacy"></video>';
+ const legacy=document.getElementById('player') as HTMLVideoElement;
+ const load=vi.spyOn(legacy,'load').mockImplementation(()=>{});
+ window.eval(script);await flush();await vi.advanceTimersByTimeAsync(20*60*1000);
+ legacy.dispatchEvent(new Event('playing'));legacy.dispatchEvent(new Event('timeupdate'));await flush();
+ expect(request).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();
+ expect(legacy.src).toBe('https://storage.example.test/legacy');
 });

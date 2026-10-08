@@ -175,6 +175,19 @@ func TestActualRoutesRejectLegacyCredentialsAfterManagedLink(t *testing.T) {
 			t.Fatalf("local sign-in issued managed tokens:%d %s", w.Code, w.Body.String())
 		}
 	}
+
+	// A token from a different unmanaged workspace must not target a managed user.
+	otherOrg := id(`INSERT INTO organizations(name,slug,subscription_plan) VALUES('Other','other-scim','business') RETURNING id`)
+	exec(`INSERT INTO organization_scim_tokens(organization_id,token_hash) VALUES($1,$2)`, otherOrg, auth.HashAPIKey("other-scim"))
+	if w := request("GET", "/api/organizations/"+otherOrg+"/scim/v2/ServiceProviderConfig", "", "other-scim", ""); w.Code != 200 {
+		t.Fatal("other SCIM positive control", w.Code)
+	}
+	for _, method := range []string{"PUT", "PATCH", "DELETE"} {
+		w := request(method, "/api/organizations/"+otherOrg+"/scim/v2/Users/"+user, `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"displayName","value":"changed"}]}`, "other-scim", "")
+		if w.Code != 403 {
+			t.Fatalf("cross-workspace SCIM %s reached managed user:%d", method, w.Code)
+		}
+	}
 	// Alternate SSO uses this same token issuance function; persisted identity
 	// guards also prevent it issuing a usable local session after linking.
 	if _, _, e := auth.IssueTokens(ctx, db, strings.Repeat("s", 32), user); e == nil {
