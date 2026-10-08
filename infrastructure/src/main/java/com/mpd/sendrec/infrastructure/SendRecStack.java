@@ -88,7 +88,16 @@ public class SendRecStack extends Stack {
     super(scope, id, props);
 
     DeploymentOptions options = new DeploymentOptions(this);
+    if (config.production() && (options.bootstrap || !options.bootstrapIp.isEmpty())) {
+      throw new IllegalArgumentException("Production registration/bootstrap is prohibited");
+    }
     String prefix = "sendrec-" + config.environmentName();
+    Object override = getNode().tryGetContext("releaseImage");
+    String image = config.production() ? config.immutableImage() : override == null ? "" : override.toString();
+    boolean controlledRelease = !image.isEmpty();
+    if (controlledRelease && !image.matches(getAccount() + "\\.dkr\\.ecr\\.ap-southeast-2\\.amazonaws\\.com/[a-z0-9/_-]+@sha256:[a-f0-9]{64}")) {
+      throw new IllegalArgumentException("Release image requires a same-account Sydney ECR digest");
+    }
 
     IVpc vpc =
         suppliedVpc != null ? suppliedVpc : Vpc.fromLookup(
@@ -102,6 +111,7 @@ public class SendRecStack extends Stack {
             .bucketName(config.recordingsBucketName())
             .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
             .encryption(BucketEncryption.S3_MANAGED)
+            .versioned(config.production())
             .enforceSsl(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
@@ -197,11 +207,11 @@ public class SendRecStack extends Stack {
             .allocatedStorage(20)
             .storageEncrypted(true)
             .publiclyAccessible(false)
-            .multiAz(false)
-            .backupRetention(Duration.days(7))
+            .multiAz(config.production())
+            .backupRetention(Duration.days(config.production() ? 35 : 7))
             .allowMajorVersionUpgrade(true)
             .removalPolicy(RemovalPolicy.RETAIN)
-            .deletionProtection(false)
+            .deletionProtection(config.production())
             .build();
     database.getSecret().applyRemovalPolicy(RemovalPolicy.RETAIN);
     database.getConnections().allowFrom(serviceSecurityGroup, Port.tcp(5432), "SendRec tasks");
@@ -215,6 +225,7 @@ public class SendRecStack extends Stack {
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
 
+    if (!config.production()) {
     // A controlled evaluation receiver validates HMAC and never forwards messages.
     software.amazon.awscdk.services.secretsmanager.Secret receiverSecret =
         software.amazon.awscdk.services.secretsmanager.Secret.Builder.create(this, "SyntheticReceiverSecret")
@@ -242,6 +253,8 @@ public class SendRecStack extends Stack {
             .authType(software.amazon.awscdk.services.lambda.FunctionUrlAuthType.NONE).build());
     CfnOutput.Builder.create(this, "SyntheticReceiverUrl").value(receiverUrl.getUrl()).build();
     CfnOutput.Builder.create(this, "SyntheticReceiverSecretName").value(receiverSecret.getSecretName()).build();
+
+    }
 
     // Compute -----------------------------------------------------------------------------
     Cluster cluster =
@@ -300,17 +313,31 @@ public class SendRecStack extends Stack {
     secrets.put("DB_USER", Secret.fromSecretsManager(database.getSecret(), "username"));
     secrets.put("DB_PASSWORD", Secret.fromSecretsManager(database.getSecret(), "password"));
     secrets.put("JWT_SECRET", Secret.fromSecretsManager(jwtSecret));
+    MpdIntegrationConfig.apply(this, environment, secrets);
 
+    if (controlledRelease) {
+      environment.put("MIGRATIONS_MODE", "skip");
+      environment.put("MPD_MANAGED_MODE", "true");
+      environment.put("AI_ENABLED", "false");
+      environment.put("OPTIONAL_WORKERS_ENABLED", "false");
+      environment.put("LEGACY_WEBHOOKS_ENABLED", "false");
+      environment.put("REGISTRATION_ENABLED", "false");
+      environment.put("API_DOCS_ENABLED", "false");
+    }
+    ContainerImage releaseImage;
+    if (controlledRelease) {
+      String repositoryName = image.substring(image.indexOf('/') + 1, image.indexOf('@'));
+      var repository = software.amazon.awscdk.services.ecr.Repository.fromRepositoryArn(this, "ReleaseRepository",
+          "arn:aws:ecr:" + getRegion() + ":" + getAccount() + ":repository/" + repositoryName);
+      releaseImage = ContainerImage.fromEcrRepository(repository, image.substring(image.indexOf('@') + 1));
+    } else {
+      releaseImage = ContainerImage.fromAsset("..", AssetImageProps.builder().file("Dockerfile")
+          .platform(Platform.LINUX_AMD64).build());
+    }
     taskDefinition.addContainer(
         "sendrec",
         ContainerDefinitionOptions.builder()
-            .image(
-                ContainerImage.fromAsset(
-                    "..",
-                    AssetImageProps.builder()
-                        .file("Dockerfile")
-                        .platform(Platform.LINUX_AMD64)
-                        .build()))
+            .image(releaseImage)
             .environment(environment)
             .secrets(secrets)
             .portMappings(List.of(PortMapping.builder().containerPort(CONTAINER_PORT).build()))
@@ -324,9 +351,10 @@ public class SendRecStack extends Stack {
             .cluster(cluster)
             .serviceName(prefix + "-service")
             .taskDefinition(taskDefinition)
-            .desiredCount(1)
-            .minHealthyPercent(0)
-            .maxHealthyPercent(100)
+            .desiredCount(config.production() ? 0 : 1)
+            .minHealthyPercent(config.production() ? 100 : 0)
+            .maxHealthyPercent(config.production() ? 200 : 100)
+            .circuitBreaker(software.amazon.awscdk.services.ecs.DeploymentCircuitBreaker.builder().rollback(true).build())
             .securityGroups(List.of(serviceSecurityGroup))
             .vpcSubnets(
                 SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build())
@@ -342,7 +370,7 @@ public class SendRecStack extends Stack {
             .deregistrationDelay(Duration.seconds(30))
             .healthCheck(
                 HealthCheck.builder()
-                    .path("/api/health")
+                    .path(controlledRelease ? "/api/ready" : "/api/health")
                     .healthyHttpCodes("200")
                     .interval(Duration.seconds(30))
                     .timeout(Duration.seconds(5))
@@ -360,6 +388,27 @@ public class SendRecStack extends Stack {
           .defaultAction(ListenerAction.forward(List.of(targetGroup)))
           .build();
 
+    if (controlledRelease) {
+      FargateTaskDefinition migration = FargateTaskDefinition.Builder.create(this, "MigrationTaskDefinition")
+          .family(prefix + "-migration").cpu(256).memoryLimitMiB(512).build();
+      Map<String, String> migrationEnvironment = new HashMap<>();
+      migrationEnvironment.put("DB_SSLMODE", "require");
+      migrationEnvironment.put("DB_NAME", "sendrec");
+      migrationEnvironment.put("MIGRATIONS_MODE", "only");
+      Map<String, Secret> migrationSecrets = new HashMap<>();
+      for (String name : List.of("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD")) migrationSecrets.put(name, secrets.get(name));
+      migration.addContainer("migration", ContainerDefinitionOptions.builder().image(releaseImage)
+          .environment(migrationEnvironment).secrets(migrationSecrets)
+          .logging(LogDrivers.awsLogs(AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("migration").build())).build());
+      CfnOutput.Builder.create(this, "MigrationTaskDefinitionArn").value(migration.getTaskDefinitionArn()).build();
+      if (config.production()) addProductionAlarms(config, database, alb, targetGroup, logGroup);
+    }
+    CfnOutput.Builder.create(this, "ClusterArn").value(cluster.getClusterArn()).build();
+    CfnOutput.Builder.create(this, "ServiceArn").value(service.getServiceArn()).build();
+    CfnOutput.Builder.create(this, "ApplicationTaskDefinitionArn").value(taskDefinition.getTaskDefinitionArn()).build();
+    CfnOutput.Builder.create(this, "ServiceSecurityGroupId").value(serviceSecurityGroup.getSecurityGroupId()).build();
+    CfnOutput.Builder.create(this, "PrivateSubnetIds").value(String.join(",", vpc.selectSubnets(
+        SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build()).getSubnetIds())).build();
     CfnOutput.Builder.create(this, "BaseUrl").value(baseUrl).build();
     CfnOutput.Builder.create(this, "AlbDnsName").value(alb.getLoadBalancerDnsName()).build();
     CfnOutput.Builder.create(this, "DistributionId").value(distribution.getDistributionId()).build();
@@ -377,4 +426,49 @@ public class SendRecStack extends Stack {
       }
     }
   }
+  private void addProductionAlarms(EnvironmentConfig config, DatabaseInstance database,
+      ApplicationLoadBalancer alb, ApplicationTargetGroup targets, LogGroup logs) {
+    String probeCode;
+    try { probeCode = java.nio.file.Files.readString(java.nio.file.Path.of("backup-probe.py")); }
+    catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+    var backupProbe = software.amazon.awscdk.services.lambda.Function.Builder.create(this, "BackupProbe")
+        .runtime(software.amazon.awscdk.services.lambda.Runtime.PYTHON_3_13).handler("index.handler")
+        .code(software.amazon.awscdk.services.lambda.Code.fromInline(probeCode)).timeout(Duration.seconds(30))
+        .logGroup(logs).environment(Map.of("DATABASE_IDENTIFIER", database.getInstanceIdentifier())).build();
+    backupProbe.addToRolePolicy(software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+        .actions(List.of("rds:DescribeDBInstances")).resources(List.of(database.getInstanceArn())).build());
+    software.amazon.awscdk.services.events.Rule.Builder.create(this, "BackupProbeSchedule")
+        .schedule(software.amazon.awscdk.services.events.Schedule.rate(Duration.minutes(5)))
+        .targets(List.of(new software.amazon.awscdk.services.events.targets.LambdaFunction(backupProbe))).build();
+    var destination = software.amazon.awscdk.services.sns.Topic.fromTopicArn(this, "OperationalDestination", config.alertTopicArn());
+    Map<String, software.amazon.awscdk.services.cloudwatch.IMetric> metrics = new HashMap<>();
+    metrics.put("Target5xx", targets.metricHttpCodeTarget(software.amazon.awscdk.services.elasticloadbalancingv2.HttpCodeTarget.TARGET_5XX_COUNT));
+    metrics.put("UnhealthyTargets", targets.metricUnhealthyHostCount());
+    metrics.put("DatabaseCPU", database.metricCPUUtilization());
+    for (String name : List.of("UploadFailures", "ProcessingFailures", "OldProcessingJobs", "OutboxOldestSeconds", "OutboxDeadLetters", "BackupAgeSeconds")) {
+      // Application/backup probes emit numeric counters only, never row IDs or signed URLs.
+      software.amazon.awscdk.services.logs.MetricFilter.Builder.create(this, name + "Filter")
+          .logGroup(logs).filterPattern(software.amazon.awscdk.services.logs.FilterPattern.exists("$." + name))
+          .metricNamespace("MPD/SendRecProduction").metricName(name).metricValue("$." + name).build();
+      metrics.put(name, software.amazon.awscdk.services.cloudwatch.Metric.Builder.create()
+          .namespace("MPD/SendRecProduction").metricName(name).statistic("Maximum").period(Duration.minutes(5)).build());
+    }
+    for (var item : metrics.entrySet()) {
+      double threshold = switch (item.getKey()) {
+        case "DatabaseCPU" -> 85;
+        case "OutboxOldestSeconds" -> 300;
+        case "BackupAgeSeconds" -> 900;
+        default -> 1;
+      };
+      var alarm = software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, item.getKey() + "Alarm")
+          .metric(item.getValue()).threshold(threshold).evaluationPeriods(2)
+          .comparisonOperator(software.amazon.awscdk.services.cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD)
+          // Missing probe metrics are failures, including a stopped backup probe.
+          .treatMissingData(item.getKey().equals("Target5xx")
+              ? software.amazon.awscdk.services.cloudwatch.TreatMissingData.NOT_BREACHING
+              : software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
+      alarm.addAlarmAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
+    }
+  }
+
 }

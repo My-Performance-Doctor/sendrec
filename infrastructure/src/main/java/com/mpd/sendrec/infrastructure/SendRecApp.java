@@ -10,6 +10,17 @@ public final class SendRecApp {
   public static void main(final String[] args) {
     App app = new App();
 
+    Object target = app.getNode().tryGetContext("targetEnvironment");
+    if (target != null && !target.equals("staging") && !target.equals("production")) {
+      throw new IllegalArgumentException("targetEnvironment must be staging or production");
+    }
+    if ("production".equals(target)) {
+      ProductionConfig production = ProductionConfig.fromContext(app);
+      new SendRecStack(app, "SendRecProduction", StackProps.builder()
+          .env(Environment.builder().account(production.account()).region(ProductionConfig.REGION).build())
+          .stackName("SendRecProduction").description("SendRec production preparation; zero tasks until approved release")
+          .build(), production);
+    } else {
     new SendRecStack(
         app,
         "SendRecStaging",
@@ -24,6 +35,7 @@ public final class SendRecApp {
             .build(),
         StagingConfig.INSTANCE);
 
+    }
     app.synth();
   }
 }

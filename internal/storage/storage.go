@@ -275,3 +275,9 @@ func (s *Storage) UploadFile(ctx context.Context, key string, filePath string, c
 	}
 	return nil
 }
+
+// Check never creates buckets or changes CORS during readiness probes.
+func (s *Storage) Check(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)})
+	return err
+}

@@ -13,4 +13,11 @@ public interface EnvironmentConfig {
   int taskCpu();
 
   int taskMemoryMiB();
+
+  default boolean production() { return false; }
+
+  default String immutableImage() { return ""; }
+
+  default String alertTopicArn() { return ""; }
+
 }

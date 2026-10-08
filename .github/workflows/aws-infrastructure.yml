@@ -5,12 +5,14 @@ on:
       - 'infrastructure/**'
       - 'docker-entrypoint.sh'
       - '.github/workflows/aws-infrastructure.yml'
+      - '.github/workflows/mpd-*.yml'
   push:
     branches: [main]
     paths:
       - 'infrastructure/**'
       - 'docker-entrypoint.sh'
       - '.github/workflows/aws-infrastructure.yml'
+      - '.github/workflows/mpd-*.yml'
 permissions:
   contents: read
 jobs:
