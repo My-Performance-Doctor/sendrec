@@ -354,4 +354,33 @@ describe("Upload", () => {
     });
   });
 
+  it("recovers a managed upload after a lost PUT acknowledgement even at its monthly quota", async () => {
+    const user=userEvent.setup();
+    let puts=0;
+    class LostResponseXHR extends MockXMLHttpRequest {
+      send=vi.fn().mockImplementation(()=>{
+        puts++;
+        expect(this.setRequestHeader).toHaveBeenCalledWith("If-None-Match","*");
+        this.status=500;this.onload?.();
+      });
+    }
+    globalThis.XMLHttpRequest=LostResponseXHR as any;
+    mockApiFetch.mockImplementation(async (path:string,options?:{method?:string})=>{
+      if(path==="/api/videos/limits")return {maxVideosPerMonth:1,videosUsedThisMonth:puts?1:0};
+      if(path==="/api/videos/upload")return {id:"managed-one",uploadUrl:"https://storage.example.test/upload",shareToken:"synthetic",managed:true};
+      if(path.endsWith("/upload-url"))return {uploaded:true};
+      if(options?.method==="PATCH")return;
+      throw new Error("Unexpected request");
+    });
+    renderUpload();
+    await user.upload(screen.getByTestId("file-input"),createMockFile("synthetic.mp4",1024));
+    await user.click(screen.getByText("Upload 1 video"));
+    await waitFor(()=>expect(screen.getByText("Retry failed uploads")).toBeInTheDocument());
+    await user.click(screen.getByText("Retry failed uploads"));
+    await waitFor(()=>expect(screen.getByText("Upload complete")).toBeInTheDocument());
+    expect(puts).toBe(1);
+    expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos/upload")).toHaveLength(1);
+    expect(screen.getByText("Unpublished. Preview and sharing settings")).toBeInTheDocument();
+  });
+
 });

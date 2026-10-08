@@ -129,8 +129,9 @@ export function Upload() {
     try {
       const limits = await apiFetch<LimitsResponse>("/api/videos/limits");
       if (limits && limits.maxVideosPerMonth > 0) {
-        const remaining = limits.maxVideosPerMonth - limits.videosUsedThisMonth;
-        if (files.length > remaining) {
+        const remaining = Math.max(0, limits.maxVideosPerMonth - limits.videosUsedThisMonth);
+        const newRecordings = files.filter(entry => !pending.current.has(entry.file)).length;
+        if (newRecordings > remaining) {
           setError(
             remaining <= 0
               ? "Monthly video limit reached"
@@ -185,13 +186,16 @@ export function Upload() {
 
         if (!result.uploaded) {
         if (retrying) {
-          const fresh=await apiFetch<{uploadUrl:string}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen",contentType:fileContentType,fileSize:entry.file.size})});
-          if(!fresh)throw new Error("Sign in again, then retry");result.uploadUrl=fresh.uploadUrl;
+          const fresh=await apiFetch<{uploadUrl?:string; uploaded?:boolean}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen",contentType:fileContentType,fileSize:entry.file.size})});
+          if(!fresh)throw new Error("Sign in again, then retry");
+          if(fresh.uploadUrl) result.uploadUrl=fresh.uploadUrl;
+          result.uploaded=fresh.uploaded === true;
         }
-        await new Promise<void>((resolve, reject) => {
+        if (!result.uploaded) await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", result.uploadUrl);
           xhr.setRequestHeader("Content-Type", fileContentType);
+          if (result.managed) xhr.setRequestHeader("If-None-Match", "*");
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
               setProgress(20 + Math.round((e.loaded / e.total) * 60));

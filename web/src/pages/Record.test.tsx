@@ -1182,11 +1182,12 @@ describe("Record", () => {
   // recording: the take was gone. The recording now survives the failure.
   // Audit C2.
   describe("after an upload fails", () => {
-    async function failFirstUpload(user: ReturnType<typeof userEvent.setup>) {
+    async function failFirstUpload(user: ReturnType<typeof userEvent.setup>, managed = false) {
       let calls = 0;
       class FlakyXHR extends MockXHR {
         send = vi.fn().mockImplementation(function (this: FlakyXHR, body: Blob) {
           calls++;
+          if (managed) expect(this.setRequestHeader).toHaveBeenCalledWith("If-None-Match", "*");
           sentBodies.push(body);
           this.status = calls === 1 ? 500 : 200;
           if (this.onload) this.onload();
@@ -1197,7 +1198,7 @@ describe("Record", () => {
       renderRecord();
       await waitFor(() => expect(screen.getByTestId("recorder")).toBeInTheDocument());
 
-      mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t1" });
+      mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t1", managed });
       await act(async () => {
         capturedOnRecordingComplete!(take, 30);
       });
@@ -1222,6 +1223,17 @@ describe("Record", () => {
       expect(sentBodies).toEqual([take, take]);
       expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(1);
       expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.objectContaining({method:"POST",preserveOnUnauthorized:true}));
+    });
+
+    it("recovers a managed upload whose storage acknowledgement was lost without another PUT", async () => {
+      const user = await failFirstUpload(userEvent.setup(), true);
+      mockApiFetch.mockResolvedValueOnce({uploaded:true});
+      mockApiFetch.mockResolvedValueOnce(undefined);
+      await user.click(screen.getByText("Retry upload"));
+      await waitFor(() => expect(screen.getByText("Recording saved")).toBeInTheDocument());
+      expect(sentBodies).toEqual([take]);
+      expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(1);
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1",expect.objectContaining({method:"PATCH",body:JSON.stringify({status:"ready"})}));
     });
 
     it("offers the recording as a download", async () => {

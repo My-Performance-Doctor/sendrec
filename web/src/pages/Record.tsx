@@ -20,12 +20,14 @@ function uploadWithProgress(
   url: string,
   blob: Blob,
   contentType: string,
-  onProgress: (pct: number) => void
+  onProgress: (pct: number) => void,
+  immutable = false
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     xhr.setRequestHeader("Content-Type", contentType);
+    if (immutable) xhr.setRequestHeader("If-None-Match", "*");
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         onProgress(Math.round((e.loaded / e.total) * 100));
@@ -104,11 +106,12 @@ export function Record() {
       setUploadPercent(0);
       if (!result.screenUploaded) {
         if (failedTake?.upload) {
-          const fresh = await apiFetch<{uploadUrl:string}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen", contentType, fileSize:blob.size})});
+          const fresh = await apiFetch<{uploadUrl?:string; uploaded?:boolean}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"screen", contentType, fileSize:blob.size})});
           if (!fresh) throw new Error("Sign in again, then retry");
-          result.uploadUrl = fresh.uploadUrl;
+          if (fresh.uploadUrl) result.uploadUrl = fresh.uploadUrl;
+          result.screenUploaded = fresh.uploaded === true;
         }
-        await uploadWithProgress(result.uploadUrl, blob, contentType, setUploadPercent);
+        if (!result.screenUploaded) await uploadWithProgress(result.uploadUrl, blob, contentType, setUploadPercent, result.managed);
         result.screenUploaded = true;
       }
 
@@ -116,11 +119,12 @@ export function Record() {
         setUploadStep("Uploading camera...");
         setUploadPercent(0);
         if (result.managed) {
-          const fresh = await apiFetch<{uploadUrl:string}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"webcam", contentType:webcamBlob.type || "video/webm", fileSize:webcamBlob.size})});
+          const fresh = await apiFetch<{uploadUrl?:string; uploaded?:boolean}>(`/api/videos/${result.id}/upload-url`, {method:"POST", preserveOnUnauthorized:true, body:JSON.stringify({kind:"webcam", contentType:webcamBlob.type || "video/webm", fileSize:webcamBlob.size})});
           if (!fresh) throw new Error("Sign in again, then retry");
-          result.webcamUploadUrl=fresh.uploadUrl;
+          if (fresh.uploadUrl) result.webcamUploadUrl=fresh.uploadUrl;
+          result.webcamUploaded=fresh.uploaded === true;
         }
-        await uploadWithProgress(result.webcamUploadUrl, webcamBlob, webcamBlob.type || "video/webm", setUploadPercent);
+        if (!result.webcamUploaded) await uploadWithProgress(result.webcamUploadUrl, webcamBlob, webcamBlob.type || "video/webm", setUploadPercent, result.managed);
         result.webcamUploaded=true;
       }
 
