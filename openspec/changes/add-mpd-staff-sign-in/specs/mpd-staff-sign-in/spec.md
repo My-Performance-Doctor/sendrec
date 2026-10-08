@@ -78,7 +78,7 @@ The system SHALL provide a separate service credential for MPD metadata, transcr
 
 ### Requirement: Managed publication and protected links
 
-A new managed recording SHALL remain unavailable through public share/watch/embed routes until an authorized sharing action publishes it. Password and publication state SHALL be enforced on watch, embed, transcript, download and derived media access. New signed media URLs SHALL expire within five minutes.
+A new managed recording SHALL remain unavailable through public share/watch/embed routes until an authorized sharing action publishes it. Password and publication state SHALL be enforced on watch, embed, transcript, download and derived media access. New signed playback/download GET URLs SHALL expire within five minutes. Upload PUT URLs SHALL retain bounded upload lifetimes and support authorized per-part renewal for delayed screen/webcam uploads.
 
 #### Scenario: Unpublished share token
 - **WHEN** a caller knows a new managed recording's share token before publication
@@ -98,7 +98,7 @@ The system SHALL store the staff and tenant identity required for media ownershi
 
 ### Requirement: Playback survives URL expiry
 
-Watch and embed SHALL renew expiring signed URLs after repeating their access checks, preserve playback position and paused state, and stop if renewal is refused.
+Watch, embed, shared-playlist and authenticated library/detail players SHALL renew expiring signed GET URLs after repeating their access checks, preserve playback position and paused state, and stop if renewal is refused.
 
 #### Scenario: Long protected playback
 - **WHEN** a recipient plays a synthetic recording longer than 15 minutes or pauses and seeks across URL expiry
@@ -131,3 +131,23 @@ Initial managed activation SHALL use an empty workspace. Existing media SHALL no
 #### Scenario: Evaluation-owner link
 - **WHEN** the evaluation owner links an MPD identity
 - **THEN** old personal media remains outside the managed workspace and no old share token gains managed-publication status
+
+### Requirement: Standalone sharing shows publication state
+
+The standalone recorder and library SHALL show unpublished state and provide an authorized publish action. Copy/share SHALL become available only after publication succeeds under the configured password policy.
+
+#### Scenario: Upload completes before publication
+- **WHEN** a managed recording finishes uploading
+- **THEN** staff can preview it but cannot copy a public share link until publication succeeds
+
+### Requirement: Temporary authorization failure preserves the take
+
+Clients SHALL retain local recording blobs and resumable state during temporary revalidation or network failures in an open session. They SHALL offer reauthentication/retry instead of automatically deleting the recording, and SHALL reauthorize finalization or publication.
+
+#### Scenario: Outage during finalization
+- **WHEN** mpd-api is unavailable past the authorization cache lifetime during upload/finalization
+- **THEN** the request fails closed, the client retains the take and a later authorized retry can finish it
+
+#### Scenario: Delayed webcam upload
+- **WHEN** a slow screen upload finishes after the originally issued webcam PUT URL expires
+- **THEN** an authorized client obtains a fresh webcam upload URL and completes without deleting the take
