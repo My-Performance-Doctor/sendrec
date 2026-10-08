@@ -67,3 +67,11 @@ Production readiness SHALL require the four integration changes to pass their co
 #### Scenario: Unfinished verification
 - **WHEN** a required browser, identity, restore or integration check has not run
 - **THEN** readiness remains incomplete and production activation does not proceed
+
+### Requirement: Retention cannot bypass the approved policy
+
+Managed source retention SHALL be disabled in application workers and personal/workspace configuration as well as storage lifecycle rules until the operator approves a policy. Stale retention settings or enabling email SHALL not authorize deletion.
+
+#### Scenario: Old retention warning
+- **WHEN** a managed video has an old retention warning and nonzero user or workspace retention_days, and retention plus cleanup workers run
+- **THEN** the source stays available and staff cannot enable automatic deletion through settings

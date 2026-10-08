@@ -13,7 +13,7 @@
 
 ## 3. Recovery and client verification
 
-- [ ] 3.1 Configure reviewed production backup/versioning retention without automatic source-media deletion; verify staging and retained legacy resources remain untouched.
+- [ ] 3.1 Configure reviewed production backup/versioning retention without automatic source-media deletion; verify managed user/workspace retention changes are refused and stale nonzero retention_days plus old warnings cannot cause worker deletion or later S3 purge. Keep staging and retained legacy resources untouched.
 - [ ] 3.2 Restore a synthetic database and media set into isolation; measure RPO/RTO and verify decoding, passwords, captions, identities and pending-event recovery against the proposed objectives.
 - [ ] 3.3 Complete the Chrome/Safari/Firefox recording/upload/watch/embed matrix with actual browser/OS versions, denied-device and interrupted-network cases; leave unavailable checks explicitly incomplete.
 - [ ] 3.4 Exercise the synthetic future-client contract, offboarding, service-token rotation and safe deployment rollback; verify no Staff OS UI or live sending integration is required.
