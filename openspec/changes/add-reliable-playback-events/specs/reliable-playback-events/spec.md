@@ -87,3 +87,31 @@ Legacy video.viewed and user webhooks SHALL retain their prior meanings. Managed
 #### Scenario: Delayed old version
 - **WHEN** an old playback event arrives after replacement or deletion
 - **THEN** the consumer has sufficient identity/version data to avoid changing the current media state
+
+### Requirement: Staff context reaches the player
+
+Native watch SHALL resolve a separate revocable classification cookie, without depending on the refresh cookie outside its path. Staff embed preview SHALL support a video-bound one-use handoff from an authenticated parent through exact-origin and nonce checks. These proofs SHALL grant classification only, not bypass media access checks.
+
+#### Scenario: Native staff opens their share link
+- **WHEN** a signed-in staff member opens a watch page in their authenticated browser
+- **THEN** the playback session resolves the native staff context and emits staff_preview
+
+#### Scenario: Third-party cookies blocked
+- **WHEN** an authenticated staff client previews through an embed with third-party cookies disabled
+- **THEN** its verified handoff yields staff_preview before playback acceptance
+
+#### Scenario: Signed-out public visit
+- **WHEN** a public viewer presents no verifiable staff context
+- **THEN** the event remains anonymous without claiming the viewer is not a staff member
+
+### Requirement: Deletion paths preserve integration evidence
+
+Every allowed managed-video deletion SHALL commit a tombstone and deletion outbox entry before object purge. Single/batch deletion and cleanup SHALL preserve pending events and ownership snapshots. Blocked managed account/workspace removal and retention SHALL not delete media.
+
+#### Scenario: Delete then crash
+- **WHEN** authorized batch deletion commits and the task stops before delivery or purge
+- **THEN** replacement workers recover both deletion delivery and cleanup without losing the tombstone
+
+#### Scenario: Lifecycle bypass attempt
+- **WHEN** a managed staff member tries account deletion or automatic retention
+- **THEN** the operation is refused and no media disappears without a deletion event
