@@ -1,0 +1,25 @@
+DROP TRIGGER mpd_identity_binding ON mpd_external_identities;
+DROP FUNCTION mpd_guard_identity_binding();
+DROP TRIGGER mpd_activation_boundary ON mpd_managed_workspaces;
+DROP FUNCTION mpd_guard_activation();
+DROP TRIGGER mpd_sso_boundary ON organization_sso_configs;
+DROP TRIGGER mpd_scim_boundary ON organization_scim_tokens;
+DROP FUNCTION mpd_guard_workspace_identity();
+DROP TRIGGER mpd_workspace_lifecycle ON organizations;
+DROP FUNCTION mpd_guard_workspace_lifecycle();
+DROP TRIGGER mpd_user_lifecycle ON users;
+DROP FUNCTION mpd_guard_user_lifecycle();
+DROP TRIGGER mpd_no_media_transfer ON videos;
+DROP FUNCTION mpd_guard_video_transfer();
+DROP TRIGGER mpd_membership_boundary ON organization_members;
+DROP FUNCTION mpd_guard_membership();
+DROP TRIGGER mpd_no_alternate_identity ON external_identities;
+DROP TRIGGER mpd_no_local_refresh ON refresh_tokens;
+DROP FUNCTION mpd_guard_local_identity();
+-- Retire the integration and export identity audit before rollback.
+DROP TABLE mpd_login_handoffs;
+DROP TABLE mpd_login_transactions;
+DROP TABLE mpd_sessions;
+DROP TABLE mpd_identity_audit;
+DROP TABLE mpd_external_identities;
+DROP TABLE mpd_managed_workspaces;

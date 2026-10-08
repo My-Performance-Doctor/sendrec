@@ -18,6 +18,7 @@ import (
 	pgx "github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/auth"
+	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/server"
 )
 
@@ -76,7 +77,7 @@ func newServerWithDB(t *testing.T) (*server.Server, pgxmock.PgxPoolIface) {
 	t.Cleanup(func() { mock.Close() })
 
 	srv := server.New(server.Config{
-		DB:                  mock,
+		DB:                  unmanagedDB{mock},
 		Pinger:              &mockPinger{err: nil},
 		Storage:             &mockStorage{},
 		JWTSecret:           "test-secret",
@@ -562,7 +563,7 @@ func TestSCIMPutUserRouteRequiresAuth(t *testing.T) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	mock.ExpectQuery(`SELECT st\.token_hash, o\.subscription_plan FROM organization_scim_tokens st JOIN organizations o ON o\.id = st\.organization_id WHERE st\.organization_id = \$1`).
-		WithArgs("org-1").
+		WithArgs("00000000-0000-4000-8000-000000000011").
 		WillReturnRows(pgxmock.NewRows([]string{"token_hash", "subscription_plan"}).AddRow(tokenHash, "business"))
 
 	mock.ExpectExec(`UPDATE users SET email = \$1, name = \$2 WHERE id = \$3`).
@@ -570,19 +571,19 @@ func TestSCIMPutUserRouteRequiresAuth(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	mock.ExpectExec(`INSERT INTO organization_members`).
-		WithArgs("org-1", "user-1", "member").
+		WithArgs("00000000-0000-4000-8000-000000000011", "user-1", "member").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	mock.ExpectExec(`INSERT INTO external_identities`).
-		WithArgs("user-1", "org-1", "ext-123", "jane.updated@example.com").
+		WithArgs("user-1", "00000000-0000-4000-8000-000000000011", "ext-123", "jane.updated@example.com").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	mock.ExpectQuery(`SELECT`).
-		WithArgs("user-1", "org-1").
+		WithArgs("user-1", "00000000-0000-4000-8000-000000000011").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "email", "name", "external_id", "active"}).
 			AddRow("user-1", "jane.updated@example.com", "Jane Updated", "ext-123", true))
 
-	req := httptest.NewRequest(http.MethodPut, "/api/organizations/org-1/scim/v2/Users/user-1", strings.NewReader(`{
+	req := httptest.NewRequest(http.MethodPut, "/api/organizations/00000000-0000-4000-8000-000000000011/scim/v2/Users/user-1", strings.NewReader(`{
 		"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
 		"userName": "jane.updated@example.com",
 		"name": {"formatted": "Jane Updated"},
@@ -998,7 +999,7 @@ func newBrandingServer(t *testing.T) (*server.Server, pgxmock.PgxPoolIface, stri
 	t.Cleanup(func() { mock.Close() })
 
 	srv := server.New(server.Config{
-		DB:              mock,
+		DB:              unmanagedDB{mock},
 		Pinger:          &mockPinger{err: nil},
 		Storage:         &mockStorage{},
 		JWTSecret:       "test-secret",
@@ -1253,7 +1254,7 @@ func TestBrandingPreview_RendersTheSubmittedValues(t *testing.T) {
 func TestBrandingPreview_RendersOnAnotherInstance(t *testing.T) {
 	minting, mock, token := newBrandingServer(t)
 	rendering := server.New(server.Config{
-		DB:              mock,
+		DB:              unmanagedDB{mock},
 		Pinger:          &mockPinger{err: nil},
 		Storage:         &mockStorage{},
 		JWTSecret:       "test-secret",
@@ -1592,4 +1593,23 @@ func TestDeleteAccountRouteIsRegistered(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("DELETE /api/user did not reach DeleteAccount: %v", err)
 	}
+}
+
+// These legacy route fixtures contain no managed accounts/workspaces. Real MPD
+// boundaries are covered against PostgreSQL in internal/mpd/identity_db_test.go.
+type unmanagedDB struct{ database.DBTX }
+type unmanagedRow struct{}
+type noManagedVideo struct{}
+
+func (noManagedVideo) Scan(...any) error { return pgx.ErrNoRows }
+
+func (unmanagedRow) Scan(dest ...any) error { *(dest[0].(*bool)) = false; return nil }
+func (db unmanagedDB) QueryRow(ctx context.Context, q string, args ...any) pgx.Row {
+	if strings.HasPrefix(q, "SELECT s.published,s.deleted_at,v.share_password") {
+		return noManagedVideo{}
+	}
+	if strings.HasPrefix(q, "SELECT EXISTS(SELECT 1 FROM mpd_external_identities") || strings.HasPrefix(q, "SELECT EXISTS(SELECT 1 FROM mpd_managed_workspaces") {
+		return unmanagedRow{}
+	}
+	return db.DBTX.QueryRow(ctx, q, args...)
 }

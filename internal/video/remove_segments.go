@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/httputil"
 )
@@ -106,20 +108,21 @@ func (h *Handler) RemoveSegments(w http.ResponseWriter, r *http.Request) {
 	// Claim the version that was read: a conversion may have switched the key
 	// since, and the job below would edit the old one.
 	updateWhere, updateArgs := orgRowFilter(r.Context(), videoID, []any{fileKey}, "AND status = 'ready' AND file_key = $1")
-	tag, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere, updateArgs...,
-	)
+	var acceptedVersion int
+	err = h.db.QueryRow(r.Context(),
+		`UPDATE videos SET status = 'processing', processing_started_at = now(), updated_at = now() WHERE `+updateWhere+` RETURNING media_version`, updateArgs...,
+	).Scan(&acceptedVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		httputil.WriteError(w, http.StatusConflict, "video is already being processed")
+		return
+	}
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to update video status")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		httputil.WriteError(w, http.StatusConflict, "video is already being processed")
-		return
-	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), editVersionKey{}, acceptedVersion), 10*time.Minute)
 		defer cancel()
 		RemoveSegmentsAsync(ctx, h.db, h.storage, videoID, fileKey, thumbnailFileKey(videoOwnerID, shareToken), contentType, req.Segments, duration)
 	}()
@@ -249,7 +252,7 @@ func RemoveSegmentsAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`+editVersionFence(ctx),
 			videoID, editFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("remove-segments: failed to set fallback ready status", "video_id", videoID, "error", err)

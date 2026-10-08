@@ -145,7 +145,7 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 			`UPDATE videos SET status = 'ready', processing_started_at = NULL,
 			        capture_warning = CASE WHEN capture_warning IS NULL THEN $2 ELSE capture_warning || ' ' || $2 END,
 			        updated_at = now()
-			 WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			 WHERE id = $1 AND file_key = $3 AND status = 'processing'`+editVersionFence(ctx),
 			videoID, webcamDroppedWarning, screenKey,
 		)
 		if err != nil {
@@ -246,13 +246,13 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	// composite that can't be published never touches the screen recording.
 	outputType, outputExt := contentType, ext
 	publish := `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, file_size = $4, updated_at = now()
-		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'` + editVersionFence(ctx)
 	if contentType == "video/webm" {
 		outputType, outputExt = "video/mp4", ".mp4"
 		// Marked as the transcode worker marks its own MP4s, so the worker
 		// does not encode this one a second time.
 		publish = `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, updated_at = now()
-		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'` + editVersionFence(ctx)
 	}
 	outputKey := replacementFileKey(screenKey, outputExt)
 	tmpOutput, err := os.CreateTemp("", "sendrec-composite-output-*"+outputExt)

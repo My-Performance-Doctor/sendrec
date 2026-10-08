@@ -116,12 +116,16 @@ func segmentsToVTT(segments []TranscriptSegment) string {
 	return b.String()
 }
 
-func processTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, videoID, fileKey string, version int, userID, shareToken, language string, aiEnabled bool) {
+func processTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, videoID, fileKey string, version int, userID, shareToken, language string, aiEnabled bool, generations ...int) {
+	generation := 0
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
 	if !isTranscriptionAvailable(transcriber) {
 		slog.Warn("transcribe: transcription not available, marking as failed", "video_id", videoID)
 		if _, err := db.Exec(ctx,
-			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2`,
-			videoID, version,
+			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
+			videoID, version, generation,
 		); err != nil {
 			slog.Error("transcribe: failed to set failed status", "video_id", videoID, "error", err)
 		}
@@ -138,8 +142,8 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 
 	setFailed := func() {
 		if _, err := db.Exec(workerCtx,
-			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2`,
-			videoID, version,
+			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
+			videoID, version, generation,
 		); err != nil {
 			slog.Error("transcribe: failed to set failed status", "video_id", videoID, "error", err)
 		}
@@ -175,8 +179,8 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		if errors.Is(err, errNoAudio) {
 			slog.Info("transcribe: video has no audio stream", "video_id", videoID)
 			if _, dbErr := db.Exec(ctx,
-				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2`,
-				videoID, version,
+				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
+				videoID, version, generation,
 			); dbErr != nil {
 				slog.Error("transcribe: failed to set no_audio status", "video_id", videoID, "error", dbErr)
 			}
@@ -192,8 +196,8 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		if errors.Is(err, ErrNoAudio) {
 			slog.Info("transcribe: provider reported no speech", "video_id", videoID)
 			if _, dbErr := db.Exec(ctx,
-				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2`,
-				videoID, version,
+				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
+				videoID, version, generation,
 			); dbErr != nil {
 				slog.Error("transcribe: failed to set no_audio status", "video_id", videoID, "error", dbErr)
 			}
@@ -242,9 +246,9 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 	}
 
 	published, err := publishUpload(ctx, db, "transcript_key",
-		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now()
-		 WHERE id = $1 AND media_version = $4 AND status != 'deleted'`,
-		videoID, transcriptKey, string(segmentsJSON), version)
+		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_published_generation = $5, transcript_started_at = NULL, updated_at = now()
+		 WHERE id = $1 AND media_version = $4 AND ($5=0 OR transcript_generation=$5) AND status != 'deleted'`,
+		videoID, transcriptKey, string(segmentsJSON), version, generation)
 	if err != nil {
 		slog.Error("transcribe: failed to update transcript data", "video_id", videoID, "error", err)
 		setFailed()
@@ -260,8 +264,8 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 
 	if aiEnabled {
 		if _, err := db.Exec(ctx,
-			`UPDATE videos SET summary_status = 'pending', updated_at = now() WHERE id = $1 AND media_version = $2`,
-			videoID, version,
+			`UPDATE videos SET summary_status = 'pending', updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
+			videoID, version, generation,
 		); err != nil {
 			slog.Error("transcribe: failed to enqueue summary", "video_id", videoID, "error", err)
 		}

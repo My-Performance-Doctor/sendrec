@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/organization"
 	"github.com/sendrec/sendrec/internal/plans"
 	"github.com/sendrec/sendrec/internal/validate"
@@ -25,6 +26,9 @@ const defaultPageSize = 50
 const maxPageSize = 100
 
 type listItem struct {
+	Managed               bool               `json:"managed,omitempty"`
+	Published             bool               `json:"published"`
+	MediaVersion          int                `json:"mediaVersion,omitempty"`
 	ID                    string             `json:"id"`
 	Title                 string             `json:"title"`
 	Status                string             `json:"status"`
@@ -333,6 +337,16 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		item.ShareURL = h.baseURL + "/watch/" + item.ShareToken
 		item.HasPassword = sharePassword != nil
+		if _, managed := mpd.PrincipalFromContext(r.Context()); managed {
+			item.Managed = true
+			if err := h.db.QueryRow(r.Context(), `SELECT published,media_version FROM mpd_video_state WHERE video_id=$1 AND deleted_at IS NULL`, item.ID).Scan(&item.Published, &item.MediaVersion); err != nil {
+				httputil.WriteError(w, 503, "recording state unavailable")
+				return
+			}
+			if !item.Published {
+				item.ShareURL = ""
+			}
+		}
 		if thumbnailKey != nil {
 			thumbURL, err := h.storage.GenerateDownloadURL(r.Context(), *thumbnailKey, 1*time.Hour)
 			if err == nil {

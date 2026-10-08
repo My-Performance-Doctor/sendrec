@@ -125,7 +125,7 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 		     media_version = media_version + 1, thumbnail_key = NULL, thumbnail_attempts = 0, thumbnail_retry_at = NULL,
 		     transcript_key = NULL, transcript_json = NULL, transcript_status = $7, transcript_started_at = NULL,
 		     updated_at = now()
-		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`,
+		 WHERE id = $1 AND file_key = $2 AND status = 'processing'`+editVersionFence(ctx),
 		videoID, fileKey, newKey, newDuration, info.Size(), webcamDroppedWarning, transcriptStatus,
 	)
 	if err != nil {
@@ -155,7 +155,7 @@ func TrimVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := db.Exec(recoveryCtx,
-			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`,
+			`UPDATE videos SET status = 'ready', processing_started_at = NULL, processing_error = $2, updated_at = now() WHERE id = $1 AND file_key = $3 AND status = 'processing'`+editVersionFence(ctx),
 			videoID, editFailedMessage, fileKey,
 		); err != nil {
 			slog.Error("trim: failed to set fallback ready status", "video_id", videoID, "error", err)

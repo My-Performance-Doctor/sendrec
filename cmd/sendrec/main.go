@@ -18,8 +18,11 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/email"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
+	"github.com/sendrec/sendrec/internal/mpdevents"
 	"github.com/sendrec/sendrec/internal/plans"
 	"github.com/sendrec/sendrec/internal/ratelimit"
+	"github.com/sendrec/sendrec/internal/readiness"
 	"github.com/sendrec/sendrec/internal/server"
 	slackpkg "github.com/sendrec/sendrec/internal/slack"
 	"github.com/sendrec/sendrec/internal/storage"
@@ -67,10 +70,25 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := db.Migrate(databaseURL); err != nil {
-		log.Fatalf("database migration failed: %v", err)
+	migrationMode := getEnv("MIGRATIONS_MODE", "auto")
+	if migrationMode != "auto" && migrationMode != "only" && migrationMode != "skip" {
+		log.Fatal("invalid MIGRATIONS_MODE")
 	}
-	slog.Info("database migrations applied")
+	if migrationMode != "skip" {
+		if err := db.Migrate(databaseURL); err != nil {
+			log.Fatal("database migration failed")
+		}
+		slog.Info("database migrations applied")
+	}
+	if migrationMode == "only" {
+		return
+	}
+	managedMode := strictBool("MPD_MANAGED_MODE", false)
+	optionalWorkers := strictBool("OPTIONAL_WORKERS_ENABLED", !managedMode)
+	legacyWebhooks := strictBool("LEGACY_WEBHOOKS_ENABLED", !managedMode)
+	if managedMode && (optionalWorkers || legacyWebhooks || strictBool("AI_ENABLED", false)) {
+		log.Fatal("managed mode requires optional sending workers and AI disabled")
+	}
 
 	store, err := storage.New(ctx, storage.Config{
 		Endpoint:       getEnv("S3_ENDPOINT", "http://localhost:3900"),
@@ -137,7 +155,10 @@ func main() {
 	aiEnabled := getEnv("AI_ENABLED", "false") == "true"
 
 	slackClient := slackpkg.New(db.Pool)
-	webhookClient := webhookpkg.New(db.Pool)
+	var webhookClient *webhookpkg.Client
+	if legacyWebhooks {
+		webhookClient = webhookpkg.New(db.Pool)
+	}
 
 	// The operator's branding for every viewer page on this install, under any
 	// personal, workspace or per-video branding. Refuse to start on a bad value
@@ -173,7 +194,26 @@ func main() {
 	registrationEnabled := getEnv("REGISTRATION_ENABLED", "true") == "true"
 	planBadgeEnabled := getEnv("PLAN_BADGE_ENABLED", "false") == "true"
 
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	defer cleanupCancel()
+	monitor := &readiness.Monitor{Pool: db.Pool, Output: os.Stdout}
+	go monitor.Run(cleanupCtx)
+	eventWorker, err := mpdevents.NewWorker(db.Pool, mpdevents.Config{Enabled: strictBool("MPD_EVENTS_ENABLED", false), Destination: os.Getenv("MPD_EVENT_RECEIVER_URL"), KeyID: os.Getenv("MPD_EVENT_KEY_ID"), SigningKey: []byte(os.Getenv("MPD_EVENT_SIGNING_KEY"))})
+	if err != nil {
+		log.Fatal("invalid managed event configuration")
+	}
+	go eventWorker.Run(cleanupCtx)
+	serviceConfig := video.MPDServiceConfig{Enabled: strictBool("MPD_SERVICE_ENABLED", false), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID"), TenantID: os.Getenv("MPD_TENANT_ID"), TokenHashes: splitConfigured("MPD_SERVICE_TOKEN_HASHES"), RequirePassword: strictBool("MPD_REQUIRE_PASSWORD", true)}
+	if serviceConfig.Enabled && (serviceConfig.WorkspaceID == "" || serviceConfig.TenantID == "" || len(serviceConfig.TokenHashes) == 0) {
+		log.Fatal("managed service configuration incomplete")
+	}
+	identityConfig := mpd.Config{Enabled: strictBool("MPD_IDENTITY_ENABLED", false), Issuer: os.Getenv("MPD_COGNITO_ISSUER"), ClientID: os.Getenv("MPD_COGNITO_CLIENT_ID"), ClientSecret: os.Getenv("MPD_COGNITO_CLIENT_SECRET"), AccessURL: os.Getenv("MPD_ACCESS_URL"), BaseURL: baseURL, JWTSecret: jwtSecret, EncryptionSecret: os.Getenv("MPD_SESSION_ENCRYPTION_KEY"), AllowedClientIDs: splitConfigured("MPD_ALLOWED_CLIENT_IDS"), AllowedOrigins: splitConfigured("MPD_ALLOWED_ORIGINS")}
+	if identityConfig.Enabled && (serviceConfig.WorkspaceID == "" || serviceConfig.TenantID == "") {
+		log.Fatal("managed identity requires workspace and tenant bindings")
+	}
 	srv := server.New(server.Config{
+		MPD: identityConfig, MPDService: serviceConfig,
+		Readiness:                 readiness.Checker{Database: db.Ping, Storage: store.Check, Workers: monitor.WorkersProbe},
 		DB:                        db.Pool,
 		Pinger:                    db,
 		Storage:                   store,
@@ -246,8 +286,6 @@ func main() {
 	// worker starts: it replaces a package-level value those goroutines read.
 	video.SetEncoderConcurrency(int(getEnvInt64("MAX_CONCURRENT_ENCODES", video.DefaultEncoderConcurrency)))
 
-	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
-	defer cleanupCancel()
 	video.StartCleanupLoop(cleanupCtx, db.Pool, store, 10*time.Minute)
 
 	if getEnv("TRANSCRIPTION_ENABLED", "false") == "true" {
@@ -260,14 +298,18 @@ func main() {
 	}
 	video.StartSummaryWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
 	video.StartDocumentWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
-	video.StartDigestWorker(cleanupCtx, db.Pool, emailClient, baseURL)
+	if optionalWorkers {
+		video.StartDigestWorker(cleanupCtx, db.Pool, emailClient, baseURL)
+	}
 	video.StartTranscodeWorker(cleanupCtx, db.Pool, store, 2*time.Minute)
 	// Reclaims videos whose editing job died with the process. Runs more often
 	// than the 15 minute staleness bound so a stranded row is picked up soon
 	// after it becomes eligible.
 	video.StartStuckProcessingWorker(cleanupCtx, db.Pool, store, webhookClient, baseURL, 5*time.Minute)
-	video.StartOnboardingWorker(cleanupCtx, db.Pool, emailClient, baseURL)
-	video.StartRetentionWorker(cleanupCtx, db.Pool, emailClient, baseURL)
+	if optionalWorkers {
+		video.StartOnboardingWorker(cleanupCtx, db.Pool, emailClient, baseURL)
+		video.StartRetentionWorker(cleanupCtx, db.Pool, emailClient, baseURL)
+	}
 
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf(":%s", port),
@@ -324,4 +366,24 @@ func getEnvInt64(key string, fallback int64) int64 {
 		}
 	}
 	return fallback
+}
+
+func strictBool(name string, fallback bool) bool {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	if raw != "true" && raw != "false" {
+		log.Fatalf("invalid boolean configuration for %s", name)
+	}
+	return raw == "true"
+}
+func splitConfigured(name string) []string {
+	var values []string
+	for _, raw := range strings.Split(os.Getenv(name), ",") {
+		if value := strings.TrimSpace(raw); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }

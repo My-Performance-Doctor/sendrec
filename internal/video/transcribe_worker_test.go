@@ -28,7 +28,7 @@ func TestEnqueueTranscription(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', updated_at = now\(\)`).
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1, updated_at = now\(\)`).
 		WithArgs("video-123").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 

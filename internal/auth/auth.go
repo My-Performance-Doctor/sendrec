@@ -45,6 +45,9 @@ type Handler struct {
 	emailSender         EmailSender
 	baseURL             string
 	registrationEnabled bool
+	managedGuard        func(http.Handler) http.Handler
+	managedRefresh      http.HandlerFunc
+	managedLogout       http.HandlerFunc
 }
 
 func NewHandler(db database.DBTX, jwtSecret string, secureCookies bool) *Handler {
@@ -347,6 +350,12 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	if h.managedRefresh != nil {
+		if _, err := r.Cookie("mpd_refresh"); err == nil {
+			h.managedRefresh(w, r)
+			return
+		}
+	}
 	cookie, err := r.Cookie("refresh_token")
 	if err != nil {
 		httputil.WriteError(w, http.StatusUnauthorized, "refresh token not found")
@@ -390,6 +399,12 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if h.managedLogout != nil {
+		if _, err := r.Cookie("mpd_refresh"); err == nil {
+			h.managedLogout(w, r)
+			return
+		}
+	}
 	if cookie, err := r.Cookie("refresh_token"); err == nil {
 		if claims, err := ValidateToken(h.jwtSecret, cookie.Value); err == nil && claims.TokenType == "refresh" && claims.TokenID != "" {
 			_ = h.revokeRefreshToken(r.Context(), claims.TokenID)
@@ -879,6 +894,15 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), userIDKey, claims.UserID)
+		ctx = context.WithValue(ctx, managedSessionKey, claims.ManagedSessionID)
+		if h.managedGuard != nil {
+			h.managedGuard(next).ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		if claims.ManagedSessionID != "" {
+			httputil.WriteError(w, 401, "managed session is unavailable")
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -991,4 +1015,16 @@ func NewTokenID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
+}
+
+const managedSessionKey contextKey = "mpdSession"
+
+func ManagedSessionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(managedSessionKey).(string)
+	return v
+}
+func (h *Handler) SetManagedSessionHooks(guard func(http.Handler) http.Handler, refresh, logout http.HandlerFunc) {
+	h.managedGuard = guard
+	h.managedRefresh = refresh
+	h.managedLogout = logout
 }

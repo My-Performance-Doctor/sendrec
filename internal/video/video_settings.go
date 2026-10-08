@@ -436,6 +436,15 @@ func (h *Handler) UploadTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reserve this request before upload. A later request invalidates this one,
+	// even if the older upload or transcription job completes last.
+	var generation int
+	if err := h.db.QueryRow(r.Context(), `UPDATE videos SET transcript_generation=transcript_generation+1
+	 WHERE id=$1 AND media_version=$2 AND status='ready' RETURNING transcript_generation`, videoID, version).Scan(&generation); err != nil {
+		httputil.WriteError(w, http.StatusConflict, "video changed before transcript acceptance")
+		return
+	}
+
 	// Under a key of its own and only for the content it was written for, like
 	// a generated transcript. #327.
 	transcriptKey := replacementFileKey(transcriptFileKey(userID, shareToken), ".vtt")
@@ -451,10 +460,10 @@ func (h *Handler) UploadTranscript(w http.ResponseWriter, r *http.Request) {
 
 	// The caller's scope is checked again in the publishing statement: the
 	// video may have been transferred while the transcript was uploading.
-	scope, scopeArgs := orgRowFilter(r.Context(), videoID, []any{videoID, transcriptKey, string(segmentsJSON), version}, "")
+	scope, scopeArgs := orgRowFilter(r.Context(), videoID, []any{videoID, transcriptKey, string(segmentsJSON), version, generation}, "")
 	published, err := publishUpload(r.Context(), h.db, "transcript_key",
-		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_started_at = NULL, updated_at = now()
-		 WHERE id = $1 AND `+scope+` AND media_version = $4 AND status != 'deleted'`,
+		`UPDATE videos SET transcript_key = $2, transcript_json = $3, transcript_status = 'ready', transcript_published_generation=$5, transcript_started_at = NULL, updated_at = now()
+		 WHERE id = $1 AND `+scope+` AND media_version = $4 AND transcript_generation=$5 AND status != 'deleted'`,
 		scopeArgs...)
 	if err != nil {
 		discardReplacement(r.Context(), h.db, transcriptKey)

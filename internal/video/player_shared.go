@@ -936,6 +936,7 @@ const playlistJS = `
             errorOverlay.classList.remove('visible');
             spinner.classList.remove('visible');
 
+            player.dataset.shareToken = v.shareToken;
             player.src = v.videoUrl;
             player.load();
             bindCaptions();

@@ -79,7 +79,20 @@ func New(ctx context.Context, cfg Config) (*Storage, error) {
 	}, nil
 }
 
+// ErrObjectNotFound distinguishes an absent key from denied or unavailable storage.
+var ErrObjectNotFound = errors.New("object not found")
+
 func (s *Storage) GenerateUploadURL(ctx context.Context, key string, contentType string, contentLength int64, expiry time.Duration) (string, error) {
+	return s.generateUploadURL(ctx, key, contentType, contentLength, expiry, false)
+}
+
+// GenerateImmutableUploadURL binds a write-once condition into the signature.
+// The caller must send If-None-Match: *; omitting it invalidates the signature.
+func (s *Storage) GenerateImmutableUploadURL(ctx context.Context, key string, contentType string, contentLength int64, expiry time.Duration) (string, error) {
+	return s.generateUploadURL(ctx, key, contentType, contentLength, expiry, true)
+}
+
+func (s *Storage) generateUploadURL(ctx context.Context, key string, contentType string, contentLength int64, expiry time.Duration, immutable bool) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("storage not initialized")
 	}
@@ -87,6 +100,9 @@ func (s *Storage) GenerateUploadURL(ctx context.Context, key string, contentType
 		Bucket:      aws.String(s.bucket),
 		Key:         aws.String(key),
 		ContentType: aws.String(contentType),
+	}
+	if immutable {
+		input.IfNoneMatch = aws.String("*")
 	}
 	if s.uploadLimit() > 0 && contentLength > s.uploadLimit() {
 		return "", fmt.Errorf("file too large: %d > %d", contentLength, s.uploadLimit())
@@ -99,6 +115,9 @@ func (s *Storage) GenerateUploadURL(ctx context.Context, key string, contentType
 		return "", fmt.Errorf("presign upload: %w", err)
 	}
 
+	if immutable && req.SignedHeader.Get("If-None-Match") != "*" {
+		return "", errors.New("write-once upload condition was not signed")
+	}
 	return req.URL, nil
 }
 
@@ -162,6 +181,10 @@ func (s *Storage) HeadObject(ctx context.Context, key string) (int64, string, er
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var apiError smithy.APIError
+		if errors.As(err, &apiError) && (apiError.ErrorCode() == "NotFound" || apiError.ErrorCode() == "NoSuchKey") {
+			return 0, "", fmt.Errorf("head object: %w", ErrObjectNotFound)
+		}
 		return 0, "", fmt.Errorf("head object: %w", err)
 	}
 	size := int64(0)

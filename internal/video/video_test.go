@@ -2840,9 +2840,9 @@ func TestTrim_Success(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"duration", "file_key", "share_token", "status", "content_type", "user_id"}).
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
-	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'processing', processing_started_at = now\(\).* RETURNING media_version`).
 		WithArgs("recordings/user/video.webm", videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		WillReturnRows(pgxmock.NewRows([]string{"media_version"}).AddRow(1))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/videos/{id}/trim", handler.Trim)
@@ -3060,9 +3060,9 @@ func TestTrim_RaceCondition(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"duration", "file_key", "share_token", "status", "content_type", "user_id"}).
 			AddRow(120, "recordings/user/video.webm", "abc123defghi", "ready", "video/webm", testUserID))
 
-	mock.ExpectExec(`UPDATE videos SET status = 'processing', processing_started_at = now\(\)`).
+	mock.ExpectQuery(`UPDATE videos SET status = 'processing', processing_started_at = now\(\).* RETURNING media_version`).
 		WithArgs("recordings/user/video.webm", videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+		WillReturnRows(pgxmock.NewRows([]string{"media_version"}))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/videos/{id}/trim", handler.Trim)
@@ -7001,6 +7001,9 @@ func TestUploadTranscript_HappyPath(t *testing.T) {
 		WithArgs(videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"user_id", "share_token", "media_version"}).AddRow(testUserID, shareToken, 0))
 
+	mock.ExpectQuery(`UPDATE videos SET transcript_generation=transcript_generation\+1`).WithArgs(videoID, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"transcript_generation"}).AddRow(1))
+
 	segmentsJSON, err := json.Marshal([]TranscriptSegment{{Start: 0, End: 1, Text: "hi", Speaker: "Alice"}})
 	if err != nil {
 		t.Fatal(err)
@@ -7008,7 +7011,7 @@ func TestUploadTranscript_HappyPath(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`WITH held AS .*UPDATE videos SET transcript_key = \$2, transcript_json = \$3`).
-		WithArgs(videoID, pgxmock.AnyArg(), string(segmentsJSON), 0, videoID, testUserID).
+		WithArgs(videoID, pgxmock.AnyArg(), string(segmentsJSON), 0, 1, videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 
 	vtt := "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nAlice: hi\n\n"

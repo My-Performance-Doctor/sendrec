@@ -383,6 +383,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
         })();
     </script>
 {{end}}
+<script nonce="{{.Nonce}}" src="/api/mpd/player.js" defer></script>
 </body>
 </html>`))
 
