@@ -96,3 +96,56 @@ func TestBacklogAlarmsDoNotRemoveServingAPIAndSampleFailuresDo(t *testing.T) {
 		t.Fatal("database failure was logged")
 	}
 }
+
+func TestProcessingFailureAlarmRecoversAfterWindow(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL required")
+	}
+	ctx := context.Background()
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE videos(status text,created_at timestamptz,processing_started_at timestamptz,updated_at timestamptz,transcript_status text);
+ CREATE TEMP TABLE mpd_event_outbox(state text,created_at timestamptz);
+ INSERT INTO videos VALUES('ready',now(),NULL,now()-interval '1 day','failed'),('ready',now(),NULL,now(),'failed');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor := Monitor{Pool: pool}
+	sampled, err := monitor.Sample(ctx)
+	if err != nil || sampled.ProcessingFailures != 1 {
+		t.Fatalf("old failure obscured new failure: %+v %v", sampled, err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE videos SET updated_at=now()-interval '16 minutes'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampled, err = monitor.Sample(ctx)
+	if err != nil || sampled.ProcessingFailures != 0 {
+		t.Fatalf("failure alarm did not age out: %+v %v", sampled, err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO videos VALUES('ready',now(),NULL,now(),'failed')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampled, err = monitor.Sample(ctx)
+	if err != nil || sampled.ProcessingFailures != 1 {
+		t.Fatalf("new failure not observed: %+v %v", sampled, err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE videos SET transcript_status='ready'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampled, err = monitor.Sample(ctx)
+	if err != nil || sampled.ProcessingFailures != 0 {
+		t.Fatalf("recovered failure still counted: %+v %v", sampled, err)
+	}
+}

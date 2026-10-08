@@ -40,7 +40,7 @@ The final expanded Go run passed 1,806 checks and hit one stale test fixture com
 
 ## Delivery
 
-The operator refreshed GitHub access on 2026-10-08. The verified `workflow` scope allowed the full branch, including release workflows, to push. [Implementation PR 4](https://github.com/My-Performance-Doctor/sendrec/pull/4) is open. At implementation revision `58504bc8116d259b49672e0e69597f69d34e2ff5`, Application, Docker build and AWS infrastructure CI passed. The application job included Go race/coverage tests and vulnerability scanning. Browser E2E and preview deployment skipped under the PR workflow. Formal review is pending. No deployment occurred.
+The operator refreshed GitHub access on 2026-10-08. The verified `workflow` scope allowed the full branch, including release workflows, to push. [Implementation PR 4](https://github.com/My-Performance-Doctor/sendrec/pull/4) is open. At implementation revision `58504bc8116d259b49672e0e69597f69d34e2ff5`, Application, Docker build and AWS infrastructure CI passed. The application job included Go race/coverage tests and vulnerability scanning. Browser E2E and preview deployment skipped under the PR workflow. The review helper failed all three attempts; recovered findings have fixes, but no clean formal round is recorded. Final-revision checks are tracked in the PR. No deployment occurred.
 
 
 ## PR review corrections
@@ -49,6 +49,10 @@ The first review invocation inherited the upstream repository selection and was 
 
 Corrections address backlog-driven readiness failure, managed SCIM target checks, Cognito verified-email decoding, retryable native refresh, stale cookies after changing login type, legacy upload cleanup, managed-only URL expiry and player renewal, expired temporary access records, and per-recording library queries. Persistent authorization checks remain active during rollback. The suggestion to bypass them based on disabled configuration was rejected because retained managed identities and media still require protection.
 
-The final allowed review attempt uses the same Claude review at high effort through a temporary JSON-format adapter. It preserves every finding, treats unspecified severity as high, and leaves unreadable or error output as a failure. It does not change global review tooling. Final correction checks and review results are recorded in the PR.
+The final allowed attempt used the same Claude review at high effort through a temporary JSON-format adapter. The reviewer added prose before its JSON array, so the strict adapter preserved the output and the helper again failed. The full report was recovered. All three actual invocations are exhausted, with zero formal rounds recorded and no clean-review claim. Global review tooling was not changed.
+
+The final report prompted fixes for database-only migration startup, failed-edit publication and caption recovery, publish-then-copy UI state, recent failure metrics, dormant-service alarm handling, public-route limits, tenant-scoped staff classification and redundant delivery/renewal queries. Failed edits retain their reserved media version to fence stale jobs. Migration 74 restores unchanged media availability atomically, while explicit password or publication changes still win. Persisted authorization checks remain active. Final correction checks are recorded in the PR.
 
 Correction verification: the full Go suite passed, with the optional cross-service harness skipped. Identity/auth packages passed again after the last refresh-savepoint edit. All 892 frontend tests, TypeScript/Vite build, Go lint, staged secret scan and scope checks passed. The existing Vite bundle-size warning remains.
+
+Final recovered-finding checks: 1,857 Go tests passed, one optional cross-service harness skipped. The migration entrypoint test passed again after its cleanup-error checks. Go lint reports zero issues. The affected detail page passed 115 tests and TypeScript/Vite build passed. Infrastructure passed 16 Python and six Java tests with synthesized alarm readback. Staged secret and scope checks passed.

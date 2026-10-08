@@ -401,7 +401,7 @@ public class SendRecStack extends Stack {
           .environment(migrationEnvironment).secrets(migrationSecrets)
           .logging(LogDrivers.awsLogs(AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("migration").build())).build());
       CfnOutput.Builder.create(this, "MigrationTaskDefinitionArn").value(migration.getTaskDefinitionArn()).build();
-      if (config.production()) addProductionAlarms(config, database, alb, targetGroup, logGroup);
+      if (config.production()) addProductionAlarms(config, database, service, targetGroup, logGroup);
     }
     CfnOutput.Builder.create(this, "ClusterArn").value(cluster.getClusterArn()).build();
     CfnOutput.Builder.create(this, "ServiceArn").value(service.getServiceArn()).build();
@@ -427,16 +427,19 @@ public class SendRecStack extends Stack {
     }
   }
   private void addProductionAlarms(EnvironmentConfig config, DatabaseInstance database,
-      ApplicationLoadBalancer alb, ApplicationTargetGroup targets, LogGroup logs) {
+      FargateService service, ApplicationTargetGroup targets, LogGroup logs) {
     String probeCode;
     try { probeCode = java.nio.file.Files.readString(java.nio.file.Path.of("backup-probe.py")); }
     catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
     var backupProbe = software.amazon.awscdk.services.lambda.Function.Builder.create(this, "BackupProbe")
         .runtime(software.amazon.awscdk.services.lambda.Runtime.PYTHON_3_13).handler("index.handler")
         .code(software.amazon.awscdk.services.lambda.Code.fromInline(probeCode)).timeout(Duration.seconds(30))
-        .logGroup(logs).environment(Map.of("DATABASE_IDENTIFIER", database.getInstanceIdentifier())).build();
+        .logGroup(logs).environment(Map.of("DATABASE_IDENTIFIER", database.getInstanceIdentifier(),
+            "CLUSTER_ARN", service.getCluster().getClusterArn(), "SERVICE_ARN", service.getServiceArn())).build();
     backupProbe.addToRolePolicy(software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
         .actions(List.of("rds:DescribeDBInstances")).resources(List.of(database.getInstanceArn())).build());
+    backupProbe.addToRolePolicy(software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+        .actions(List.of("ecs:DescribeServices")).resources(List.of(service.getServiceArn())).build());
     software.amazon.awscdk.services.events.Rule.Builder.create(this, "BackupProbeSchedule")
         .schedule(software.amazon.awscdk.services.events.Schedule.rate(Duration.minutes(5)))
         .targets(List.of(new software.amazon.awscdk.services.events.targets.LambdaFunction(backupProbe))).build();
@@ -453,6 +456,15 @@ public class SendRecStack extends Stack {
       metrics.put(name, software.amazon.awscdk.services.cloudwatch.Metric.Builder.create()
           .namespace("MPD/SendRecProduction").metricName(name).statistic("Maximum").period(Duration.minutes(5)).build());
     }
+    // This probe runs independently of application tasks, so missing application
+    // data can be distinguished from an intentionally dormant, zero-task service.
+    software.amazon.awscdk.services.logs.MetricFilter.Builder.create(this, "ServiceDesiredCountFilter")
+        .logGroup(logs).filterPattern(software.amazon.awscdk.services.logs.FilterPattern.exists("$.ServiceDesiredCount"))
+        .metricNamespace("MPD/SendRecProduction").metricName("ServiceDesiredCount")
+        .metricValue("$.ServiceDesiredCount").build();
+    var desiredCount = software.amazon.awscdk.services.cloudwatch.Metric.Builder.create()
+        .namespace("MPD/SendRecProduction").metricName("ServiceDesiredCount")
+        .statistic("Maximum").period(Duration.minutes(5)).build();
     for (var item : metrics.entrySet()) {
       double threshold = switch (item.getKey()) {
         case "DatabaseCPU" -> 85;
@@ -460,8 +472,18 @@ public class SendRecStack extends Stack {
         case "BackupAgeSeconds" -> 900;
         default -> 1;
       };
+      boolean applicationMetric = !item.getKey().equals("DatabaseCPU") && !item.getKey().equals("BackupAgeSeconds");
+      software.amazon.awscdk.services.cloudwatch.IMetric signal = item.getValue();
+      if (applicationMetric) {
+        // Missing active-task probes must breach. Idle 5xx has no data by design.
+        double missingValue = item.getKey().equals("Target5xx") ? 0 : threshold;
+        signal = software.amazon.awscdk.services.cloudwatch.MathExpression.Builder.create()
+            .expression("IF(desired > 0, FILL(signal, " + missingValue + "), 0)")
+            .usingMetrics(Map.of("desired", desiredCount, "signal", item.getValue()))
+            .period(Duration.minutes(5)).build();
+      }
       var alarm = software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, item.getKey() + "Alarm")
-          .metric(item.getValue()).threshold(threshold).evaluationPeriods(2)
+          .metric(signal).threshold(threshold).evaluationPeriods(2)
           .comparisonOperator(software.amazon.awscdk.services.cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD)
           // Missing probe metrics are failures, including a stopped backup probe.
           .treatMissingData(item.getKey().equals("Target5xx")

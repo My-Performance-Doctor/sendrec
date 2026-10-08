@@ -34,7 +34,7 @@ type Metrics struct {
 func (m *Monitor) Sample(ctx context.Context) (Metrics, error) {
 	var result Metrics
 	err := m.Pool.QueryRow(ctx, `SELECT
- (SELECT count(*) FROM videos WHERE status<>'deleted' AND transcript_status='failed'),
+ (SELECT count(*) FROM videos WHERE status<>'deleted' AND transcript_status='failed' AND updated_at>=now()-interval '15 minutes'),
  (SELECT count(*) FROM videos WHERE status='uploading' AND created_at<now()-interval '1 hour'),
  (SELECT count(*) FROM videos WHERE (status='processing' AND COALESCE(processing_started_at,updated_at)<now()-interval '32 minutes') OR (transcript_status IN ('pending','processing') AND updated_at<now()-interval '32 minutes')),
  (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(created_at))::bigint,0) FROM mpd_event_outbox WHERE state IN ('pending','leased','blocked')),

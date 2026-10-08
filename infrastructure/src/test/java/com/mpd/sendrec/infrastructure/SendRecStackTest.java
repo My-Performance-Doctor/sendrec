@@ -116,6 +116,25 @@ class SendRecStackTest {
       assertTrue(definition.contains(config.alertTopicArn()));
       assertTrue(definition.contains("TreatMissingData=breaching") || definition.contains("TreatMissingData=notBreaching"));
     }
+    // Desired count comes from the independent probe, not this dormant template.
+    template.hasResourceProperties("AWS::Lambda::Function", Map.of("Environment", Match.objectLike(Map.of(
+        "Variables", Match.objectLike(Map.of("SERVICE_ARN", Match.anyValue(), "CLUSTER_ARN", Match.anyValue()))))));
+    template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+        "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecs:DescribeServices"))))))));
+    int gated = 0;
+    for (var alarm : template.findResources("AWS::CloudWatch::Alarm").entrySet()) {
+      String definition = alarm.getValue().toString();
+      if (alarm.getKey().startsWith("DatabaseCPU") || alarm.getKey().startsWith("BackupAgeSeconds")) {
+        assertFalse(definition.contains("Expression="));
+      } else {
+        gated++;
+        double missing = alarm.getKey().startsWith("Target5xx") ? 0.0
+            : alarm.getKey().startsWith("OutboxOldestSeconds") ? 300.0 : 1.0;
+        assertTrue(definition.contains("Expression=IF(desired > 0, FILL(signal, " + missing + "), 0)"));
+        assertTrue(definition.contains("MetricName=ServiceDesiredCount"));
+      }
+    }
+    assertEquals(7, gated);
     app.synth();
   }
 

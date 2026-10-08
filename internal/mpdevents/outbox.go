@@ -152,11 +152,17 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	w.runTicks(ctx, tick.C)
+}
+
+// The readiness monitor samples backlog once a minute. Delivery polling only
+// claims due work; retained evidence must not be scanned on each poll.
+func (w *Worker) runTicks(ctx context.Context, ticks <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-ticks:
 			for range 20 {
 				worked, err := w.DeliverOne(ctx)
 				if err != nil {
@@ -166,9 +172,6 @@ func (w *Worker) Run(ctx context.Context) {
 				if !worked {
 					break
 				}
-			}
-			if b, err := Inspect(ctx, w.db); err == nil {
-				slog.Info("mpd-events: backlog", "pending", b.Pending, "blocked", b.Blocked, "dead", b.Dead, "oldest_seconds", b.OldestSeconds)
 			}
 		}
 	}

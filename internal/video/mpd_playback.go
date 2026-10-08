@@ -6,17 +6,20 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/mpdevents"
 )
 
 // MPDPlaybackSession's wrapper must repeat the same media-access checks as the
-// native watch player. staffPreview comes exclusively from verified middleware.
-func (h *Handler) MPDPlaybackSession(w http.ResponseWriter, r *http.Request, staffPreview bool) {
-	var id string
-	if err := h.db.QueryRow(r.Context(), `SELECT id FROM videos WHERE share_token=$1 AND status='ready'`, chi.URLParam(r, "shareToken")).Scan(&id); err != nil {
+// native watch player. The verified classification principal must also belong
+// to this recording's persisted workspace and tenant before marking a preview.
+func (h *Handler) MPDPlaybackSession(w http.ResponseWriter, r *http.Request, principal *mpd.Principal) {
+	var id, workspace, tenant string
+	if err := h.db.QueryRow(r.Context(), `SELECT v.id,v.organization_id,s.tenant_id FROM videos v JOIN mpd_video_state s ON s.video_id=v.id WHERE v.share_token=$1 AND v.status='ready'`, chi.URLParam(r, "shareToken")).Scan(&id, &workspace, &tenant); err != nil {
 		httputil.WriteError(w, 404, "video not found")
 		return
 	}
+	staffPreview := principal != nil && principal.Capabilities.Read && principal.OrganizationID == workspace && principal.TenantID == tenant
 	s, err := mpdevents.NewSession(r.Context(), h.db, id, staffPreview)
 	if err != nil {
 		httputil.WriteError(w, 403, "playback unavailable")

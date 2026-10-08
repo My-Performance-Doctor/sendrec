@@ -43,8 +43,12 @@ func main() {
 		log.Fatal("DATABASE_URL is required")
 	}
 
+	migrationMode := getEnv("MIGRATIONS_MODE", "auto")
+	if migrationMode != "auto" && migrationMode != "only" && migrationMode != "skip" {
+		log.Fatal("invalid MIGRATIONS_MODE")
+	}
 	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
+	if jwtSecret == "" && migrationMode != "only" {
 		log.Fatal("JWT_SECRET is required")
 	}
 
@@ -70,10 +74,6 @@ func main() {
 	}
 	defer db.Close()
 
-	migrationMode := getEnv("MIGRATIONS_MODE", "auto")
-	if migrationMode != "auto" && migrationMode != "only" && migrationMode != "skip" {
-		log.Fatal("invalid MIGRATIONS_MODE")
-	}
 	if migrationMode != "skip" {
 		if err := db.Migrate(databaseURL); err != nil {
 			log.Fatal("database migration failed")

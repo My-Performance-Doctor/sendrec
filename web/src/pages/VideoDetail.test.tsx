@@ -229,14 +229,14 @@ function renderVideoDetail(videoId = "v1") {
 }
 
 describe("Managed recording access", () => {
- beforeEach(() => {mockApiFetch.mockReset();mockUseOrganization.mockReturnValue({ ...mockUseOrganization(), selectedOrg: null });});
+ beforeEach(() => {mockApiFetch.mockReset();mockUseOrganization.mockReturnValue({ ...mockUseOrganization(), selectedOrg: null });Object.assign(navigator,{clipboard:{writeText:vi.fn().mockResolvedValue(undefined)}});});
  function managedMocks(rejectPublication = false) {
-  mockApiFetch.mockImplementation(async (path: string) => {
-   if (path === "/api/videos") return [makeVideo({managed:true,published:false,mediaVersion:3})];
+  mockApiFetch.mockImplementation(async (path: string, options?: {body?: string}) => {
+   if (path === "/api/videos") return [makeVideo({managed:true,published:false,mediaVersion:3,shareUrl:""})];
    if (path === "/api/videos/limits") return defaultLimits;
    if (path.endsWith("/comments")) return defaultComments;
    if (path.endsWith("/preview")) return {previewUrl:window.location.origin+"/mpd-preview#handoff=synthetic"};
-   if (path.endsWith("/publication")) {if(rejectPublication) throw new Error("Set a password before publishing");return {published:true,mediaVersion:3};}
+   if (path.endsWith("/publication")) {if(rejectPublication) throw new Error("Set a password before publishing");return {published:JSON.parse(options!.body!).published,mediaVersion:3};}
    return [];
   });
  }
@@ -250,6 +250,16 @@ describe("Managed recording access", () => {
   fireEvent.click(screen.getByText("Publish recording"));
   await waitFor(() => expect(screen.getByText("Copy share link")).not.toBeDisabled());
   expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/v1/publication",expect.objectContaining({body:JSON.stringify({mediaVersion:3,published:true})}));
+  const expected = `${window.location.origin}/watch/abc123`;
+  expect(screen.getByLabelText("Share link")).toHaveValue(expected);
+  fireEvent.click(screen.getByText("Copy link"));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expected));
+  vi.mocked(navigator.clipboard.writeText).mockClear();
+  fireEvent.click(screen.getByText("Copy share link"));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expected));
+  fireEvent.click(screen.getByText("Unpublish"));
+  await waitFor(() => expect(screen.getByText("Copy share link")).toBeDisabled());
+  expect(screen.getByLabelText("Share link")).toHaveValue("Available after publication");
  });
  it("keeps sharing disabled when publication fails", async () => {
   managedMocks(true);renderVideoDetail();

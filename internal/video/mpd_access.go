@@ -143,8 +143,8 @@ func (h *Handler) BoundMPDMediaURLs() {
 	h.storage = boundedMPDStorage{ObjectStorage: h.storage, db: h.db}
 }
 
-// RenewWatchMedia repeats publication middleware plus the existing password,
-// expiry and email policy without recording a page view.
+// RenewWatchMedia loads ready media after publication middleware. Managed
+// requests reuse its password/email decision; legacy requests enforce it here.
 func (h *Handler) RenewWatchMedia(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "shareToken")
 	var file string
@@ -158,7 +158,7 @@ func (h *Handler) RenewWatchMedia(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 404, "recording unavailable")
 		return
 	}
-	if !h.enforceWatchAccess(w, r, token, password, email) {
+	if !managedShare(r.Context(), token) && !h.enforceWatchAccess(w, r, token, password, email) {
 		return
 	}
 	url, err := h.storage.GenerateDownloadURL(r.Context(), file, 5*time.Minute)

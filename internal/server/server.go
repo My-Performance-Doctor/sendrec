@@ -81,6 +81,7 @@ type Config struct {
 }
 
 type Server struct {
+	watchLimiter        *ratelimit.Limiter
 	mpdMediaPolicy      bool
 	mpdHandler          *mpd.Handler
 	router              chi.Router
@@ -588,7 +589,8 @@ func (s *Server) routes() {
 		// Unauthenticated watch surface: every GET records a view and can notify
 		// the owner, and the beacons write analytics rows, so they need the same
 		// throttling and body caps their siblings already had (SR-03).
-		watchLimiter := ratelimit.NewLimiter(5, 20)
+		s.watchLimiter = ratelimit.NewLimiter(5, 20)
+		watchLimiter := s.watchLimiter
 		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/watch/{shareToken}", s.videoHandler.Watch)
 		s.router.With(publicGuard, watchLimiter.Middleware).Get("/api/watch/{shareToken}/download", s.videoHandler.WatchDownload)
 		s.router.With(publicGuard, watchAuthLimiter.Middleware, maxBodySize(64*1024)).Post("/api/watch/{shareToken}/verify", s.videoHandler.VerifyWatchPassword)

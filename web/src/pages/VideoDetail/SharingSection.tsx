@@ -44,7 +44,12 @@ export function SharingSection({
         method: "PUT", body: JSON.stringify({ mediaVersion: video.mediaVersion, published: !video.published }),
       });
       if (!result) throw new Error("Publication unavailable");
-      onVideoUpdate(prev => prev ? { ...prev, published: result.published, mediaVersion: result.mediaVersion } : prev);
+      onVideoUpdate(prev => prev ? {
+        ...prev,
+        published: result.published,
+        mediaVersion: result.mediaVersion,
+        shareUrl: result.published ? `${window.location.origin}/watch/${encodeURIComponent(prev.shareToken)}` : "",
+      } : prev);
     } catch (err) { setPublicationError(err instanceof Error ? err.message : "Publication unavailable"); }
     finally { setPublishing(false); }
   }
