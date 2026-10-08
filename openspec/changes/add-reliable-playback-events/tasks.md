@@ -24,4 +24,4 @@
 - 1.3: Verified-context classification, native cookie renewal and one-use preview handoffs are implemented. Browser checks with third-party cookies disabled and future-client top-level playback remain open. No recipient grant is implemented or accepted.
 - 3.1: The synthetic consumer drill passed lost-acknowledgement retry, duplicate effects, transcript replacement and deletion. Actual backlog alarm receipt remains open.
 - 3.2: Final full Go and frontend check results are recorded in [verification](../../../docs/mpd/verification.md). Existing `video.viewed` keeps its page-access meaning. New event delivery logs contain IDs/status only.
-- 3.3: Strict validation passed. The implementation PR, review and CI remain pending delivery. Delivery is disabled until human merge and staged activation. See the [runbook](../../../docs/production/README.md).
+- 3.3: Strict validation passed. The implementation PR, review and CI remain blocked by missing GitHub workflow-write access. Local application checks and lint passed. Delivery is disabled until human merge and staged activation. See the [runbook](../../../docs/production/README.md).

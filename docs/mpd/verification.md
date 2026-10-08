@@ -36,4 +36,8 @@ Supplemental tests verify native/future same-account login, actual-route rejecti
 
 Managed upload links now sign `If-None-Match: *`. Actual AWS SDK tests verify the signed condition; the synthetic object service rejects overwrite and missing headers. Upload recovery checks size/type and never treats storage outages as missing objects. The client can recover a lost PUT or finalization acknowledgement without repeating the object write, ready event or queued jobs, including at the monthly creation limit. Go lint reports zero issues.
 
-The final expanded Go run passed 1,806 checks and hit one stale test fixture compiled before its last correction. The failure was `ordinary storage changed: "" map[] <nil>` because the ordinary-storage positive control had no URL configured. The corrected control passed its focused rerun. The complete video-package rerun is recorded in the PR verification before handoff.
+The final expanded Go run passed 1,806 checks and hit one stale test fixture compiled before its last correction. The failure was `ordinary storage changed: "" map[] <nil>` because the ordinary-storage positive control had no URL configured. The corrected control passed its focused rerun. The complete video-package rerun then passed 1,060 checks, with only the separately exercised cross-service harness skipped. All other packages passed the expanded full run.
+
+## Delivery blocker
+
+The implementation is committed on `feat/apply-mpd-video-integration`. GitHub rejected the push because the installed CLI OAuth token lacks `workflow` scope. The existing SSH key also returned read-only denial. No implementation PR or GitHub CI run exists for this branch yet, so the required PR review loop has not run. Refresh the authorized GitHub CLI credential with workflow access, then push this branch, open the prepared implementation PR and complete review/CI. Do not remove release workflows to bypass the missing permission.

@@ -37,3 +37,5 @@
   - Implementation review/CI and the concrete rollout approval request remain pending. This preparation does not authorize deployment.
 - [ ] 4.3 After separate rollout approval, deploy the empty production service and verify approved pilot checks; record the exact live state and preserve Vimeo service and retained resources.
   - Not authorized or run. Production remains unactivated; no pilot or retained-resource changes occurred.
+
+Delivery note: source, local evidence and the runbook are committed. Staged secret scans and all three strict validations passed. GitHub rejected the implementation push because the CLI token lacks workflow-write scope and the configured SSH key is read-only. Task 4.2 cannot finish until that credential is refreshed and PR review/CI run. No production deployment occurred.
