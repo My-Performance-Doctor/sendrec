@@ -8,7 +8,7 @@
 
 - [ ] 2.1 Extend Java CDK with isolated production configuration, private encrypted resources and exact origins; verify synthesis and automated infrastructure assertions.
 - [ ] 2.2 Add immutable-image promotion, a single migration task, staging checks and a manual production approval; verify failed readiness triggers a safe rollback rehearsal.
-- [ ] 2.3 Configure proposed multi-task and Multi-AZ operation; run concurrent worker and interruption tests before confirming it is safe to scale.
+- [ ] 2.3 Configure proposed multi-task and Multi-AZ operation; inventory every startup worker and use atomic claims or single-leader leases, or explicitly disable unsupported optional workers. Test media, stuck recovery, cleanup, retention, digest/onboarding email and legacy webhooks with controlled sinks and interrupted leaders before scaling.
 - [ ] 2.4 Add health/readiness and backlog/processing/backup alarms with redacted logs; inject synthetic faults and verify the configured operator actually receives alerts.
 
 ## 3. Recovery and client verification

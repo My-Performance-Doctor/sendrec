@@ -75,3 +75,11 @@ Managed source retention SHALL be disabled in application workers and personal/w
 #### Scenario: Old retention warning
 - **WHEN** a managed video has an old retention warning and nonzero user or workspace retention_days, and retention plus cleanup workers run
 - **THEN** the source stays available and staff cannot enable automatic deletion through settings
+
+### Requirement: All enabled background work supports multiple tasks
+
+Readiness SHALL inventory every startup worker, not only media processing and outbox delivery. Each enabled worker SHALL use a cross-task claim or leader lease; unsupported optional workers SHALL remain explicitly disabled.
+
+#### Scenario: Overlapping schedules
+- **WHEN** two tasks run media recovery, cleanup, retention, digest/onboarding or legacy-webhook schedules concurrently and a leader stops
+- **THEN** controlled sinks observe one logical effect and pending work recovers without duplicate sends
