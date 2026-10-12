@@ -1,5 +1,6 @@
 package com.mpd.sendrec.infrastructure;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -172,10 +173,13 @@ public class SendRecStack extends Stack {
         .build();
     String baseUrl = "https://" + distribution.getDistributionDomainName();
 
-    // The browser PUTs recordings straight to S3 with a presigned URL.
+    // The browser PUTs recordings straight to S3 with a presigned URL, from SendRec's own pages
+    // and from approved MPD clients such as Staff OS.
+    List<String> uploadOrigins = new ArrayList<>(List.of(baseUrl));
+    uploadOrigins.addAll(MpdIntegrationConfig.browserOrigins(this));
     recordings.addCorsRule(
         CorsRule.builder()
-            .allowedOrigins(List.of(baseUrl))
+            .allowedOrigins(uploadOrigins)
             .allowedMethods(List.of(HttpMethods.GET, HttpMethods.PUT, HttpMethods.HEAD))
             .allowedHeaders(List.of("*"))
             .exposedHeaders(List.of("ETag"))

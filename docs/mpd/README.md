@@ -64,7 +64,7 @@ Delivery signs `timestamp + "." + rawBody` with HMAC-SHA256 and sends the timest
 
 A playback session records the first advancing actual play. Page access, preload, stalled playback and seeking alone do not count. Staff previews never set the report watched flag. Signed-out shared-link playback is anonymous evidence, not proof that a named patient watched. Recipient grants are reserved for separate work.
 
-See [verification](verification.md) for local results and [production preparation](../production/README.md) for release, alert and restore requirements. The [operator identity procedure](operator-identity.md) must verify issuer, subject, staff and tenant bindings; matching email alone never transfers an existing account or evaluation media.
+Staff OS builders start with the [handover guide](staff-os-handover.md), which walks through these calls in order. See [verification](verification.md) for local results and [production preparation](../production/README.md) for release, alert and restore requirements. The [operator identity procedure](operator-identity.md) must verify issuer, subject, staff and tenant bindings; matching email alone never transfers an existing account or evaluation media.
 
 ## Synthetic client requests
 

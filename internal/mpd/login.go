@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ func (h *Handler) allowedOrigin(w http.ResponseWriter, r *http.Request, native b
 		w.Header().Set("Vary", "Origin")
 		return true
 	}
+	slog.Warn("mpd sign-in refused", "stage", "origin", "outcome", "denied", "origin", origin, "path", r.URL.Path)
 	httputil.WriteError(w, 403, "origin is not allowed")
 	return false
 }
@@ -48,6 +50,22 @@ func identityError(w http.ResponseWriter, err error) {
 		code = 503
 	}
 	httputil.WriteError(w, code, "MPD sign in or authorization unavailable")
+}
+
+// refuse logs why a sign-in step failed, then writes the usual opaque response.
+// It never logs tokens, subjects or email addresses.
+func refuse(w http.ResponseWriter, r *http.Request, entry, stage string, err error) {
+	outcome := "denied"
+	switch err {
+	case ErrUnavailable:
+		outcome = "unavailable"
+	case ErrLinkRequired:
+		outcome = "link_required"
+	case ErrCapacity:
+		outcome = "capacity"
+	}
+	slog.Warn("mpd sign-in refused", "entry", entry, "stage", stage, "outcome", outcome, "path", r.URL.Path)
+	identityError(w, err)
 }
 func (h *Handler) populateDisplay(r *http.Request, raw string, id *Identity) error {
 	info, err := h.provider.UserInfo(oidc.ClientContext(r.Context(), h.client), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: raw}))
@@ -74,31 +92,31 @@ func (h *Handler) Exchange(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || len(raw) > 16384 {
-		identityError(w, ErrDenied)
+		refuse(w, r, "exchange", "bearer", ErrDenied)
 		return
 	}
 	id, err := h.VerifyAccess(r.Context(), raw)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "verify_token", err)
 		return
 	}
 	g, err := h.Access(r.Context(), raw, id)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "access_grant", err)
 		return
 	}
 	if err = h.populateDisplay(r, raw, id); err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "profile", err)
 		return
 	}
 	p, err := h.provision(r.Context(), id, g)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "provision", err)
 		return
 	}
 	sid, err := h.createSession(r.Context(), p, id, g, raw, "")
 	if err != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "exchange", "session", ErrUnavailable)
 		return
 	}
 	h.respondSession(w, r, sid, false)
@@ -147,38 +165,38 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	c, e := r.Cookie("mpd_login")
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "login_cookie", ErrDenied)
 		return
 	}
 	var nonce, encrypted, callback string
 	e = h.db.QueryRow(r.Context(), `DELETE FROM mpd_login_transactions WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>now() RETURNING nonce,verifier_encrypted,callback`, hash(r.URL.Query().Get("state")), hash(c.Value)).Scan(&nonce, &encrypted, &callback)
 	if e != nil || callback != h.oauth.RedirectURL || r.URL.Query().Get("code") == "" {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "login_state", ErrDenied)
 		return
 	}
 	verifier, e := integration.Decrypt(h.key, encrypted)
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "pkce_verifier", ErrDenied)
 		return
 	}
 	token, e := h.oauth.Exchange(oidc.ClientContext(r.Context(), h.client), r.URL.Query().Get("code"), oauth2.VerifierOption(verifier))
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "code_exchange", ErrDenied)
 		return
 	}
 	rawID, ok := token.Extra("id_token").(string)
 	if !ok {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "id_token_missing", ErrDenied)
 		return
 	}
 	verified, e := h.idVerifier.Verify(oidc.ClientContext(r.Context(), h.client), rawID)
 	if e != nil || verified.Nonce != nonce {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "id_token", ErrDenied)
 		return
 	}
 	id, e := h.VerifyAccess(r.Context(), token.AccessToken)
 	if e != nil || id.Subject != verified.Subject {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "verify_token", ErrDenied)
 		return
 	}
 	var display struct {
@@ -187,28 +205,28 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		Verified bool   `json:"email_verified"`
 	}
 	if verified.Claims(&display) != nil || !display.Verified {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "profile", ErrDenied)
 		return
 	}
 	id.Email = display.Email
 	id.Name = display.Name
 	g, e := h.Access(r.Context(), token.AccessToken, id)
 	if e != nil {
-		identityError(w, e)
+		refuse(w, r, "callback", "access_grant", e)
 		return
 	}
 	p, e := h.provision(r.Context(), id, g)
 	if e != nil {
-		identityError(w, e)
+		refuse(w, r, "callback", "provision", e)
 		return
 	}
 	if token.RefreshToken == "" {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "refresh_token_missing", ErrDenied)
 		return
 	}
 	sid, e := h.createSession(r.Context(), p, id, g, token.AccessToken, token.RefreshToken)
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "session", ErrUnavailable)
 		return
 	}
 	code, e := randomSecret()

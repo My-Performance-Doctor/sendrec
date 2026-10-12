@@ -153,6 +153,33 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "true")));
   }
 
+  private Map<String, Object> activation(String origins) {
+    Map<String, Object> context = new java.util.HashMap<>(Map.of(
+        "activateMpdIntegration", "true",
+        "mpdIntegrationSecretArn", "arn:aws:secretsmanager:ap-southeast-2:" + StagingConfig.ACCOUNT + ":secret:synthetic/mpd-AbCdEf",
+        "MPD_COGNITO_ISSUER", "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_synthetic",
+        "MPD_COGNITO_CLIENT_ID", "synthetic-client",
+        "MPD_ACCESS_URL", "https://api.example.test/api/v1/staff/video-access",
+        "MPD_WORKSPACE_ID", "00000000-0000-4000-8000-000000000001",
+        "MPD_TENANT_ID", "00000000-0000-4000-8000-000000000002",
+        "MPD_ALLOWED_CLIENT_IDS", "synthetic-client",
+        "MPD_EVENT_RECEIVER_URL", "https://api.example.test/webhook",
+        "MPD_EVENT_KEY_ID", "synthetic-1"));
+    context.put("MPD_ALLOWED_ORIGINS", origins);
+    return context;
+  }
+
+  @Test void approvedMpdClientsCanUploadStraightToTheBucket() {
+    Template dormant = Template.fromStack(stack(Map.of()));
+    assertFalse(dormant.findResources("AWS::S3::Bucket").toString().contains("staff.example.test"));
+    Template active = Template.fromStack(stack(activation("https://staff.example.test, http://localhost:5173")));
+    active.hasResourceProperties("AWS::S3::Bucket", Map.of("CorsConfiguration", Map.of("CorsRules", List.of(Match.objectLike(Map.of(
+        "AllowedOrigins", Match.arrayWith(List.of("https://staff.example.test", "http://localhost:5173")),
+        "AllowedMethods", List.of("GET", "PUT", "HEAD")))))));
+    assertThrows(IllegalArgumentException.class, () -> stack(activation("https://staff.example.test/path")));
+    assertThrows(IllegalArgumentException.class, () -> stack(activation("*")));
+  }
+
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";

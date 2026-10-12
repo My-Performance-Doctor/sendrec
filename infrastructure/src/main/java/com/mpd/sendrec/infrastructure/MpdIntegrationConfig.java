@@ -1,5 +1,6 @@
 package com.mpd.sendrec.infrastructure;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import software.amazon.awscdk.Stack;
@@ -31,6 +32,27 @@ final class MpdIntegrationConfig {
     environment.put("MPD_IDENTITY_ENABLED", "true");
     environment.put("MPD_SERVICE_ENABLED", "true");
     environment.put("MPD_EVENTS_ENABLED", "true");
+  }
+
+  /**
+   * Exact browser origins of approved MPD clients, such as Staff OS. They upload straight to the
+   * recordings bucket, so the bucket CORS rule must list them. Empty while the integration is dormant.
+   */
+  static List<String> browserOrigins(Stack scope) {
+    Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
+    if (activate == null || !"true".equals(activate.toString())) return List.of();
+    List<String> origins = new ArrayList<>();
+    for (String raw : required(scope, "MPD_ALLOWED_ORIGINS").split(",")) {
+      String origin = raw.trim();
+      if (origin.isEmpty()) continue;
+      boolean local = origin.matches("http://localhost(:[0-9]{1,5})?");
+      if (!origin.matches("https://[A-Za-z0-9.-]+(:[0-9]{1,5})?") && !local)
+        throw new IllegalArgumentException("MPD_ALLOWED_ORIGINS must list exact https origins");
+      if (local && !StagingConfig.ACCOUNT.equals(scope.getAccount()))
+        throw new IllegalArgumentException("localhost origins are allowed only in staging");
+      origins.add(origin);
+    }
+    return origins;
   }
 
   private static String required(Stack scope, String name) {

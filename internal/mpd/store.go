@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 	// Lock the workspace to serialize seat accounting and concurrent first logins.
 	err = tx.QueryRow(ctx, `SELECT organization_id,seat_limit FROM mpd_managed_workspaces WHERE tenant_id=$1 AND issuer=$2 AND enabled FOR UPDATE`, g.TenantID, id.Issuer).Scan(&org, &limit)
 	if err != nil {
+		slog.Warn("mpd provisioning refused", "reason", "no enabled managed workspace for tenant and issuer")
 		return nil, ErrDenied
 	}
 	var user, staff, tenant, linkedOrg string
@@ -52,6 +54,7 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		if id.Email == "" || len(id.Email) > 320 {
+			slog.Warn("mpd provisioning refused", "reason", "missing or oversized email")
 			return nil, ErrDenied
 		}
 		var collision bool
@@ -79,9 +82,11 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 			return nil, ErrUnavailable
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO mpd_external_identities(issuer,subject,user_id,organization_id,staff_id,tenant_id) VALUES($1,$2,$3,$4,$5,$6)`, id.Issuer, id.Subject, user, org, g.StaffID, g.TenantID); err != nil {
+			slog.Warn("mpd provisioning refused", "reason", "identity link insert rejected")
 			return nil, ErrDenied
 		}
 	} else if staff != g.StaffID || tenant != g.TenantID || linkedOrg != org {
+		slog.Warn("mpd provisioning refused", "reason", "existing identity bound to a different staff, tenant or workspace")
 		return nil, ErrDenied
 	}
 	if _, err = tx.Exec(ctx, `SELECT set_config('sendrec.mpd_provision','1',true)`); err != nil {
