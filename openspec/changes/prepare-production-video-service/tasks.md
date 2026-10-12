@@ -5,7 +5,7 @@
 - [ ] 1.2 Confirm all four integration changes are human-merged and deployed to staging with matching contracts; verify their revisions, disabled production settings and synthetic evidence.
   - Local producer/consumer drill passed, but human merges and deployed staging revisions remain pending, including mpd-api PR 211.
 - [ ] 1.3 Capture the production account/VPC, identity references, operational alert destination, cost estimate and proposed recovery objectives for operator review; verify no live deployment is implied.
-  - Configuration requires explicit references and the runbook records proposed RPO/RTO. Actual production references, cost estimate and operator review remain pending.
+  - Operator review held on 2026-10-12 and recorded in `docs/production/operator-decisions.md`. Still pending: production Cognito pool and SendRec client IDs, alert topic creation, the database class and approval of the recovery objectives.
 
 ## 2. Infrastructure and release controls
 

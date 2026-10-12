@@ -2,6 +2,8 @@
 
 Production is not activated. Jeff is reviewing mpd-api PR 211, and the matching integration has not run on staging. The production stack creates zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days.
 
+Operator decisions on the production account, network, alerts, hostname, image, sign-in order, recovery objectives and cost are in [operator-decisions.md](operator-decisions.md). They are decisions for production, not a deployment.
+
 ## Release
 
 `MPD immutable candidate` builds a main-branch image into an ECR repository that enforces immutable tags. It records the source revision and digest without deploying. The inherited upstream Docker Hub/Coolify release workflow only runs in the upstream repository.
@@ -114,7 +116,7 @@ The readiness checks also passed 15 Python tests, six Java infrastructure tests 
 | Production alert receipt | SNS destination and synthetic receipt check pending |
 | AWS RDS/S3 restoration and measured recovery objectives | Local rehearsal only |
 | Actual ECS candidate failure and rollback | Controlled script tests only |
-| Production account/VPC inputs, cost estimate and pilot approval | Operator review pending |
+| Production account/VPC inputs, cost estimate and pilot approval | Reviewed in [operator-decisions.md](operator-decisions.md); database class, alert topic and pilot approval pending |
 | Prior staging change closure | Existing missing final review and incomplete browser/automatic recovery evidence remain open |
 
 Keep the OpenSpec tasks and prior staging change open until the corresponding evidence exists. No retained resources or Vimeo content move as part of this change.
