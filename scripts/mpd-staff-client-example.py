@@ -121,15 +121,17 @@ def main() -> None:
     #    the bytes already arrived and you skip straight to finalize.
     upload_headers = {"Content-Type": content_type, **v.get("uploadHeaders", {})}
     with open(a.file, "rb") as f:
-        put = requests.put(v["uploadUrl"], data=f, headers=upload_headers, timeout=600)
-    if put.status_code == 403:
+        status = requests.put(v["uploadUrl"], data=f, headers=upload_headers, timeout=600).status_code
+    if status == 403:
         r = sr.call("POST", f"/api/videos/{vid}/upload-url", json={"kind": "screen", "contentType": content_type, "fileSize": size})
         renewed = r.json() if r.ok else fail("renew upload", r)
-        if not renewed.get("uploaded"):
+        if renewed.get("uploaded"):
+            status = 200
+        else:
             with open(a.file, "rb") as f:
-                put = requests.put(renewed["uploadUrl"], data=f, headers=upload_headers, timeout=600)
-    if put.status_code not in (200, 412):  # 412: the object already exists, so a retry is safe to finalize
-        sys.exit(f"upload failed: HTTP {put.status_code}")
+                status = requests.put(renewed["uploadUrl"], data=f, headers=upload_headers, timeout=600).status_code
+    if status not in (200, 412):  # 412: the object already exists, so a retry is safe to finalize
+        sys.exit(f"upload failed: HTTP {status}")
     print("uploaded", size, "bytes")
 
     # 3. Finalize. Retrying returns the first accepted result.

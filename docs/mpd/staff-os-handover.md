@@ -11,7 +11,7 @@ SendRec only accepts an approved client from an exact origin. Send these to whoe
 | Needed | Why | SendRec setting |
 |---|---|---|
 | Staff OS origin for each environment, such as `https://staff.example.com` | CORS for the API and the bucket, and framing for the preview | `MPD_ALLOWED_ORIGINS` |
-| Local development origin, such as `http://localhost:5173` | Same, staging only. Production rejects `localhost` | `MPD_ALLOWED_ORIGINS` |
+| Local development origin, such as `https://localhost:5173` | Same, staging only. It must be https, so run the dev server with HTTPS. Production rejects `localhost` | `MPD_ALLOWED_ORIGINS` |
 | Cognito client ID that Staff OS signs staff in with | Only tokens from listed clients are accepted | `MPD_ALLOWED_CLIENT_IDS` |
 
 The staff member also needs a role in mpd-api that grants video access. SendRec asks mpd-api's `/api/v1/staff/video-access` on every sign-in and at least every 30 seconds after.

@@ -172,12 +172,13 @@ class SendRecStackTest {
   @Test void approvedMpdClientsCanUploadStraightToTheBucket() {
     Template dormant = Template.fromStack(stack(Map.of()));
     assertFalse(dormant.findResources("AWS::S3::Bucket").toString().contains("staff.example.test"));
-    Template active = Template.fromStack(stack(activation("https://staff.example.test, http://localhost:5173")));
+    Template active = Template.fromStack(stack(activation("https://staff.example.test, https://localhost:5173")));
     active.hasResourceProperties("AWS::S3::Bucket", Map.of("CorsConfiguration", Map.of("CorsRules", List.of(Match.objectLike(Map.of(
-        "AllowedOrigins", Match.arrayWith(List.of("https://staff.example.test", "http://localhost:5173")),
+        "AllowedOrigins", Match.arrayWith(List.of("https://staff.example.test", "https://localhost:5173")),
         "AllowedMethods", List.of("GET", "PUT", "HEAD")))))));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("https://staff.example.test/path")));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("*")));
+    assertThrows(IllegalArgumentException.class, () -> stack(activation("http://localhost:5173")));
   }
 
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
