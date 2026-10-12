@@ -27,7 +27,11 @@ func (h *Handler) allowedOrigin(w http.ResponseWriter, r *http.Request, native b
 		w.Header().Set("Vary", "Origin")
 		return true
 	}
-	slog.Warn("mpd sign-in refused", "stage", "origin", "outcome", "denied", "origin", origin, "path", r.URL.Path)
+	logged := origin
+	if len(logged) > 100 {
+		logged = logged[:100]
+	}
+	slog.Warn("mpd sign-in refused", "stage", "origin", "outcome", "denied", "origin", logged, "path", r.URL.Path)
 	httputil.WriteError(w, 403, "origin is not allowed")
 	return false
 }
@@ -250,17 +254,17 @@ func (h *Handler) Handoff(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&b) != nil || len(b.Code) != 43 {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "code", ErrDenied)
 		return
 	}
 	c, e := r.Cookie("mpd_login")
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "login_cookie", ErrDenied)
 		return
 	}
 	var sid string
 	if h.db.QueryRow(r.Context(), `DELETE FROM mpd_login_handoffs WHERE code_hash=$1 AND browser_hash=$2 AND expires_at>now() RETURNING session_id`, hash(b.Code), hash(c.Value)).Scan(&sid) != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "code_redeem", ErrDenied)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "mpd_login", Path: "/api/auth/mpd", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
@@ -322,7 +326,7 @@ func (h *Handler) writeSession(w http.ResponseWriter, result *sessionResponse) {
 func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid string, native bool) {
 	result, err := h.prepareSession(r.Context(), sid, native)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "session", "prepare", err)
 		return
 	}
 	h.writeSession(w, result)

@@ -179,6 +179,15 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(activation("https://staff.example.test/path")));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("*")));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("http://localhost:5173")));
+    assertThrows(IllegalArgumentException.class, () -> stack(activation("https://Staff.Example.Test")));
+    for (String local : List.of("https://localhost:5173", "https://app.localhost", "https://127.0.0.1:5173")) {
+      App app = new App(AppProps.builder().context(activation(local)).build());
+      Stack production = new Stack(app, "Production" + local.length(), StackProps.builder().env(Environment.builder()
+          .account("111111111111").region(StagingConfig.REGION).build()).build());
+      assertThrows(IllegalArgumentException.class, () -> MpdIntegrationConfig.browserOrigins(production), local);
+      Stack staging = new Stack(app, "Staging" + local.length(), props);
+      assertEquals(List.of(local), MpdIntegrationConfig.browserOrigins(staging));
+    }
   }
 
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {

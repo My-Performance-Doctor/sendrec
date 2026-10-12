@@ -46,8 +46,12 @@ def duration_of(path: str) -> int:
     if not shutil.which("ffprobe"):
         sys.exit("pass --duration, or install ffprobe")
     out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path],
-                         capture_output=True, text=True, check=True).stdout
-    return max(1, round(float(out)))
+                         capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        return max(1, round(float(out)))
+    except ValueError:
+        # MediaRecorder WebM files often carry no duration in the header.
+        sys.exit("ffprobe could not read the duration; pass --duration")
 
 
 def fail(step: str, r: requests.Response) -> None:
@@ -129,7 +133,8 @@ def main() -> None:
             status = 200
         else:
             with open(a.file, "rb") as f:
-                status = requests.put(renewed["uploadUrl"], data=f, headers=upload_headers, timeout=600).status_code
+                renewed_headers = {"Content-Type": content_type, **renewed.get("uploadHeaders", {})}
+                status = requests.put(renewed["uploadUrl"], data=f, headers=renewed_headers, timeout=600).status_code
     if status not in (200, 412):  # 412: the object already exists, so a retry is safe to finalize
         sys.exit(f"upload failed: HTTP {status}")
     print("uploaded", size, "bytes")
@@ -180,10 +185,17 @@ def main() -> None:
         auth = {"Authorization": "Bearer " + token}
         recording = None
         for _ in range(12):
-            r = requests.get(f"{api}/api/v1/video-recordings", params={"status": "unclaimed", "limit": 100}, headers=auth, timeout=TIMEOUT)
-            if not r.ok:
-                fail("list unclaimed", r)
-            recording = next((i for i in r.json()["items"] if i["videoId"] == vid), None)
+            cursor = None
+            while True:  # walk every page: the list is not ordered by recency
+                params = {"status": "unclaimed", "limit": 100, **({"cursor": cursor} if cursor else {})}
+                r = requests.get(f"{api}/api/v1/video-recordings", params=params, headers=auth, timeout=TIMEOUT)
+                if not r.ok:
+                    fail("list unclaimed", r)
+                page = r.json()
+                recording = next((i for i in page["items"] if i["videoId"] == vid), None)
+                cursor = page.get("nextCursor")
+                if recording or not cursor:
+                    break
             if recording:
                 break
             time.sleep(5)

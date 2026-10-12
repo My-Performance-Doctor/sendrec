@@ -43,9 +43,13 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 	var limit int
 	// Lock the workspace to serialize seat accounting and concurrent first logins.
 	err = tx.QueryRow(ctx, `SELECT organization_id,seat_limit FROM mpd_managed_workspaces WHERE tenant_id=$1 AND issuer=$2 AND enabled FOR UPDATE`, g.TenantID, id.Issuer).Scan(&org, &limit)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		slog.Warn("mpd provisioning refused", "reason", "no enabled managed workspace for tenant and issuer")
 		return nil, ErrDenied
+	}
+	if err != nil {
+		slog.Warn("mpd provisioning refused", "reason", "managed workspace lookup failed")
+		return nil, ErrUnavailable
 	}
 	var user, staff, tenant, linkedOrg string
 	err = tx.QueryRow(ctx, `SELECT user_id,staff_id,tenant_id,organization_id FROM mpd_external_identities WHERE issuer=$1 AND subject=$2`, id.Issuer, id.Subject).Scan(&user, &staff, &tenant, &linkedOrg)
@@ -82,7 +86,7 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 			return nil, ErrUnavailable
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO mpd_external_identities(issuer,subject,user_id,organization_id,staff_id,tenant_id) VALUES($1,$2,$3,$4,$5,$6)`, id.Issuer, id.Subject, user, org, g.StaffID, g.TenantID); err != nil {
-			slog.Warn("mpd provisioning refused", "reason", "identity link insert rejected")
+			slog.Warn("mpd provisioning refused", "reason", "identity link insert failed")
 			return nil, ErrDenied
 		}
 	} else if staff != g.StaffID || tenant != g.TenantID || linkedOrg != org {

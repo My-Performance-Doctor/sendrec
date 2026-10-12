@@ -221,7 +221,7 @@ func (s *Storage) EnsureBucket(ctx context.Context) error {
 // has none: an operator's own CORS configuration is left as it is. Garage
 // ignores the admin-API CORS setting that garage-init used to rely on, so a
 // fresh install had no rules and every browser upload failed.
-func (s *Storage) EnsureCORS(ctx context.Context, origin string) error {
+func (s *Storage) EnsureCORS(ctx context.Context, origins ...string) error {
 	_, err := s.client.GetBucketCors(ctx, &s3.GetBucketCorsInput{Bucket: aws.String(s.bucket)})
 	if err == nil {
 		return nil
@@ -237,7 +237,7 @@ func (s *Storage) EnsureCORS(ctx context.Context, origin string) error {
 		Bucket: aws.String(s.bucket),
 		CORSConfiguration: &types.CORSConfiguration{
 			CORSRules: []types.CORSRule{{
-				AllowedOrigins: []string{origin},
+				AllowedOrigins: origins,
 				AllowedMethods: []string{"GET", "PUT", "HEAD"},
 				AllowedHeaders: []string{"*"},
 				ExposeHeaders:  []string{"ETag"},

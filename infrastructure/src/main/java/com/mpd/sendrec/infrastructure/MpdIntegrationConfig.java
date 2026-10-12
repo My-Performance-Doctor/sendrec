@@ -45,12 +45,14 @@ final class MpdIntegrationConfig {
     for (String raw : required(scope, "MPD_ALLOWED_ORIGINS").split(",")) {
       String origin = raw.trim();
       if (origin.isEmpty()) continue;
-      // The server refuses anything but exact https origins, so reject them here before a deploy.
-      if (!origin.matches("https://[A-Za-z0-9.-]+(:[0-9]{1,5})?"))
-        throw new IllegalArgumentException("MPD_ALLOWED_ORIGINS must list exact https origins");
-      boolean local = origin.matches("https://localhost(:[0-9]{1,5})?");
+      // The server refuses anything but exact https origins, and browsers send lowercase hosts,
+      // so reject anything else here before a deploy.
+      if (!origin.matches("https://[a-z0-9.-]+(:[0-9]{1,5})?"))
+        throw new IllegalArgumentException("MPD_ALLOWED_ORIGINS must list exact lowercase https origins");
+      String host = origin.substring("https://".length()).replaceFirst(":[0-9]+$", "");
+      boolean local = host.equals("localhost") || host.endsWith(".localhost") || host.matches("127(\\.[0-9]{1,3}){3}");
       if (local && !StagingConfig.ACCOUNT.equals(scope.getAccount()))
-        throw new IllegalArgumentException("localhost origins are allowed only in staging");
+        throw new IllegalArgumentException("localhost and loopback origins are allowed only in staging");
       origins.add(origin);
     }
     return origins;

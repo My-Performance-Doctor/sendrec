@@ -52,7 +52,7 @@ X-Organization-Id: {organizationId}
 - Keep the token in memory only. Cross-origin clients get no refresh cookie.
 - The session lasts 15 minutes. Renew by calling the exchange again with a current Cognito token, before `expiresAt` or after any 401.
 - `capabilities` says what to show: `record`, `read`, `manageOwn`, `manageWorkspace` and `readPassword`. Hide what the staff member can't do; the server enforces it anyway.
-- A 401 from the exchange means denied: unknown client, wrong origin, no video access, or no enabled workspace. A 503 means mpd-api or Cognito is unreachable. A 409 means either an existing SendRec account has the same email and needs an operator link, or the workspace's seat limit is reached. The reason is logged on the SendRec side as `mpd sign-in refused` with a `stage` field.
+- A 403 `origin is not allowed` means your origin is missing from `MPD_ALLOWED_ORIGINS`. A 401 means denied: unknown client, expired token, no video access, or no enabled workspace. A 503 means mpd-api, Cognito or the database is unreachable. A 409 means either an existing SendRec account has the same email and needs an operator link, or the workspace's seat limit is reached. The exchange, hosted sign-in, handoff and origin check log the reason on the SendRec side as `mpd sign-in refused`, with `entry`, `stage` and `outcome` fields. Session renewal for SendRec's own pages does not log reasons yet.
 
 ### 2. Record and upload
 
