@@ -116,7 +116,7 @@ The readiness checks also passed 15 Python tests, six Java infrastructure tests 
 | Production alert receipt | SNS destination and synthetic receipt check pending |
 | AWS RDS/S3 restoration and measured recovery objectives | Local rehearsal only |
 | Actual ECS candidate failure and rollback | Controlled script tests only |
-| Production account/VPC inputs, cost estimate and pilot approval | Reviewed in [operator-decisions.md](operator-decisions.md); database class, alert topic and pilot approval pending |
+| Production account/VPC inputs, cost estimate and pilot approval | Reviewed in [operator-decisions.md](operator-decisions.md); database class, alert topic, production Cognito pool and client IDs, recovery objective approval and pilot approval pending |
 | Prior staging change closure | Existing missing final review and incomplete browser/automatic recovery evidence remain open |
 
 Keep the OpenSpec tasks and prior staging change open until the corresponding evidence exists. No retained resources or Vimeo content move as part of this change.

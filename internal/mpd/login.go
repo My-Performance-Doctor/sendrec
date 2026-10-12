@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,11 @@ func (h *Handler) allowedOrigin(w http.ResponseWriter, r *http.Request, native b
 		w.Header().Set("Vary", "Origin")
 		return true
 	}
+	logged := origin
+	if len(logged) > 100 {
+		logged = strings.ToValidUTF8(logged[:100], "")
+	}
+	slog.Warn("mpd sign-in refused", "stage", "origin", "outcome", "denied", "origin", logged, "path", r.URL.Path)
 	httputil.WriteError(w, 403, "origin is not allowed")
 	return false
 }
@@ -48,6 +54,22 @@ func identityError(w http.ResponseWriter, err error) {
 		code = 503
 	}
 	httputil.WriteError(w, code, "MPD sign in or authorization unavailable")
+}
+
+// refuse logs why a sign-in step failed, then writes the usual opaque response.
+// It never logs tokens, subjects or email addresses.
+func refuse(w http.ResponseWriter, r *http.Request, entry, stage string, err error) {
+	outcome := "denied"
+	switch err {
+	case ErrUnavailable:
+		outcome = "unavailable"
+	case ErrLinkRequired:
+		outcome = "link_required"
+	case ErrCapacity:
+		outcome = "capacity"
+	}
+	slog.Warn("mpd sign-in refused", "entry", entry, "stage", stage, "outcome", outcome, "path", r.URL.Path)
+	identityError(w, err)
 }
 func (h *Handler) populateDisplay(r *http.Request, raw string, id *Identity) error {
 	info, err := h.provider.UserInfo(oidc.ClientContext(r.Context(), h.client), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: raw}))
@@ -74,31 +96,31 @@ func (h *Handler) Exchange(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || len(raw) > 16384 {
-		identityError(w, ErrDenied)
+		refuse(w, r, "exchange", "bearer", ErrDenied)
 		return
 	}
 	id, err := h.VerifyAccess(r.Context(), raw)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "verify_token", err)
 		return
 	}
 	g, err := h.Access(r.Context(), raw, id)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "access_grant", err)
 		return
 	}
 	if err = h.populateDisplay(r, raw, id); err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "profile", err)
 		return
 	}
 	p, err := h.provision(r.Context(), id, g)
 	if err != nil {
-		identityError(w, err)
+		refuse(w, r, "exchange", "provision", err)
 		return
 	}
 	sid, err := h.createSession(r.Context(), p, id, g, raw, "")
 	if err != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "exchange", "session", ErrUnavailable)
 		return
 	}
 	h.respondSession(w, r, sid, false)
@@ -110,28 +132,28 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	state, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	browser, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	nonce, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
 	enc, e := integration.Encrypt(h.key, verifier)
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	_, e = h.db.Exec(r.Context(), `INSERT INTO mpd_login_transactions(state_hash,browser_hash,nonce,verifier_encrypted,callback,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, hash(state), hash(browser), nonce, enc, h.oauth.RedirectURL, time.Now().Add(5*time.Minute))
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "mpd_login", Value: browser, Path: "/api/auth/mpd", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
@@ -147,38 +169,38 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	c, e := r.Cookie("mpd_login")
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "login_cookie", ErrDenied)
 		return
 	}
 	var nonce, encrypted, callback string
 	e = h.db.QueryRow(r.Context(), `DELETE FROM mpd_login_transactions WHERE state_hash=$1 AND browser_hash=$2 AND expires_at>now() RETURNING nonce,verifier_encrypted,callback`, hash(r.URL.Query().Get("state")), hash(c.Value)).Scan(&nonce, &encrypted, &callback)
 	if e != nil || callback != h.oauth.RedirectURL || r.URL.Query().Get("code") == "" {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "login_state", ErrDenied)
 		return
 	}
 	verifier, e := integration.Decrypt(h.key, encrypted)
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "pkce_verifier", ErrDenied)
 		return
 	}
 	token, e := h.oauth.Exchange(oidc.ClientContext(r.Context(), h.client), r.URL.Query().Get("code"), oauth2.VerifierOption(verifier))
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "code_exchange", ErrDenied)
 		return
 	}
 	rawID, ok := token.Extra("id_token").(string)
 	if !ok {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "id_token_missing", ErrDenied)
 		return
 	}
 	verified, e := h.idVerifier.Verify(oidc.ClientContext(r.Context(), h.client), rawID)
 	if e != nil || verified.Nonce != nonce {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "id_token", ErrDenied)
 		return
 	}
 	id, e := h.VerifyAccess(r.Context(), token.AccessToken)
 	if e != nil || id.Subject != verified.Subject {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "verify_token", ErrDenied)
 		return
 	}
 	var display struct {
@@ -187,38 +209,38 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		Verified bool   `json:"email_verified"`
 	}
 	if verified.Claims(&display) != nil || !display.Verified {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "profile", ErrDenied)
 		return
 	}
 	id.Email = display.Email
 	id.Name = display.Name
 	g, e := h.Access(r.Context(), token.AccessToken, id)
 	if e != nil {
-		identityError(w, e)
+		refuse(w, r, "callback", "access_grant", e)
 		return
 	}
 	p, e := h.provision(r.Context(), id, g)
 	if e != nil {
-		identityError(w, e)
+		refuse(w, r, "callback", "provision", e)
 		return
 	}
 	if token.RefreshToken == "" {
-		identityError(w, ErrDenied)
+		refuse(w, r, "callback", "refresh_token_missing", ErrDenied)
 		return
 	}
 	sid, e := h.createSession(r.Context(), p, id, g, token.AccessToken, token.RefreshToken)
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "session", ErrUnavailable)
 		return
 	}
 	code, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "handoff_code", ErrUnavailable)
 		return
 	}
 	_, e = h.db.Exec(r.Context(), `INSERT INTO mpd_login_handoffs(code_hash,browser_hash,session_id,expires_at) VALUES($1,$2,$3,$4)`, hash(code), hash(c.Value), sid, time.Now().Add(time.Minute))
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "handoff_code", ErrUnavailable)
 		return
 	}
 	// Fragment is not sent in HTTP requests or referrers. The SPA removes it before redemption.
@@ -232,17 +254,17 @@ func (h *Handler) Handoff(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&b) != nil || len(b.Code) != 43 {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "code", ErrDenied)
 		return
 	}
 	c, e := r.Cookie("mpd_login")
 	if e != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "login_cookie", ErrDenied)
 		return
 	}
 	var sid string
 	if h.db.QueryRow(r.Context(), `DELETE FROM mpd_login_handoffs WHERE code_hash=$1 AND browser_hash=$2 AND expires_at>now() RETURNING session_id`, hash(b.Code), hash(c.Value)).Scan(&sid) != nil {
-		identityError(w, ErrDenied)
+		refuse(w, r, "handoff", "code_redeem", ErrDenied)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "mpd_login", Path: "/api/auth/mpd", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
@@ -304,7 +326,11 @@ func (h *Handler) writeSession(w http.ResponseWriter, result *sessionResponse) {
 func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid string, native bool) {
 	result, err := h.prepareSession(r.Context(), sid, native)
 	if err != nil {
-		identityError(w, err)
+		entry := "exchange"
+		if native {
+			entry = "handoff"
+		}
+		refuse(w, r, entry, "prepare_session", err)
 		return
 	}
 	h.writeSession(w, result)

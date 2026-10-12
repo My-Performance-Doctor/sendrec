@@ -1,6 +1,18 @@
 # Verification and remaining activation checks
 
-This implementation uses synthetic identities and media. It has not enabled staging identity integration or deployed production.
+This implementation uses synthetic identities and media. Staging has the integration on since 2026-10-12. Production is not deployed.
+
+## Staging checks, 2026-10-12
+
+Run against the deployed staging service with a synthetic staff account and a synthetic tenant workspace. Until mpd-api PR 219 deploys, staging signs staff in through mpd-api's existing staff EHR Cognito client and a placeholder client origin.
+
+- Sign-in: a Cognito access token exchanged for a managed SendRec session after mpd-api's video-access check returned 200. The first attempt failed because the managed workspace was still disabled, as the operator procedure requires before activation. Enabling it with an audit row fixed that.
+- Recording: create, direct S3 upload and finalize passed. A second PUT to the same upload link returned 412. Transcoding took about 5 seconds and transcription about 70 seconds for a 10-second clip, and the transcript matched the spoken text.
+- Privacy: the unpublished watch API and page returned 404. Staff preview redeemed once, refused a replay with 403 and served the media and captions. Publishing without a password returned 409. After setting a password and publishing, the link returned 403 without a password, 403 with a wrong one, and played with the right one. Viewers see only "MPD staff" as the creator.
+- Offboarding: disabling the staff member's mpd-api tenant membership cut the session, the preview and the library off after 28 seconds, inside the 30-second grant cap. A new sign-in returned 401. Restoring the membership restored access. A published, password-protected patient link kept working while the staff member was offboarded.
+- Events: `video.ready` and `video.transcript_ready` queued and retried against mpd-api's 503, as designed. They become dead after 24 hours and need operator replay if PR 219 has not deployed by then.
+- Reference client: `scripts/mpd-staff-client-example.py` passed sign-in, upload, processing, preview and publishing.
+- Not yet run on staging: hosted sign-in, event receipt in mpd-api, claim and report, and any real browser.
 
 The local cross-service drill runs the actual Go producer/outbox/service adapter and the actual mpd-api PR 211 webhook, inbox, claims and report processing on disposable PostgreSQL databases. It stubs media/LLM enrichment and external task delivery. It passed these checks on 2026-10-08:
 

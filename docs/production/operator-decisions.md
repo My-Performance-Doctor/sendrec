@@ -31,7 +31,7 @@ SendRec production runs in the MPD production account in ap-southeast-2, in the 
 
 Alarms publish to a dedicated SNS topic named `sendrec-production-alerts`, with an email subscription for MPD's operations automation mailbox. The address is held in the private deployment record.
 
-Creating the topic is deferred. On 2026-10-12, neither the production workload role nor the production Lambda development role was allowed `sns:CreateTopic`. Either the SendRec production stack creates the topic and its subscription, or someone with production administration creates it before synthesis, because `ProductionConfig` requires an existing topic ARN. The mailbox owner must confirm the AWS subscription email once.
+Creating the topic is deferred. On 2026-10-12, neither the production workload role nor the production Lambda development role was allowed `sns:CreateTopic`. Someone with production administration must create it before synthesis, because `ProductionConfig` requires an existing topic ARN. Having the SendRec stack create the topic and its subscription instead would need a code change, because the stack only accepts an existing topic today. The mailbox owner must confirm the AWS subscription email once.
 
 Alarm gaps to close in task 2.4:
 
@@ -54,7 +54,7 @@ mpd-api production needs a staff-pool hosted sign-in domain, a confidential `mpd
 
 The production client's callback contains SendRec's production CloudFront hostname, which exists only after the stack is created. The order is:
 
-1. Deploy the empty SendRec production stack.
+1. Deploy the empty SendRec production stack. It needs the alert topic from section 2 and an image digest in a production ECR repository from section 4 first; synthesis fails without either.
 2. Open the mpd-api production change with the SendRec callback and hosted sign-in domain, then deploy mpd-api.
 3. Put the new client ID and secret into `sendrec-production/mpd-integration`.
 4. Activate the integration.
@@ -77,7 +77,7 @@ Proposed. In plain terms, these are the worst case MPD accepts.
 | Objective | Proposal | Meaning |
 |---|---|---|
 | Database data loss | At most 15 minutes | After a failure, the database is restored to a moment a few minutes before it. Recent metadata edits may need redoing |
-| Media data loss | None for acknowledged uploads | Uploads go straight to versioned S3 and cannot be overwritten |
+| Media data loss | None for acknowledged uploads | Upload links refuse to replace an existing object, and versioning keeps the prior copy after any overwrite or deletion. Playback of a replaced or deleted object stays broken until an operator restores that version |
 | Time to recover | 4 hours from alarm to patients watching again | The unmeasured estimate is about 2 hours: detect, decide, restore, cut over, verify |
 | Database backups | 35 days with point-in-time recovery | A problem noticed weeks later can still be rolled back |
 | Media retention | Versioning on, nothing expires or is deleted automatically | Holds until MPD approves a clinical retention policy |
