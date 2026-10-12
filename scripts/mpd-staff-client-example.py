@@ -20,6 +20,7 @@ client in MPD_ALLOWED_CLIENT_IDS. See docs/mpd/staff-os-handover.md.
 """
 
 import argparse
+import datetime
 import getpass
 import mimetypes
 import os
@@ -78,7 +79,11 @@ class SendRec:
         s = r.json()
         self.headers = {"Origin": self.origin, "Authorization": "Bearer " + s["accessToken"],
                         "X-Organization-Id": s["organizationId"]}
-        self.expires = time.time() + 14 * 60
+        try:
+            expires_at = datetime.datetime.fromisoformat(s["expiresAt"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            expires_at = time.time() + 15 * 60
+        self.expires = expires_at - 60  # renew a minute early
         return s
 
     def call(self, method: str, path: str, **kw) -> requests.Response:
@@ -174,7 +179,8 @@ def main() -> None:
         if r.status_code != 200:
             fail("publish", r)
         # watchUrl and embedUrl appear in the metadata only once published.
-        meta = sr.call("GET", f"/api/videos/{vid}/mpd").json()["metadata"]
+        r = sr.call("GET", f"/api/videos/{vid}/mpd")
+        meta = r.json()["metadata"] if r.ok else fail("read state", r)
         print("published: patient link", meta["watchUrl"])
 
     # 7. Optional: claim to a patient in mpd-api with the same Cognito token.

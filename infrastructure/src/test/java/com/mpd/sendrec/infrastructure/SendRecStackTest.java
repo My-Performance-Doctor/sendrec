@@ -180,7 +180,8 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(activation("*")));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("http://localhost:5173")));
     assertThrows(IllegalArgumentException.class, () -> stack(activation("https://Staff.Example.Test")));
-    for (String local : List.of("https://localhost:5173", "https://app.localhost", "https://127.0.0.1:5173")) {
+    assertThrows(IllegalArgumentException.class, () -> stack(activation("https://localhost.:5173")));
+    for (String local : List.of("https://localhost:5173", "https://app.localhost", "https://127.0.0.1:5173", "https://10.0.0.5")) {
       App app = new App(AppProps.builder().context(activation(local)).build());
       Stack production = new Stack(app, "Production" + local.length(), StackProps.builder().env(Environment.builder()
           .account("111111111111").region(StagingConfig.REGION).build()).build());

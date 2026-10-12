@@ -29,7 +29,7 @@ func (h *Handler) allowedOrigin(w http.ResponseWriter, r *http.Request, native b
 	}
 	logged := origin
 	if len(logged) > 100 {
-		logged = logged[:100]
+		logged = strings.ToValidUTF8(logged[:100], "")
 	}
 	slog.Warn("mpd sign-in refused", "stage", "origin", "outcome", "denied", "origin", logged, "path", r.URL.Path)
 	httputil.WriteError(w, 403, "origin is not allowed")
@@ -132,28 +132,28 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	state, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	browser, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	nonce, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	verifier := oauth2.GenerateVerifier()
 	enc, e := integration.Encrypt(h.key, verifier)
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	_, e = h.db.Exec(r.Context(), `INSERT INTO mpd_login_transactions(state_hash,browser_hash,nonce,verifier_encrypted,callback,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, hash(state), hash(browser), nonce, enc, h.oauth.RedirectURL, time.Now().Add(5*time.Minute))
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "login", "start", ErrUnavailable)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "mpd_login", Value: browser, Path: "/api/auth/mpd", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
@@ -235,12 +235,12 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	code, e := randomSecret()
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "handoff_code", ErrUnavailable)
 		return
 	}
 	_, e = h.db.Exec(r.Context(), `INSERT INTO mpd_login_handoffs(code_hash,browser_hash,session_id,expires_at) VALUES($1,$2,$3,$4)`, hash(code), hash(c.Value), sid, time.Now().Add(time.Minute))
 	if e != nil {
-		identityError(w, ErrUnavailable)
+		refuse(w, r, "callback", "handoff_code", ErrUnavailable)
 		return
 	}
 	// Fragment is not sent in HTTP requests or referrers. The SPA removes it before redemption.
@@ -326,7 +326,11 @@ func (h *Handler) writeSession(w http.ResponseWriter, result *sessionResponse) {
 func (h *Handler) respondSession(w http.ResponseWriter, r *http.Request, sid string, native bool) {
 	result, err := h.prepareSession(r.Context(), sid, native)
 	if err != nil {
-		refuse(w, r, "session", "prepare", err)
+		entry := "exchange"
+		if native {
+			entry = "handoff"
+		}
+		refuse(w, r, entry, "prepare_session", err)
 		return
 	}
 	h.writeSession(w, result)
