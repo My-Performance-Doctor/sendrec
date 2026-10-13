@@ -106,6 +106,8 @@ def main() -> None:
     ap.add_argument("--publish", action="store_true", help="protect and publish a link outside the results workflow; a claim republishes with the patient's password")
     ap.add_argument("--patient-id", help="claim the recording to this mpd-api patient")
     a = ap.parse_args()
+    if a.publish and a.patient_id:
+        print("note: --publish shares the link first; the claim then makes it private and republishes it with the patient's password")
 
     token = os.environ.get("MPD_STAFF_ACCESS_TOKEN") or getpass.getpass("Cognito staff access token: ")
     sr = SendRec(env("SENDREC_URL"), env("MPD_CLIENT_ORIGIN"), token)
@@ -174,7 +176,7 @@ def main() -> None:
     #    passphrase returns 409. mpd-api makes a claimed recording private again
     #    and republishes it with the patient's password, so skip this for a claim.
     if a.publish:
-        phrase = getpass.getpass("Choose the patient link passphrase: ")
+        phrase = getpass.getpass("Choose the link passphrase: ")
         r = sr.call("PUT", f"/api/videos/{vid}/password", json={"password": phrase})
         if r.status_code != 204:
             fail("protect link", r)
@@ -184,7 +186,7 @@ def main() -> None:
         # watchUrl and embedUrl appear in the metadata only once published.
         r = sr.call("GET", f"/api/videos/{vid}/mpd")
         meta = r.json()["metadata"] if r.ok else fail("read state", r)
-        print("published: patient link", meta["watchUrl"])
+        print("published: link", meta["watchUrl"])
 
     # 7. Optional: claim to a patient in mpd-api with the same Cognito token.
     #    mpd-api learns about the recording from SendRec's video.ready event, so
@@ -217,16 +219,22 @@ def main() -> None:
             fail("claim", r)
         print("claimed: recording", recording["id"], "state", r.json()["state"])
         # mpd-api builds the report in the background. Poll the recording until it is
-        # done or fails. waiting_captions means the transcript has not arrived yet.
+        # done or dead. waiting_captions means the transcript has not arrived yet. A
+        # failureCode beside any other state is a failed attempt that mpd-api retries
+        # with backoff; the code stays on the recording until an attempt succeeds.
         seen = None
         for _ in range(36):
             r = requests.get(f"{api}/api/v1/video-recordings/{recording['id']}", headers=auth, timeout=TIMEOUT)
             state = r.json() if r.ok else fail("read claim", r)
-            if state["state"] != seen:
-                seen = state["state"]
-                print("  claim state", seen, "report", state.get("reportId") or "-", "failure", state.get("failureCode") or "-")
-            if seen == "done" or state.get("failureCode"):
+            now = (state["state"], state.get("failureCode"))
+            if now != seen:
+                seen = now
+                note = " (retrying with backoff)" if now[1] and now[0] not in ("done", "dead") else ""
+                print(f"  claim state {now[0]} report {state.get('reportId') or '-'} failure {now[1] or '-'}{note}")
+            if now[0] == "done":
                 break
+            if now[0] == "dead":
+                sys.exit(f"claim is dead after twelve attempts: {now[1]}")
             time.sleep(5)
         else:
             print("  still processing after three minutes; keep polling GET /api/v1/video-recordings/{id}")
