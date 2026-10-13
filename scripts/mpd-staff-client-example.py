@@ -219,22 +219,30 @@ def main() -> None:
             fail("claim", r)
         print("claimed: recording", recording["id"], "state", r.json()["state"])
         # mpd-api builds the report in the background. Poll the recording until it is
-        # done or dead. waiting_captions means the transcript has not arrived yet. A
-        # failureCode beside any other state is a failed attempt that mpd-api retries
-        # with backoff; the code stays on the recording until an attempt succeeds.
+        # done, dead or deleted. waiting_captions means the transcript has not arrived
+        # yet; a failureCode left beside it is from an earlier attempt. A failureCode
+        # beside pending or running is a failed attempt that mpd-api retries with
+        # backoff; the code stays on the recording until an attempt succeeds.
         seen = None
         for _ in range(36):
             r = requests.get(f"{api}/api/v1/video-recordings/{recording['id']}", headers=auth, timeout=TIMEOUT)
-            state = r.json() if r.ok else fail("read claim", r)
-            now = (state["state"], state.get("failureCode"))
+            rec = r.json() if r.ok else fail("read claim", r)
+            now = (rec["state"], rec.get("failureCode"))
             if now != seen:
                 seen = now
-                note = " (retrying with backoff)" if now[1] and now[0] not in ("done", "dead") else ""
-                print(f"  claim state {now[0]} report {state.get('reportId') or '-'} failure {now[1] or '-'}{note}")
+                if now[0] == "waiting_captions":
+                    note = " (waiting for the transcript)"
+                elif now[1] and now[0] in ("pending", "running"):
+                    note = " (retrying with backoff)"
+                else:
+                    note = ""
+                print(f"  claim state {now[0]} report {rec.get('reportId') or '-'} failure {now[1] or '-'}{note}")
             if now[0] == "done":
                 break
             if now[0] == "dead":
                 sys.exit(f"claim is dead after twelve attempts: {now[1]}")
+            if now[0] == "deleted":
+                sys.exit("recording was deleted on SendRec; the claim will not finish")
             time.sleep(5)
         else:
             print("  still processing after three minutes; keep polling GET /api/v1/video-recordings/{id}")
