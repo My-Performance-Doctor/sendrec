@@ -103,11 +103,11 @@ def main() -> None:
     ap.add_argument("file", help="MP4 or WebM recording")
     ap.add_argument("--title", default="Staff client example")
     ap.add_argument("--duration", type=int, help="length in whole seconds; read with ffprobe when omitted")
-    ap.add_argument("--publish", action="store_true", help="protect and publish a link outside the results workflow; a claim republishes with the patient's password")
+    ap.add_argument("--publish", action="store_true", help="protect and publish a link outside the results workflow; a claim republishes under the patient's password policy")
     ap.add_argument("--patient-id", help="claim the recording to this mpd-api patient")
     a = ap.parse_args()
     if a.publish and a.patient_id:
-        print("note: --publish shares the link first; the claim then makes it private and republishes it with the patient's password")
+        print("note: --publish shares the link first; the claim then makes it private and republishes it under the patient's password policy")
 
     token = os.environ.get("MPD_STAFF_ACCESS_TOKEN") or getpass.getpass("Cognito staff access token: ")
     sr = SendRec(env("SENDREC_URL"), env("MPD_CLIENT_ORIGIN"), token)
@@ -174,7 +174,7 @@ def main() -> None:
 
     # 6. Optional: share outside the results workflow. Publishing without a
     #    passphrase returns 409. mpd-api makes a claimed recording private again
-    #    and republishes it with the patient's password, so skip this for a claim.
+    #    and republishes it under the patient's password policy, so skip this for a claim.
     if a.publish:
         phrase = getpass.getpass("Choose the link passphrase: ")
         r = sr.call("PUT", f"/api/videos/{vid}/password", json={"password": phrase})
@@ -221,8 +221,8 @@ def main() -> None:
         # mpd-api builds the report in the background. Poll the recording until it is
         # done, dead or deleted. waiting_captions means the transcript has not arrived
         # yet; a failureCode left beside it is from an earlier attempt. A failureCode
-        # beside pending or running is a failed attempt that mpd-api retries with
-        # backoff; the code stays on the recording until an attempt succeeds.
+        # beside pending is a failed attempt waiting out mpd-api's backoff; beside
+        # running, the retry is under way. The code stays until an attempt succeeds.
         seen = None
         for _ in range(36):
             r = requests.get(f"{api}/api/v1/video-recordings/{recording['id']}", headers=auth, timeout=TIMEOUT)
@@ -232,8 +232,10 @@ def main() -> None:
                 seen = now
                 if now[0] == "waiting_captions":
                     note = " (waiting for the transcript)"
-                elif now[1] and now[0] in ("pending", "running"):
-                    note = " (retrying with backoff)"
+                elif now[1] and now[0] == "pending":
+                    note = " (waiting out the backoff before a retry)"
+                elif now[1] and now[0] == "running":
+                    note = " (retrying)"
                 else:
                     note = ""
                 print(f"  claim state {now[0]} report {rec.get('reportId') or '-'} failure {now[1] or '-'}{note}")

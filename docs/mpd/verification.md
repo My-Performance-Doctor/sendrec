@@ -12,7 +12,7 @@ Run against the deployed staging service with a synthetic staff account and a sy
 - Offboarding: disabling the staff member's mpd-api tenant membership cut the session, the preview and the library off after 28 seconds, inside the 30-second grant cap. A new sign-in returned 401. Restoring the membership restored access. A published, password-protected patient link kept working while the staff member was offboarded.
 - Events: `video.ready` and `video.transcript_ready` queued and retried against mpd-api's 503, as designed. Once PR 219 reached staging that afternoon, every queued event was accepted with 202 on its next attempt, after 17 to 19 attempts each, and all six recordings appeared in mpd-api's unclaimed list. No replay was needed.
 - Reference client: `scripts/mpd-staff-client-example.py` passed sign-in, upload, processing, preview and publishing.
-- Not run on staging that day: hosted sign-in, event receipt in mpd-api, claim and report, and any real browser. The first three ran on 2026-10-13, below.
+- Not run on staging that day: hosted sign-in, event receipt in mpd-api, claim and report, and any real browser. Hosted sign-in, event receipt and the claim ran on 2026-10-13, below; the report did not build.
 
 ## Staging checks, 2026-10-13
 
@@ -24,7 +24,7 @@ mpd-api PR 219 merged on 2026-10-12 at 13:29 UTC and reached staging that aftern
 - Claim: two fresh recordings were uploaded, processed, published through the reference client and claimed to one synthetic staging patient. mpd-api accepted both with 202 and made them private again, then failed to finish the report. The patient's `enable_video_password` flag was off for the first attempts and was switched on by SQL part way through, so both recordings saw both failures in turn:
   - With the flag off, mpd-api made the recording private, cleared the password and asked SendRec to publish. SendRec refused with 409, because `MPD_REQUIRE_PASSWORD=true` is the recorded pilot policy. mpd-api retried with exponential backoff; it gives up after twelve attempts.
   - With the flag on, mpd-api read the recording's metadata from SendRec and then failed before asking it to change anything else: its staging `VIDEO_REPORT_PASSWORD_KEY` is not a valid Fernet key, so encrypting the generated password raises. That key cannot be rotated without a data migration, so the fix sits with mpd-api.
-  - Both findings are with the mpd-api owner. The two claims will go dead and raise mpd-api's `SendrecAttentionAlarm` on staging. They can be replayed once the key is fixed, because the synthetic patient keeps the flag on.
+  - Both findings are with the mpd-api owner. The two claims raise mpd-api's `SendrecAttentionAlarm` on staging from the eighth failed attempt and go dead after the twelfth. They can be replayed once the key is fixed, because the synthetic patient keeps the flag on.
 - Reference client: `scripts/mpd-staff-client-example.py` now prints the mpd-api recording id and polls the claim; it showed the states above.
 - Both test recordings are unpublished and unprotected on SendRec, as mpd-api left them.
 - Still not run on staging: any real browser.
