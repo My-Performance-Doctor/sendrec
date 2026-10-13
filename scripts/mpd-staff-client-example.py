@@ -6,8 +6,9 @@
 """Reference MPD staff client for SendRec: the calls Staff OS makes, in order.
 
 Signs in with a Cognito staff access token, records a file, waits for processing,
-opens a private preview, and optionally publishes and claims it to a patient in
-mpd-api. Prints statuses and IDs only, never tokens, passphrases or signed URLs.
+opens a private preview, and optionally claims it to a patient in mpd-api, which
+then protects and publishes it. --publish instead shares it outside that workflow.
+Prints statuses and IDs only, never tokens, passphrases or signed URLs.
 
     export SENDREC_URL=https://<sendrec-host>
     export MPD_CLIENT_ORIGIN=https://<approved-staff-client-origin>
@@ -102,7 +103,7 @@ def main() -> None:
     ap.add_argument("file", help="MP4 or WebM recording")
     ap.add_argument("--title", default="Staff client example")
     ap.add_argument("--duration", type=int, help="length in whole seconds; read with ffprobe when omitted")
-    ap.add_argument("--publish", action="store_true", help="protect the patient link and publish it")
+    ap.add_argument("--publish", action="store_true", help="protect and publish a link outside the results workflow; a claim republishes with the patient's password")
     ap.add_argument("--patient-id", help="claim the recording to this mpd-api patient")
     a = ap.parse_args()
 
@@ -169,7 +170,9 @@ def main() -> None:
         fail("preview", r)
     print("preview link created; it is single use and expires in 60 seconds")
 
-    # 6. Optional: publish behind a passphrase. Publishing without one returns 409.
+    # 6. Optional: share outside the results workflow. Publishing without a
+    #    passphrase returns 409. mpd-api makes a claimed recording private again
+    #    and republishes it with the patient's password, so skip this for a claim.
     if a.publish:
         phrase = getpass.getpass("Choose the patient link passphrase: ")
         r = sr.call("PUT", f"/api/videos/{vid}/password", json={"password": phrase})
@@ -185,7 +188,8 @@ def main() -> None:
 
     # 7. Optional: claim to a patient in mpd-api with the same Cognito token.
     #    mpd-api learns about the recording from SendRec's video.ready event, so
-    #    it can take a few seconds to appear in the unclaimed list.
+    #    it can take a few seconds to appear in the unclaimed list. After the
+    #    claim, mpd-api protects and publishes the recording and builds the report.
     if a.patient_id:
         api = env("MPD_API_URL")
         auth = {"Authorization": "Bearer " + token}
@@ -211,7 +215,21 @@ def main() -> None:
                           headers={**auth, "Idempotency-Key": str(uuid.uuid4())}, timeout=TIMEOUT)
         if r.status_code != 202:
             fail("claim", r)
-        print("claimed: state", r.json()["state"])
+        print("claimed: recording", recording["id"], "state", r.json()["state"])
+        # mpd-api builds the report in the background. Poll the recording until it is
+        # done or fails. waiting_captions means the transcript has not arrived yet.
+        seen = None
+        for _ in range(36):
+            r = requests.get(f"{api}/api/v1/video-recordings/{recording['id']}", headers=auth, timeout=TIMEOUT)
+            state = r.json() if r.ok else fail("read claim", r)
+            if state["state"] != seen:
+                seen = state["state"]
+                print("  claim state", seen, "report", state.get("reportId") or "-", "failure", state.get("failureCode") or "-")
+            if seen == "done" or state.get("failureCode"):
+                break
+            time.sleep(5)
+        else:
+            print("  still processing after three minutes; keep polling GET /api/v1/video-recordings/{id}")
 
 
 if __name__ == "__main__":

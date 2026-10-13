@@ -10,9 +10,24 @@ Run against the deployed staging service with a synthetic staff account and a sy
 - Recording: create, direct S3 upload and finalize passed. A second PUT to the same upload link returned 412. Transcoding took about 5 seconds and transcription about 70 seconds for a 10-second clip, and the transcript matched the spoken text.
 - Privacy: the unpublished watch API and page returned 404. Staff preview redeemed once, refused a replay with 403 and served the media and captions. Publishing without a password returned 409. After setting a password and publishing, the link returned 403 without a password, 403 with a wrong one, and played with the right one. Viewers see only "MPD staff" as the creator.
 - Offboarding: disabling the staff member's mpd-api tenant membership cut the session, the preview and the library off after 28 seconds, inside the 30-second grant cap. A new sign-in returned 401. Restoring the membership restored access. A published, password-protected patient link kept working while the staff member was offboarded.
-- Events: `video.ready` and `video.transcript_ready` queued and retried against mpd-api's 503, as designed. They become dead after 24 hours and need operator replay if PR 219 has not deployed by then.
+- Events: `video.ready` and `video.transcript_ready` queued and retried against mpd-api's 503, as designed. Once PR 219 reached staging that afternoon, every queued event was accepted with 202 on its next attempt, after 17 to 19 attempts each, and all six recordings appeared in mpd-api's unclaimed list. No replay was needed.
 - Reference client: `scripts/mpd-staff-client-example.py` passed sign-in, upload, processing, preview and publishing.
-- Not yet run on staging: hosted sign-in, event receipt in mpd-api, claim and report, and any real browser.
+- Not run on staging that day: hosted sign-in, event receipt in mpd-api, claim and report, and any real browser. The first three ran on 2026-10-13, below.
+
+## Staging checks, 2026-10-13
+
+mpd-api PR 219 reached staging on 2026-10-12 at 13:29 UTC. On 2026-10-13 SendRec staging moved from the stopgap staff EHR client to mpd-api's confidential `mpd-staff-sendrec` client: the client's secret replaced the placeholder in `sendrec-staging/mpd-integration`, and task definition 7 runs with `MPD_COGNITO_CLIENT_ID` set to the new client and both clients in `MPD_ALLOWED_CLIENT_IDS`.
+
+- Hosted sign-in: `GET /api/auth/mpd/login` redirected to Cognito's hosted UI with PKCE, the synthetic staff account signed in with its password and TOTP code, Cognito returned to the callback, and the SPA handoff produced a session with the expected capabilities. The session listed recordings, the native refresh returned a new token, and a second redemption of the same handoff returned 401.
+- Token exchange: unchanged, through the staff EHR client, which stays approved beside the new one.
+- Events: every queued event was acknowledged within an hour of PR 219's deploy, and mpd-api's unclaimed list showed all six recordings.
+- Claim: two fresh recordings were uploaded, processed, published through the reference client and claimed to a synthetic staging patient. mpd-api accepted both with 202 and made them private again, then failed to finish the report:
+  - With the patient's `enable_video_password` off, mpd-api cleared the password and asked SendRec to publish. SendRec refused with 409, because `MPD_REQUIRE_PASSWORD=true` is the recorded pilot policy. mpd-api retried with exponential backoff; it gives up after twelve attempts.
+  - With the flag on, mpd-api failed before calling SendRec: its staging `VIDEO_REPORT_PASSWORD_KEY` is not a valid Fernet key, so encrypting the generated password raises. That key cannot be rotated without a data migration, so the fix sits with mpd-api.
+  - Both findings are with the mpd-api owner. The two claims will go dead and raise mpd-api's `SendrecAttentionAlarm` on staging. They can be replayed once the key is fixed, because the synthetic patient keeps the flag on.
+- Reference client: `scripts/mpd-staff-client-example.py` now prints the mpd-api recording id and polls the claim; it showed the states above.
+- Both test recordings are unpublished and unprotected on SendRec, as mpd-api left them.
+- Still not run on staging: any real browser.
 
 The local cross-service drill runs the actual Go producer/outbox/service adapter and the actual mpd-api PR 211 webhook, inbox, claims and report processing on disposable PostgreSQL databases. It stubs media/LLM enrichment and external task delivery. It passed these checks on 2026-10-08:
 

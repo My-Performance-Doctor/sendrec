@@ -2,7 +2,7 @@
 
 This guide is for building recording into Staff OS's results workflow on top of SendRec. SendRec stores, processes and serves the video. mpd-api links a recording to a patient and creates the report and timeline entry. Staff OS owns the screens. The reference spec is [README.md](README.md). This page is the order of calls and the things that trip people up.
 
-[`scripts/mpd-staff-client-example.py`](../../scripts/mpd-staff-client-example.py) makes every call below against a real deployment. It passed against staging on 2026-10-12.
+[`scripts/mpd-staff-client-example.py`](../../scripts/mpd-staff-client-example.py) makes every call below against a real deployment. It passed against staging on 2026-10-13, up to and including the claim call.
 
 ## Before you start
 
@@ -30,8 +30,8 @@ Staff OS                     SendRec                          S3            mpd-
    | finalize ---------------->|-- transcode, transcribe
    |                           |-- video.ready event --------------------------->| unclaimed list
    | preview (iframe) -------->|
-   | password + publish ------>|
-   | list unclaimed, claim to patient ------------------------------------------>| report, timeline
+   | list unclaimed, claim to patient ------------------------------------------>|
+   |                           |<- password + publish (service call) -----------| report, timeline
 ```
 
 ### 1. Sign in
@@ -98,26 +98,9 @@ The response has `previewUrl`, `handoff` and `nonce`. The handoff works once and
 
 Each preview renewal rechecks the staff member's access, so a removed staff member loses the preview within about 30 seconds. Never fall back to the public link when preview fails.
 
-### 5. Password and publish
+### 5. Claim to a patient in mpd-api
 
-Publishing gives the patient a link. It needs a password first.
-
-```http
-PUT {SENDREC}/api/videos/{id}/password
-{"password": "..."}
-
-PUT {SENDREC}/api/videos/{id}/publication
-{"published": true, "mediaVersion": {from metadata}}
-```
-
-- Publishing without a password, or before processing finishes, returns 409.
-- `mediaVersion` must match the current version, which protects against publishing a recording that was edited in the meantime. Re-read the metadata after a 409.
-- Removing the password unpublishes the recording. So does any edit that changes the media.
-- After publishing, `metadata.watchUrl` is the patient link and `metadata.embedUrl` is an embeddable player. Both are null while unpublished, and an unpublished link returns 404.
-
-### 6. Claim to a patient in mpd-api
-
-mpd-api learns about each recording from SendRec's `video.ready` event, usually within seconds. These calls go to mpd-api with the Staff OS Cognito token, not the SendRec token. Fields are camelCase.
+The patient link comes from the claim, not from Staff OS. mpd-api learns about each recording from SendRec's `video.ready` event, usually within seconds. These calls go to mpd-api with the Staff OS Cognito token, not the SendRec token. Fields are camelCase.
 
 ```http
 GET {MPD_API}/api/v1/video-recordings?status=unclaimed&limit=50
@@ -133,20 +116,30 @@ Idempotency-Key: {new UUID per claim}
 {"patientId": "..."}
 ```
 
-A 202 means accepted. mpd-api then builds the report and timeline entry in the background; read progress with `GET /api/v1/video-recordings/{id}` and its `state`, `reportId` and `failureCode`. A 409 means the recording is unavailable or belongs to another patient. Claiming the same recording to the same patient again is safe.
+A 202 means accepted, and the body carries the recording's mpd-api `id` and `state`. mpd-api then does the rest in the background: it makes the recording private if anything published it, sets the link's password from the patient's own password policy, publishes through SendRec's service API, and creates the report and timeline entry. Staff OS never calls SendRec's password or publication endpoints for a claimed recording.
+
+Read progress with `GET /api/v1/video-recordings/{id}`. `state` moves through `pending`, `running` and sometimes `waiting_captions`, then `done` with `reportId` set. A `failureCode` beside a `pending` or `running` state means mpd-api is backing off before another attempt; it gives up after twelve. The link and its password live on the report, through mpd-api's existing routes `GET /api/users/{patientId}/video-reports/{reportId}` and `.../password`.
+
+A 409 means the recording is unavailable or belongs to another patient. Claiming the same recording to the same patient again is safe.
 
 Listing needs the `VIDEO_LIST` permission, reading needs `VIDEO_READ`, and claiming needs `VIDEO_WRITE`.
+
+### Sharing outside the results workflow
+
+SendRec can also publish a recording on its own, for a link that belongs to no patient. Set a password with `PUT {SENDREC}/api/videos/{id}/password` and `{"password": "..."}`, then `PUT {SENDREC}/api/videos/{id}/publication` with `{"published": true, "mediaVersion": {from metadata}}`. Publishing without a password or before processing finishes returns 409, a stale `mediaVersion` returns 409, removing the password unpublishes, and `metadata.watchUrl` and `metadata.embedUrl` are set only while published. Do not do this to a recording that will be claimed: mpd-api makes it private again and republishes it with the patient's password.
 
 ## What Staff OS should not do
 
 - Store SendRec or Cognito tokens anywhere but memory.
 - Put a patient identifier in any SendRec request. Patient association lives only in mpd-api.
 - Build its own public link or player for unpublished recordings.
+- Set a password on, or publish, a recording that will be claimed. mpd-api owns the patient link.
 - Retry a failed upload by creating a new recording. Renew the upload link instead, or the take is duplicated.
 
-## Status on 2026-10-12
+## Status on 2026-10-13
 
-- Staging SendRec has the integration on, with a synthetic workspace and staff account. Sign-in, recording, upload, processing, transcript, preview, password, publishing and offboarding all passed against staging.
-- mpd-api's staging receiver and SendRec client wait on mpd-api PR 219. Until it deploys, events queue in SendRec and the claim step can't run on staging.
-- Staging currently accepts the placeholder origin `https://staff.example.test` and mpd-api's existing staff EHR client. Send the values in [Before you start](#before-you-start) to get Staff OS added.
+- Staging SendRec has the integration on, with a synthetic workspace and staff account. Sign-in, recording, upload, processing, transcript, preview, publishing and offboarding all passed against staging.
+- Since 2026-10-13 staging signs staff in through mpd-api's `mpd-staff-sendrec` client, and SendRec's own hosted sign-in passed end to end. The token exchange also still accepts mpd-api's staff EHR client, so a Staff OS build on that client only needs its origin added.
+- Staging currently accepts the placeholder origin `https://staff.example.test`. Send the values in [Before you start](#before-you-start) to get Staff OS added.
+- Events reach mpd-api, recordings appear in the unclaimed list, and a claim is accepted and processed up to publication. On staging the report build then fails for two reasons on the mpd-api side, both with its owner. For a patient whose link password flag is off, mpd-api publishes without a password, which SendRec's pilot policy refuses with 409. For a patient with the flag on, staging's `VIDEO_REPORT_PASSWORD_KEY` is not a valid Fernet key, so mpd-api fails before it reaches SendRec. Either way the claim retries with backoff and dies after twelve attempts. Until both are fixed, Staff OS can build and test everything through the claim call, and should expect a `failureCode` after it.
 - No browser has been tested against this flow yet. Test Chrome, Safari and Firefox, especially Safari playback of WebM recordings after conversion.

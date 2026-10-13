@@ -59,7 +59,7 @@ The production client's callback contains SendRec's production CloudFront hostna
 3. Put the new client ID and secret into `sendrec-production/mpd-integration`.
 4. Activate the integration.
 
-Staging currently uses mpd-api's existing staff EHR client as a stopgap until PR 219 deploys. Production does not reuse it.
+Staging used mpd-api's existing staff EHR client as a stopgap until PR 219 deployed, and moved to `mpd-staff-sendrec` on 2026-10-13. Production does not reuse the EHR client.
 
 ## 6. Database class
 
