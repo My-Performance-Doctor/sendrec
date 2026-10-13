@@ -6,8 +6,9 @@
 """Reference MPD staff client for SendRec: the calls Staff OS makes, in order.
 
 Signs in with a Cognito staff access token, records a file, waits for processing,
-opens a private preview, and optionally publishes and claims it to a patient in
-mpd-api. Prints statuses and IDs only, never tokens, passphrases or signed URLs.
+opens a private preview, and optionally claims it to a patient in mpd-api, which
+then protects and publishes it. --publish instead shares it outside that workflow.
+Prints statuses and IDs only, never tokens, passphrases or signed URLs.
 
     export SENDREC_URL=https://<sendrec-host>
     export MPD_CLIENT_ORIGIN=https://<approved-staff-client-origin>
@@ -102,9 +103,11 @@ def main() -> None:
     ap.add_argument("file", help="MP4 or WebM recording")
     ap.add_argument("--title", default="Staff client example")
     ap.add_argument("--duration", type=int, help="length in whole seconds; read with ffprobe when omitted")
-    ap.add_argument("--publish", action="store_true", help="protect the patient link and publish it")
+    ap.add_argument("--publish", action="store_true", help="protect and publish a link outside the results workflow; a claim republishes under the patient's password policy")
     ap.add_argument("--patient-id", help="claim the recording to this mpd-api patient")
     a = ap.parse_args()
+    if a.publish and a.patient_id:
+        print("note: --publish shares the link first; the claim then makes it private and republishes it under the patient's password policy")
 
     token = os.environ.get("MPD_STAFF_ACCESS_TOKEN") or getpass.getpass("Cognito staff access token: ")
     sr = SendRec(env("SENDREC_URL"), env("MPD_CLIENT_ORIGIN"), token)
@@ -169,9 +172,11 @@ def main() -> None:
         fail("preview", r)
     print("preview link created; it is single use and expires in 60 seconds")
 
-    # 6. Optional: publish behind a passphrase. Publishing without one returns 409.
+    # 6. Optional: share outside the results workflow. Publishing without a
+    #    passphrase returns 409. mpd-api makes a claimed recording private again
+    #    and republishes it under the patient's password policy, so skip this for a claim.
     if a.publish:
-        phrase = getpass.getpass("Choose the patient link passphrase: ")
+        phrase = getpass.getpass("Choose the link passphrase: ")
         r = sr.call("PUT", f"/api/videos/{vid}/password", json={"password": phrase})
         if r.status_code != 204:
             fail("protect link", r)
@@ -181,11 +186,12 @@ def main() -> None:
         # watchUrl and embedUrl appear in the metadata only once published.
         r = sr.call("GET", f"/api/videos/{vid}/mpd")
         meta = r.json()["metadata"] if r.ok else fail("read state", r)
-        print("published: patient link", meta["watchUrl"])
+        print("published: link", meta["watchUrl"])
 
     # 7. Optional: claim to a patient in mpd-api with the same Cognito token.
     #    mpd-api learns about the recording from SendRec's video.ready event, so
-    #    it can take a few seconds to appear in the unclaimed list.
+    #    it can take a few seconds to appear in the unclaimed list. After the
+    #    claim, mpd-api protects and publishes the recording and builds the report.
     if a.patient_id:
         api = env("MPD_API_URL")
         auth = {"Authorization": "Bearer " + token}
@@ -211,7 +217,37 @@ def main() -> None:
                           headers={**auth, "Idempotency-Key": str(uuid.uuid4())}, timeout=TIMEOUT)
         if r.status_code != 202:
             fail("claim", r)
-        print("claimed: state", r.json()["state"])
+        print("claimed: recording", recording["id"], "state", r.json()["state"])
+        # mpd-api builds the report in the background. Poll the recording until it is
+        # done, dead or deleted. waiting_captions means the transcript has not arrived
+        # yet; a failureCode left beside it is from an earlier attempt. A failureCode
+        # beside pending is a failed attempt waiting out mpd-api's backoff; beside
+        # running, the retry is under way. The code stays until an attempt succeeds.
+        seen = None
+        for _ in range(36):
+            r = requests.get(f"{api}/api/v1/video-recordings/{recording['id']}", headers=auth, timeout=TIMEOUT)
+            rec = r.json() if r.ok else fail("read claim", r)
+            now = (rec["state"], rec.get("failureCode"))
+            if now != seen:
+                seen = now
+                if now[0] == "waiting_captions":
+                    note = " (waiting for the transcript)"
+                elif now[1] and now[0] == "pending":
+                    note = " (waiting out the backoff before a retry)"
+                elif now[1] and now[0] == "running":
+                    note = " (retrying)"
+                else:
+                    note = ""
+                print(f"  claim state {now[0]} report {rec.get('reportId') or '-'} failure {now[1] or '-'}{note}")
+            if now[0] == "done":
+                break
+            if now[0] == "dead":
+                sys.exit(f"claim is dead after twelve attempts: {now[1]}")
+            if now[0] == "deleted":
+                sys.exit("recording was deleted on SendRec; the claim will not finish")
+            time.sleep(5)
+        else:
+            print("  still processing after three minutes; keep polling GET /api/v1/video-recordings/{id}")
 
 
 if __name__ == "__main__":
