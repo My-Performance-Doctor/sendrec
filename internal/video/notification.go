@@ -315,10 +315,15 @@ func (h *Handler) SetVideoNotification(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tag, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET view_notification = $1 WHERE id = $2 AND user_id = $3 AND status != 'deleted'`,
-		req.ViewNotification, videoID, userID,
-	)
+	// The setting is the owner's, so it stays owner-only, but a workspace
+	// video is reachable only from inside that workspace.
+	query := `UPDATE videos SET view_notification = $1 WHERE id = $2 AND user_id = $3 AND organization_id IS NULL AND status != 'deleted'`
+	args := []any{req.ViewNotification, videoID, userID}
+	if orgID := auth.OrgIDFromContext(r.Context()); orgID != "" {
+		query = `UPDATE videos SET view_notification = $1 WHERE id = $2 AND user_id = $3 AND organization_id = $4 AND status != 'deleted'`
+		args = append(args, orgID)
+	}
+	tag, err := h.db.Exec(r.Context(), query, args...)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "could not update notification setting")
 		return

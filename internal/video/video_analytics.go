@@ -259,7 +259,7 @@ func (h *Handler) Analytics(w http.ResponseWriter, r *http.Request) {
 		verifyQuery = `SELECT id, email_gate_enabled FROM videos WHERE id = $1 AND organization_id = $2 AND status != 'deleted'`
 		verifyArgs = []any{videoID, orgID}
 	} else {
-		verifyQuery = `SELECT id, email_gate_enabled FROM videos WHERE id = $1 AND user_id = $2 AND status != 'deleted'`
+		verifyQuery = `SELECT id, email_gate_enabled FROM videos WHERE id = $1 AND user_id = $2 AND organization_id IS NULL AND status != 'deleted'`
 		verifyArgs = []any{videoID, userID}
 	}
 

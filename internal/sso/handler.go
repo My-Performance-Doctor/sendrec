@@ -59,6 +59,10 @@ func (h *Handler) SetRegistrationEnabled(enabled bool) {
 // create an account on an invite-only install.
 var errRegistrationClosed = errors.New("registration is closed on this server; ask an admin for an invite")
 
+// errAccountNotInWorkspace is shown when a workspace's SSO asserts the email
+// of an existing account that is not a member of that workspace.
+var errAccountNotInWorkspace = errors.New("an account with this email already exists; sign in with it and ask a workspace admin to add you")
+
 // RegisterProvider adds an SSO provider under the given name.
 func (h *Handler) RegisterProvider(name string, provider Provider) {
 	h.providers[name] = provider
@@ -120,6 +124,21 @@ func (h *Handler) resolveUser(ctx context.Context, providerName string, info *Us
 		// User exists with this email.
 		if !emailVerified {
 			return "", fmt.Errorf("email not verified")
+		}
+		// A workspace IdP may only claim accounts that already belong to its
+		// workspace. Anyone can configure a workspace IdP, so linking any other
+		// account by email would let it sign in as that account.
+		if !selfSignup {
+			var member bool
+			if err := h.db.QueryRow(ctx,
+				"SELECT EXISTS(SELECT 1 FROM organization_members WHERE organization_id::text = $1 AND user_id = $2)",
+				providerName, userID,
+			).Scan(&member); err != nil {
+				return "", fmt.Errorf("check membership: %w", err)
+			}
+			if !member {
+				return "", errAccountNotInWorkspace
+			}
 		}
 		// Link the external identity to the existing verified user.
 		if _, err := h.db.Exec(ctx,

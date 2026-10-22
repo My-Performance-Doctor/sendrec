@@ -536,7 +536,7 @@ func TestSetVideoTags_Success(t *testing.T) {
 	videoID := "video-1"
 	tagIDs := []string{"tag-1", "tag-2"}
 
-	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(videoID))
 
@@ -585,7 +585,7 @@ func TestSetVideoTags_EmptyArray(t *testing.T) {
 
 	videoID := "video-1"
 
-	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(videoID))
 
@@ -623,7 +623,7 @@ func TestSetVideoTags_TagNotFound(t *testing.T) {
 	videoID := "video-1"
 	tagIDs := []string{"tag-1", "nonexistent"}
 
-	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(videoID))
 
@@ -700,7 +700,7 @@ func TestSetVideoTags_VideoNotFound(t *testing.T) {
 	videoID := "nonexistent"
 	tagIDs := []string{"tag-1"}
 
-	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoID, testUserID).
 		WillReturnError(pgx.ErrNoRows)
 

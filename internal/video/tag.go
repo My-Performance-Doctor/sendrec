@@ -297,7 +297,7 @@ func (h *Handler) SetVideoTags(w http.ResponseWriter, r *http.Request) {
 		videoVerifyQuery = `SELECT id FROM videos WHERE id = $1 AND organization_id = $2 AND status != 'deleted'`
 		videoVerifyArgs = []any{videoID, orgID}
 	} else {
-		videoVerifyQuery = `SELECT id FROM videos WHERE id = $1 AND user_id = $2 AND status != 'deleted'`
+		videoVerifyQuery = `SELECT id FROM videos WHERE id = $1 AND user_id = $2 AND organization_id IS NULL AND status != 'deleted'`
 		videoVerifyArgs = []any{videoID, userID}
 	}
 

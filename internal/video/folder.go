@@ -305,7 +305,7 @@ func (h *Handler) SetVideoFolder(w http.ResponseWriter, r *http.Request) {
 		updateQuery = `UPDATE videos SET folder_id = $1 WHERE id = $2 AND organization_id = $3 AND status != 'deleted'`
 		updateArgs = []any{folderID, videoID, orgID}
 	} else {
-		updateQuery = `UPDATE videos SET folder_id = $1 WHERE id = $2 AND user_id = $3 AND status != 'deleted'`
+		updateQuery = `UPDATE videos SET folder_id = $1 WHERE id = $2 AND user_id = $3 AND organization_id IS NULL AND status != 'deleted'`
 		updateArgs = []any{folderID, videoID, userID}
 	}
 
