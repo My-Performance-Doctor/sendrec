@@ -23,9 +23,8 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o sendre
 
 # Stage 3: Final image (base includes whisper-cli, ffmpeg, RNNoise model)
 FROM ${BASE_IMAGE}
-# Refuse a base that skipped Dockerfile.base's CA root check, such as an
-# upstream image passed through BASE_IMAGE.
-RUN test -f /etc/ssl/ca-roots-checked
+# Check the CA store this image ships, whatever built the base.
+RUN --mount=type=bind,source=scripts/check-ca-roots.sh,target=/tmp/check-ca-roots.sh sh /tmp/check-ca-roots.sh
 COPY --from=backend /app/sendrec .
 # --chmod: a checkout made under a strict umask (077, or 027 on hardened
 # hosts) leaves the script unreadable to the sendrec user, and the container
