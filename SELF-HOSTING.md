@@ -8,7 +8,8 @@ SendRec is designed to run on a single server with Docker Compose. A small VPS (
 git clone https://github.com/sendrec/sendrec.git
 cd sendrec
 cp .env.example .env
-docker compose -f docker-compose.dev.yml up --build
+docker build -f Dockerfile.base -t sendrec-base:local .
+BASE_IMAGE=sendrec-base:local docker compose -f docker-compose.dev.yml up --build
 ```
 
 Open http://localhost:8080, register an account, and start recording or uploading videos.
