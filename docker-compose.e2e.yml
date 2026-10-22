@@ -1,6 +1,10 @@
 services:
   sendrec:
-    build: .
+    build:
+      context: .
+      # Set BASE_IMAGE to a local build of Dockerfile.base to avoid pulling from ECR.
+      args:
+        - BASE_IMAGE
     ports:
       - "8080:8080"
     volumes:
