@@ -1822,6 +1822,11 @@ type expiredPageData struct {
 	Nonce string
 }
 
+// gatedPageTitle stands in for the recording title on password and email-gate
+// pages, because a title can name a patient and the viewer has not been let
+// in yet.
+const gatedPageTitle = "Protected video"
+
 type passwordPageData struct {
 	Title      string
 	ShareToken string
@@ -2162,7 +2167,7 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 		if !hasValidWatchCookie(r, h.hmacSecret, shareToken, *sharePassword) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := passwordPageTemplate.Execute(w, passwordPageData{
-				Title:      title,
+				Title:      gatedPageTitle,
 				ShareToken: shareToken,
 				Nonce:      nonce,
 				Branding:   branding,
@@ -2177,7 +2182,7 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 		if _, ok := hasValidEmailGateCookie(r, h.hmacSecret, shareToken); !ok {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := emailGatePageTemplate.Execute(w, emailGatePageData{
-				Title:      title,
+				Title:      gatedPageTitle,
 				ShareToken: shareToken,
 				Nonce:      nonce,
 			}); err != nil {

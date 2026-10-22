@@ -652,7 +652,7 @@ func (h *Handler) EmbedPage(w http.ResponseWriter, r *http.Request) {
 		if !hasValidWatchCookie(r, h.hmacSecret, shareToken, *sharePassword) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := embedPasswordPageTemplate.Execute(w, embedPasswordPageData{
-				Title:       title,
+				Title:       gatedPageTitle,
 				ShareToken:  shareToken,
 				Nonce:       nonce,
 				AccentColor: branding.ColorAccent,
@@ -667,7 +667,7 @@ func (h *Handler) EmbedPage(w http.ResponseWriter, r *http.Request) {
 		if _, ok := hasValidEmailGateCookie(r, h.hmacSecret, shareToken); !ok {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if err := embedEmailGatePageTemplate.Execute(w, embedEmailGatePageData{
-				Title:       title,
+				Title:       gatedPageTitle,
 				ShareToken:  shareToken,
 				Nonce:       nonce,
 				AccentColor: branding.ColorAccent,
