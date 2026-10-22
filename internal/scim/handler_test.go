@@ -430,6 +430,7 @@ func TestListUsers_IncludesInactiveProvisionedUsers(t *testing.T) {
 func TestPatchUser_Deactivate(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`DELETE FROM organization_members WHERE organization_id = \$1 AND user_id = \$2`).
 		WithArgs("org-1", "user-1").
@@ -457,6 +458,7 @@ func TestPatchUser_Deactivate(t *testing.T) {
 func TestPatchUser_DeactivateWithValueObject(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`DELETE FROM organization_members WHERE organization_id = \$1 AND user_id = \$2`).
 		WithArgs("org-1", "user-1").
@@ -484,6 +486,7 @@ func TestPatchUser_DeactivateWithValueObject(t *testing.T) {
 func TestPatchUser_Reactivate(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`INSERT INTO organization_members`).
 		WithArgs("org-1", "user-1", "member").
@@ -516,6 +519,7 @@ func TestPatchUser_Reactivate(t *testing.T) {
 func TestPatchUser_UpdateName(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`UPDATE users SET name = \$1`).
 		WithArgs("Jane Updated", "user-1").
@@ -548,6 +552,7 @@ func TestPatchUser_UpdateName(t *testing.T) {
 func TestReplaceUser(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`UPDATE users SET email = \$1, name = \$2 WHERE id = \$3`).
 		WithArgs("jane.updated@example.com", "Jane Updated", "user-1").
@@ -591,6 +596,7 @@ func TestReplaceUser(t *testing.T) {
 func TestPatchUser_UpdateNameErrorReturns500(t *testing.T) {
 	handler, mock := newTestHandler(t)
 	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-1", true)
 
 	mock.ExpectExec(`UPDATE users SET name = \$1`).
 		WithArgs("Jane Updated", "user-1").
@@ -726,5 +732,91 @@ func TestDeleteUser_DBErrorReturns500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("got status %d, want 500; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func expectUserInOrg(mock pgxmock.PgxPoolIface, orgID, userID string, in bool) {
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM external_identities WHERE provider = \$1 AND user_id::text = \$2\)`).
+		WithArgs(orgID, userID).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(in))
+}
+
+// Audit 2026-10-22: a SCIM token for one workspace must not change a user
+// who is neither linked to nor a member of that workspace.
+func TestPatchUser_OtherWorkspaceUserReturns404WithoutWriting(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-elsewhere", false)
+
+	body := `{
+		"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+		"Operations": [{"op": "replace", "value": {"externalId": "planted", "userName": "attacker@example.com"}}]
+	}`
+	req := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("orgId", "org-1")
+	rctx.URLParams.Add("id", "user-elsewhere")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.PatchUser(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got status %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected queries: %v", err)
+	}
+}
+
+func TestReplaceUser_OtherWorkspaceUserReturns404WithoutWriting(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+	expectUserInOrg(mock, "org-1", "user-elsewhere", false)
+
+	body := `{"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": "attacker@example.com", "externalId": "planted", "active": true}`
+	req := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("orgId", "org-1")
+	rctx.URLParams.Add("id", "user-elsewhere")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+
+	handler.ReplaceUser(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got status %d, want 404; body: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected queries: %v", err)
+	}
+}
+
+// SCIM provisioning must not link an existing account from outside the
+// workspace by email, or the workspace's SSO could then sign in as it.
+func TestCreateUser_ExistingAccountOutsideWorkspaceConflicts(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT user_id FROM external_identities WHERE provider = \$1 AND external_id = \$2`).
+		WithArgs("org-1", "ext-123").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`SELECT id, email_verified FROM users WHERE email = \$1`).
+		WithArgs("someone@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email_verified"}).AddRow("user-elsewhere", true))
+	expectUserInOrg(mock, "org-1", "user-elsewhere", false)
+
+	body := `{"schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": "someone@example.com", "externalId": "ext-123", "active": true}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req = withOrgID(req, "org-1")
+	rec := httptest.NewRecorder()
+
+	handler.CreateUser(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("got status %d, want 409; body: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("identity linked or membership not checked: %v", err)
 	}
 }

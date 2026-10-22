@@ -3,6 +3,7 @@ package scim
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -110,6 +111,10 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, created, err := h.resolveUser(r.Context(), orgID, externalID, email, name)
+	if errors.Is(err, errUserInOtherScope) {
+		writeError(w, http.StatusConflict, "User already exists")
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "provision user failed")
 		return
@@ -155,6 +160,15 @@ func (h *Handler) resolveUser(ctx context.Context, orgID, externalID, email, nam
 		if !emailVerified {
 			return "", false, fmt.Errorf("email not verified")
 		}
+		// An existing account is linked only when it already belongs to this
+		// workspace. Otherwise the workspace's SSO could sign in as it.
+		member, err := h.userInOrg(ctx, orgID, userID)
+		if err != nil {
+			return "", false, err
+		}
+		if !member {
+			return "", false, errUserInOtherScope
+		}
 		if err := h.upsertExternalIdentity(ctx, userID, orgID, externalID, email); err != nil {
 			return "", false, fmt.Errorf("link identity: %w", err)
 		}
@@ -178,6 +192,41 @@ func (h *Handler) resolveUser(ctx context.Context, orgID, externalID, email, nam
 	}
 
 	return userID, true, nil
+}
+
+// errUserInOtherScope means a SCIM request named an account that is neither
+// linked to nor a member of the token's workspace.
+var errUserInOtherScope = errors.New("user is not in this workspace")
+
+// userInOrg reports whether the user is linked to, or a member of, the
+// workspace. SCIM tokens are per workspace, so every write to an existing user
+// checks this first.
+func (h *Handler) userInOrg(ctx context.Context, orgID, userID string) (bool, error) {
+	var ok bool
+	err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM external_identities WHERE provider = $1 AND user_id::text = $2)
+		     OR EXISTS(SELECT 1 FROM organization_members WHERE organization_id::text = $1 AND user_id::text = $2)`,
+		orgID, userID,
+	).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check workspace scope: %w", err)
+	}
+	return ok, nil
+}
+
+// requireUserInOrg writes 404 and returns false unless the user belongs to
+// the workspace.
+func (h *Handler) requireUserInOrg(w http.ResponseWriter, r *http.Request, orgID, userID string) bool {
+	ok, err := h.userInOrg(r.Context(), orgID, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup user failed")
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "User not found")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) fetchSCIMUser(ctx context.Context, userID, orgID string) (*SCIMUser, error) {
@@ -312,6 +361,9 @@ func (h *Handler) PatchUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	if !h.requireUserInOrg(w, r, orgID, userID) {
+		return
+	}
 
 	var returnNoContent bool
 	for _, op := range patch.Operations {
@@ -390,6 +442,9 @@ func (h *Handler) ReplaceUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !h.requireUserInOrg(w, r, orgID, userID) {
+		return
+	}
 	if err := h.applyUserUpdate(r.Context(), orgID, userID, update); err != nil {
 		writeError(w, http.StatusInternalServerError, "replace user failed")
 		return

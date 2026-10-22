@@ -566,6 +566,10 @@ func TestSCIMPutUserRouteRequiresAuth(t *testing.T) {
 		WithArgs("00000000-0000-4000-8000-000000000011").
 		WillReturnRows(pgxmock.NewRows([]string{"token_hash", "subscription_plan"}).AddRow(tokenHash, "business"))
 
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM external_identities WHERE provider = \$1`).
+		WithArgs("00000000-0000-4000-8000-000000000011", "user-1").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+
 	mock.ExpectExec(`UPDATE users SET email = \$1, name = \$2 WHERE id = \$3`).
 		WithArgs("jane.updated@example.com", "Jane Updated", "user-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))

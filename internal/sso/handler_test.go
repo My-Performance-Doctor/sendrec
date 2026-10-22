@@ -3,6 +3,7 @@ package sso
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1828,6 +1829,63 @@ func TestCallback_RegistrationOff_InvitedPersonCanJoin(t *testing.T) {
 
 	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "sso_token=") {
 		t.Fatalf("want the invited person signed in, got %d %q", rec.Code, loc)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Audit 2026-10-22: a workspace IdP that asserts the email of an account
+// outside its workspace must not link to it or sign in as it.
+func TestResolveUser_WorkspaceSSORefusesNonMemberEmailLink(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT user_id FROM external_identities WHERE provider = \$1 AND external_id = \$2`).
+		WithArgs("org-attacker", "idp-subject").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`SELECT id, email_verified FROM users WHERE email = \$1`).
+		WithArgs("victim@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email_verified"}).AddRow("user-victim", true))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM organization_members WHERE organization_id::text = \$1 AND user_id = \$2\)`).
+		WithArgs("org-attacker", "user-victim").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+	userID, err := handler.resolveUser(context.Background(), "org-attacker", &UserInfo{
+		ExternalID: "idp-subject",
+		Email:      "victim@example.com",
+	}, false)
+	if !errors.Is(err, errAccountNotInWorkspace) {
+		t.Fatalf("resolveUser = (%q, %v), want errAccountNotInWorkspace", userID, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("identity was linked or membership not checked: %v", err)
+	}
+}
+
+func TestResolveUser_WorkspaceSSOLinksExistingMember(t *testing.T) {
+	handler, mock := newTestHandler(t)
+	defer mock.Close()
+
+	mock.ExpectQuery(`SELECT user_id FROM external_identities WHERE provider = \$1 AND external_id = \$2`).
+		WithArgs("org-1", "idp-subject").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectQuery(`SELECT id, email_verified FROM users WHERE email = \$1`).
+		WithArgs("member@example.com").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "email_verified"}).AddRow("user-member", true))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM organization_members`).
+		WithArgs("org-1", "user-member").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec(`INSERT INTO external_identities`).
+		WithArgs("user-member", "org-1", "idp-subject", "member@example.com").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	userID, err := handler.resolveUser(context.Background(), "org-1", &UserInfo{
+		ExternalID: "idp-subject",
+		Email:      "member@example.com",
+	}, false)
+	if err != nil || userID != "user-member" {
+		t.Fatalf("resolveUser = (%q, %v), want user-member", userID, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
