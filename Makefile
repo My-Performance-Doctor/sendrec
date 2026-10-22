@@ -1,4 +1,4 @@
-.PHONY: run test build build-web dev-web docker-up docker-down e2e-up e2e-down e2e-test
+.PHONY: run test build build-web dev-web docker-base docker-up docker-down e2e-up e2e-down e2e-test
 
 # Run Go server (requires DATABASE_URL, S3 env vars)
 run:
@@ -20,17 +20,24 @@ build-web:
 dev-web:
 	cd web && pnpm dev
 
+# The Dockerfile's default base is MPD's private ECR image, so local stacks
+# build Dockerfile.base themselves. The first build compiles whisper.cpp.
+LOCAL_BASE_IMAGE := sendrec-base:local
+
+docker-base:
+	docker build -f Dockerfile.base -t $(LOCAL_BASE_IMAGE) .
+
 # Start full stack via Docker Compose
-docker-up:
-	docker compose -f docker-compose.dev.yml up --build -d
+docker-up: docker-base
+	BASE_IMAGE=$(LOCAL_BASE_IMAGE) docker compose -f docker-compose.dev.yml up --build -d
 
 # Stop full stack
 docker-down:
 	docker compose -f docker-compose.dev.yml down
 
 # Start e2e test environment
-e2e-up:
-	docker compose -f docker-compose.e2e.yml up --build -d
+e2e-up: docker-base
+	BASE_IMAGE=$(LOCAL_BASE_IMAGE) docker compose -f docker-compose.e2e.yml up --build -d
 
 # Stop e2e test environment
 e2e-down:

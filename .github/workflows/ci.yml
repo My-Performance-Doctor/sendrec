@@ -138,9 +138,24 @@ jobs:
       - uses: actions/checkout@v7
 
       # The runtime base lives in MPD's private ECR, so build Dockerfile.base,
-      # including its CA root check, and use that instead.
+      # including its CA root check, and use that instead. A separate builder
+      # caches the whisper.cpp compile; `use: false` leaves the default builder,
+      # which can read the loaded image, for the app build.
+      - uses: docker/setup-buildx-action@v4
+        id: buildx
+        with:
+          use: false
+
       - name: Build base image
-        run: docker build -f Dockerfile.base -t sendrec-base:ci .
+        uses: docker/build-push-action@v7
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: Dockerfile.base
+          tags: sendrec-base:ci
+          load: true
+          cache-from: type=gha,scope=sendrec-base
+          cache-to: type=gha,mode=max,scope=sendrec-base
 
       - name: Build image
         run: docker build --build-arg BASE_IMAGE=sendrec-base:ci -t sendrec:ci .
@@ -149,13 +164,27 @@ jobs:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A base cache miss, such as the first run on main, compiles whisper.cpp.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v7
 
+      - uses: docker/setup-buildx-action@v4
+        id: buildx
+        with:
+          use: false
+
       - name: Build base image
-        run: docker build -f Dockerfile.base -t sendrec-base:ci .
+        uses: docker/build-push-action@v7
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: Dockerfile.base
+          tags: sendrec-base:ci
+          load: true
+          cache-from: type=gha,scope=sendrec-base
+          cache-to: type=gha,mode=max,scope=sendrec-base
 
       - name: Start e2e environment
         run: docker compose -f docker-compose.e2e.yml up --build -d

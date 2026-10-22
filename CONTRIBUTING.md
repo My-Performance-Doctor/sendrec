@@ -22,6 +22,7 @@ cp .env.example .env
 
 ```bash
 make docker-up
+# Builds Dockerfile.base locally first; the first run compiles whisper.cpp
 # App runs at http://localhost:8080
 # Garage S3 API at http://localhost:3900
 # PostgreSQL at localhost:5433
