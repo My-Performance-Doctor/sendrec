@@ -70,7 +70,7 @@ Production readiness SHALL require the four integration changes to pass their co
 
 ### Requirement: Retention cannot bypass the approved policy
 
-Managed source retention SHALL be disabled in application workers and personal/workspace configuration as well as storage lifecycle rules until the operator approves a policy. Stale retention settings or enabling email SHALL not authorize deletion.
+Managed source retention SHALL be disabled in application workers and personal/workspace configuration as well as storage lifecycle rules until the operator approves a policy. Stale retention settings or enabling email SHALL not authorize deletion. Expiry of noncurrent media versions in production SHALL wait for MPD's clinical retention policy and SHALL be at least the RDS point-in-time recovery window, so a restored database never points at expired media. Until then the production bucket's only lifecycle rule aborts incomplete multipart uploads.
 
 #### Scenario: Old retention warning
 - **WHEN** a managed video has an old retention warning and nonzero user or workspace retention_days, and retention plus cleanup workers run

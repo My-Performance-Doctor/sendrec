@@ -65,6 +65,19 @@ The interrupted draft's unencrypted `sendrec-staging-db` is still available and 
 - `MPD_ALLOWED_ORIGINS` is exactly `https://staff.example.test,https://app-staging.mpd.health`, read back from task definition 9. Pass both origins on every later staging deploy, or CloudFormation removes the missing one from the service and from the recordings bucket's CORS rule.
 - After review, `sendrec-base` got the repository policy in `sendrec-base-repository-policy.json`. Before that, a CDK deploy from a machine without the base cached would have failed, because cdk-assets pulls it as the CDK image-publishing role, which could read only the CDK asset repository. A pull of the pinned digest as that role then succeeded. The `Dockerfile` built locally against that digest, and its new check, which also blocks `emSign Root CA - C1` and `emSign ECC Root CA - C3`, found 118 distinct roots and none blocked. Staging was not redeployed.
 
+## Update, 2026-10-22, audit fixes
+
+- Deployment source: `258ebd0` on `main`, the merge of PR #12, which also carries PRs #10 and #11. Deployed at 08:27 to 08:33 UTC with `cdk-with-session.py deploy SendRecStaging`.
+- Contexts were read back from task definition `sendrec-staging:9`: `activateMpdIntegration=true`, `bootstrap=false` with no `bootstrapCidr`, `mpdIntegrationSecretArn` naming the existing MPD integration secret, and `MPD_COGNITO_ISSUER`, `MPD_COGNITO_CLIENT_ID`, `MPD_ACCESS_URL`, `MPD_WORKSPACE_ID`, `MPD_TENANT_ID`, `MPD_ALLOWED_CLIENT_IDS`, `MPD_ALLOWED_ORIGINS`, `MPD_EVENT_RECEIVER_URL` and `MPD_EVENT_KEY_ID` with their definition 9 values. `MPD_ALLOWED_ORIGINS` stayed exactly `https://staff.example.test,https://app-staging.mpd.health`.
+- The CDK diff showed only the recordings bucket's new lifecycle rule, the container image and the service's task definition.
+- The service runs task definition `sendrec-staging:10` with rollout `COMPLETED`, image digest `sha256:7bad70cf165aad2a31ea693c2321e4d399402d5632d47308e73e5c2a3f40b0ff`. The image build's CA check found 118 distinct roots and none blocked.
+- Checks after the deploy:
+  1. `/api/health` answered 200.
+  2. With a password set on a synthetic video, the watch page's title was "Protected video" followed by the workspace name, and the embed page's was "Protected video". Neither page held the recording title.
+  3. Ten wrong passwords for that video returned 403. The eleventh returned 429, and the right password then returned 429 with `Retry-After: 900`. Requests were 2.2 seconds apart, under the per-IP limit, so the per-video lock answered. The test password was removed afterwards.
+  4. The recordings bucket has lifecycle rule `ExpireOldVersions`: noncurrent versions expire after 30 days and incomplete multipart uploads are aborted after 7. Staging versioning has never been enabled, so the version part takes effect only once it is.
+- Production was not deployed.
+
 ## Exact remaining action
 
 A human merged PR #2 on 2026-10-07, so its review loop can no longer run; the merge settles the final review. Task 4.4 is complete. Archive `add-aws-staging-deployment` with `openspec archive add-aws-staging-deployment` in its own change of work. No production rollout, patient integration, real recordings or Vimeo migration was performed.
