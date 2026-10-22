@@ -317,18 +317,18 @@ func TestBatchSetTags_Success(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
 	// Verify all videos belong to user
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM videos WHERE id = ANY\(\$1\) AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM videos WHERE id = ANY\(\$1\) AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoIDs, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
 	// For each video: delete existing tags, insert new ones
 	for _, vid := range videoIDs {
-		mock.ExpectExec(`DELETE FROM video_tags WHERE video_id = \$1`).
-			WithArgs(vid).
+		mock.ExpectExec(`DELETE FROM video_tags WHERE video_id IN \(SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL`).
+			WithArgs(vid, testUserID).
 			WillReturnResult(pgxmock.NewResult("DELETE", 0))
 		for _, tid := range tagIDs {
-			mock.ExpectExec(`INSERT INTO video_tags \(video_id, tag_id\) VALUES \(\$1, \$2\)`).
-				WithArgs(vid, tid).
+			mock.ExpectExec(`INSERT INTO video_tags \(video_id, tag_id\)\s+SELECT id, \$3 FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL`).
+				WithArgs(vid, testUserID, tid).
 				WillReturnResult(pgxmock.NewResult("INSERT", 1))
 		}
 	}
@@ -403,14 +403,14 @@ func TestBatchSetTags_EmptyTagsClearsAll(t *testing.T) {
 	videoIDs := []string{"video-1", "video-2"}
 
 	// Verify all videos belong to user
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM videos WHERE id = ANY\(\$1\) AND user_id = \$2 AND status != 'deleted'`).
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM videos WHERE id = ANY\(\$1\) AND user_id = \$2 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(videoIDs, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
 
 	// For each video: delete existing tags only (no inserts)
 	for _, vid := range videoIDs {
-		mock.ExpectExec(`DELETE FROM video_tags WHERE video_id = \$1`).
-			WithArgs(vid).
+		mock.ExpectExec(`DELETE FROM video_tags WHERE video_id IN \(SELECT id FROM videos WHERE id = \$1 AND user_id = \$2 AND organization_id IS NULL`).
+			WithArgs(vid, testUserID).
 			WillReturnResult(pgxmock.NewResult("DELETE", 2))
 	}
 

@@ -521,7 +521,7 @@ func TestSetVideoFolder_Success(t *testing.T) {
 		WithArgs(folderID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(folderID))
 
-	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND status != 'deleted'`).
+	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(&folderID, videoID, testUserID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -554,7 +554,7 @@ func TestSetVideoFolder_Unfile(t *testing.T) {
 
 	videoID := "video-1"
 
-	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND status != 'deleted'`).
+	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs((*string)(nil), videoID, testUserID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -631,7 +631,7 @@ func TestSetVideoFolder_VideoNotFound(t *testing.T) {
 		WithArgs(folderID, testUserID).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(folderID))
 
-	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND status != 'deleted'`).
+	mock.ExpectExec(`UPDATE videos SET folder_id = \$1 WHERE id = \$2 AND user_id = \$3 AND organization_id IS NULL AND status != 'deleted'`).
 		WithArgs(&folderID, videoID, testUserID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 

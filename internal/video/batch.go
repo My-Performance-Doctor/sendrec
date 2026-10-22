@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -56,7 +58,7 @@ func (h *Handler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		batchDeleteQuery = `UPDATE videos SET status = 'deleted', updated_at = now()
-		 WHERE id = ANY($1) AND user_id = $2 AND status != 'deleted'
+		 WHERE id = ANY($1) AND user_id = $2 AND organization_id IS NULL AND status != 'deleted'
 		 RETURNING id, file_key, thumbnail_key, webcam_key, transcript_key, title`
 		batchDeleteArgs = []any{req.VideoIDs, userID}
 	}
@@ -174,7 +176,7 @@ func (h *Handler) BatchSetFolder(w http.ResponseWriter, r *http.Request) {
 			folderArgs = []any{folderID, req.VideoIDs, userID, orgID}
 		}
 	} else {
-		folderQuery = `UPDATE videos SET folder_id = $1, updated_at = now() WHERE id = ANY($2) AND user_id = $3 AND status != 'deleted'`
+		folderQuery = `UPDATE videos SET folder_id = $1, updated_at = now() WHERE id = ANY($2) AND user_id = $3 AND organization_id IS NULL AND status != 'deleted'`
 		folderArgs = []any{folderID, req.VideoIDs, userID}
 	}
 
@@ -239,33 +241,33 @@ func (h *Handler) BatchSetTags(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var verifyQuery string
-	var verifyArgs []any
-	if orgID != "" {
-		role := auth.OrgRoleFromContext(r.Context())
-		if organization.IsAdminOrOwner(role) {
-			verifyQuery = `SELECT COUNT(*) FROM videos WHERE id = ANY($1) AND organization_id = $2 AND status != 'deleted'`
-			verifyArgs = []any{req.VideoIDs, orgID}
-		} else {
-			verifyQuery = `SELECT COUNT(*) FROM videos WHERE id = ANY($1) AND user_id = $2 AND organization_id = $3 AND status != 'deleted'`
-			verifyArgs = []any{req.VideoIDs, userID, orgID}
-		}
-	} else {
-		verifyQuery = `SELECT COUNT(*) FROM videos WHERE id = ANY($1) AND user_id = $2 AND status != 'deleted'`
-		verifyArgs = []any{req.VideoIDs, userID}
-	}
+	videoIDs := slices.Clone(req.VideoIDs)
+	slices.Sort(videoIDs)
+	videoIDs = slices.Compact(videoIDs)
 
+	// Every requested video must be in scope, or nothing changes. The DELETE
+	// and INSERT repeat the scope so they cannot touch a video the count did
+	// not see.
+	scope, scopeArgs := batchVideoScope(r.Context())
 	var videoCount int
-	err := h.db.QueryRow(r.Context(), verifyQuery, verifyArgs...).Scan(&videoCount)
+	err := h.db.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM videos WHERE id = ANY($1) AND `+scope,
+		append([]any{videoIDs}, scopeArgs...)...,
+	).Scan(&videoCount)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to verify videos")
 		return
 	}
+	if videoCount != len(videoIDs) {
+		httputil.WriteError(w, http.StatusNotFound, "one or more videos not found")
+		return
+	}
 
-	for _, videoID := range req.VideoIDs {
+	for _, videoID := range videoIDs {
+		args := append([]any{videoID}, scopeArgs...)
 		if _, err := h.db.Exec(r.Context(),
-			`DELETE FROM video_tags WHERE video_id = $1`,
-			videoID,
+			`DELETE FROM video_tags WHERE video_id IN (SELECT id FROM videos WHERE id = $1 AND `+scope+`)`,
+			args...,
 		); err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to update video tags")
 			return
@@ -273,8 +275,9 @@ func (h *Handler) BatchSetTags(w http.ResponseWriter, r *http.Request) {
 
 		for _, tagID := range req.TagIDs {
 			if _, err := h.db.Exec(r.Context(),
-				`INSERT INTO video_tags (video_id, tag_id) VALUES ($1, $2)`,
-				videoID, tagID,
+				`INSERT INTO video_tags (video_id, tag_id)
+				 SELECT id, $`+strconv.Itoa(len(args)+1)+` FROM videos WHERE id = $1 AND `+scope,
+				append(args, tagID)...,
 			); err != nil {
 				httputil.WriteError(w, http.StatusInternalServerError, "failed to update video tags")
 				return
@@ -283,4 +286,19 @@ func (h *Handler) BatchSetTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// batchVideoScope returns the videos-table predicate for the caller's scope,
+// with placeholders starting at $2 so $1 can name the video or videos. It
+// matches orgRowFilter: personal scope never reaches a workspace video.
+func batchVideoScope(ctx context.Context) (string, []any) {
+	userID := auth.UserIDFromContext(ctx)
+	orgID := auth.OrgIDFromContext(ctx)
+	if orgID != "" {
+		if organization.IsAdminOrOwner(auth.OrgRoleFromContext(ctx)) {
+			return "organization_id = $2 AND status != 'deleted'", []any{orgID}
+		}
+		return "user_id = $2 AND organization_id = $3 AND status != 'deleted'", []any{userID, orgID}
+	}
+	return "user_id = $2 AND organization_id IS NULL AND status != 'deleted'", []any{userID}
 }
