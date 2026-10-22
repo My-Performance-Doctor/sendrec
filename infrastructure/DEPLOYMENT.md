@@ -57,9 +57,10 @@ The interrupted draft's unencrypted `sendrec-staging-db` is still available and 
 
 ## Update, 2026-10-22
 
-- Deployment source: `a90bb9c` on `feat/staff-os-staging-access`, deployed at 04:32 UTC with the normal-access contexts and the MPD integration activated. CloudFormation changed only the recordings bucket's CORS origins, `MPD_ALLOWED_ORIGINS` and the image. The service runs task definition `sendrec-staging:8`, image digest `sha256:37e575f5e598a48b1629cb297396357f09c0011a47db361ae21cc2d0062ba196`.
-- The image is built with Go 1.26.10 on MPD's own base, `537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:a390707441f24b9e8629a79fd2dc4e0565d0aa331c60969a10b2fafb0d49a31c`: Alpine 3.21.9 with `ca-certificates-20261020-r0`. The deployed image's CA bundle has 118 roots and neither `emSign ECC Root CA - G3` nor `AAA Certificate Services`. The binary reports `go1.26.10`.
-- The replacement task applied migrations against the retained database, verified the pinned model and reported zero processing failures, upload failures and stuck jobs.
+- Deployment source: `6219925` on `feat/staff-os-staging-access`, deployed at 04:48 UTC with the normal-access contexts and the MPD integration activated. The service runs task definition `sendrec-staging:9`, image digest `sha256:feba15d199ac1efc692ac06a69b51848a50e4711789703ffd4b8bd68e506d203`. Against the previous template, CloudFormation changed only the recordings bucket's CORS origins, `MPD_ALLOWED_ORIGINS` and the image.
+- The image is built with Go 1.26.10 on MPD's own base, `537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:1873a2db2afa5a76aa30699c149ed6675480fd7724fae2b18cd694b5eb105a20`: Alpine 3.21.9 with `ca-certificates-20261020-r0`. The deployed image's CA bundle has 118 roots and neither `emSign ECC Root CA - G3` nor `AAA Certificate Services`. The binary reports `go1.26.10`.
+- An earlier deploy that day, definition 8 from `a90bb9c`, used a base whose whisper.cpp was tuned to the build host and held AVX-512 instructions, which a Fargate host without them would crash on. Definition 9's base builds with `GGML_NATIVE=OFF`; its `whisper-cli` has no AVX-512 instructions. The first base digest, `a390707441f2...`, stays in ECR unused.
+- The replacement tasks applied migrations against the retained database, verified the pinned model and reported zero processing failures, upload failures and stuck jobs.
 - Before this, staging had returned 503 since 2026-10-20 04:50 UTC, with the service at zero tasks and the database stopped. Both were restored first.
 
 ## Exact remaining action

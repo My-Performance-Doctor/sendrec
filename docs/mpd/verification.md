@@ -32,8 +32,8 @@ mpd-api PR 219 merged on 2026-10-12 at 13:29 UTC and reached staging that aftern
 ## Staging changes, 2026-10-22
 
 - Outage: from 2026-10-20 04:50 UTC staging returned 503 on every path. The service had been scaled to zero and the database stopped from the AWS CLI. The database was started and the service scaled back to one task on definition 7, which answered health with 200.
-- Staff OS staging: `https://app-staging.mpd.health` joined `MPD_ALLOWED_ORIGINS` beside the synthetic origin, through a CDK deploy that also added it to the recordings bucket's CORS rule. Staff OS signs in through the staff EHR client, which `MPD_ALLOWED_CLIENT_IDS` already listed. Task definition 8 runs it.
-- Checks against definition 8: health 200. From the Staff OS origin, the exchange preflight returned 204 with that origin allowed, and a fake token returned 401. From an unlisted origin both returned 403 `origin is not allowed`. The bucket preflight for a PUT allowed the Staff OS origin and refused the unlisted one with 403.
+- Staff OS staging: `https://app-staging.mpd.health` joined `MPD_ALLOWED_ORIGINS` beside the synthetic origin, through a CDK deploy that also added it to the recordings bucket's CORS rule. Staff OS signs in through the staff EHR client, which `MPD_ALLOWED_CLIENT_IDS` already listed. Task definition 9 runs it.
+- Checks against definitions 8 and 9: health 200. From the Staff OS origin, the exchange preflight returned 204 with that origin allowed, and a fake token returned 401. From an unlisted origin both returned 403 `origin is not allowed`. The bucket preflight for a PUT allowed the Staff OS origin and refused the unlisted one with 403.
 - mpd-api PR 250, which sets a link password on every claim, is in the image staging runs, `2cb0bda`. No claim was rerun, and the staging password-key failure from 2026-10-13 was not rechecked.
 - Still not run: a real Staff OS sign-in and recording, which needs a staff member's sign-in.
 
