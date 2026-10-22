@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +102,31 @@ func (h *Handler) enforceWatchAccess(w http.ResponseWriter, r *http.Request, sha
 	return true
 }
 
+// A video's share password locks for sharePasswordWindow once it has had
+// sharePasswordMaxFailures wrong guesses in one window, whichever addresses
+// they came from. The per-IP limiter still applies on top. The window is
+// fixed: it starts at the first failure and a failure after it ends starts a
+// new one. While locked, even the right password waits, so the lock gives
+// away nothing.
+const (
+	sharePasswordMaxFailures = 10
+	sharePasswordWindow      = 15 * time.Minute
+)
+
+func (h *Handler) recordSharePasswordFailure(ctx context.Context, videoID string) {
+	if _, err := h.db.Exec(ctx,
+		`INSERT INTO share_password_attempts (video_id, window_start, failures) VALUES ($1, now(), 1)
+		 ON CONFLICT (video_id) DO UPDATE SET
+		   failures = CASE WHEN share_password_attempts.window_start > now() - make_interval(secs => $2)
+		                   THEN share_password_attempts.failures + 1 ELSE 1 END,
+		   window_start = CASE WHEN share_password_attempts.window_start > now() - make_interval(secs => $2)
+		                       THEN share_password_attempts.window_start ELSE now() END`,
+		videoID, sharePasswordWindow.Seconds(),
+	); err != nil {
+		slog.Error("watch: failed to record wrong share password", "video_id", videoID, "error", err)
+	}
+}
+
 type verifyPasswordRequest struct {
 	Password string `json:"password"`
 }
@@ -119,11 +145,18 @@ func (h *Handler) VerifyWatchPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The lockout state comes back with the video, so if it cannot be read
+	// the video cannot either and the attempt is refused.
+	var videoID string
 	var sharePassword *string
+	var locked bool
 	err := h.db.QueryRow(r.Context(),
-		`SELECT share_password FROM videos WHERE share_token = $1 AND status IN ('ready', 'processing')`,
-		shareToken,
-	).Scan(&sharePassword)
+		`SELECT v.id, v.share_password,
+		        COALESCE(a.failures >= $2 AND a.window_start > now() - make_interval(secs => $3), false)
+		 FROM videos v LEFT JOIN share_password_attempts a ON a.video_id = v.id
+		 WHERE v.share_token = $1 AND v.status IN ('ready', 'processing')`,
+		shareToken, sharePasswordMaxFailures, sharePasswordWindow.Seconds(),
+	).Scan(&videoID, &sharePassword, &locked)
 	if err != nil {
 		httputil.WriteError(w, http.StatusNotFound, "video not found")
 		return
@@ -134,7 +167,14 @@ func (h *Handler) VerifyWatchPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if locked {
+		w.Header().Set("Retry-After", strconv.Itoa(int(sharePasswordWindow.Seconds())))
+		httputil.WriteError(w, http.StatusTooManyRequests, "too many incorrect passwords, try again later")
+		return
+	}
+
 	if !checkSharePassword(*sharePassword, req.Password) {
+		h.recordSharePasswordFailure(r.Context(), videoID)
 		httputil.WriteError(w, http.StatusForbidden, "incorrect password")
 		return
 	}

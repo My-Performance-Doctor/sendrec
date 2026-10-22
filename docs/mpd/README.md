@@ -35,7 +35,7 @@ Persisted media policy remains active when the integration switches or deploymen
 
 | Registered route | Policy |
 |---|---|
-| `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply |
+| `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply, titled "Protected video" instead of the recording title |
 | `/api/watch/{shareToken}` | Publication, password, email and expiry checks |
 | `/api/watch/{shareToken}/download`, `/thumbnail` | Publication and per-video access, plus existing download policy |
 | `/api/videos/{shareToken}/oembed` | No unpublished or password-protected metadata disclosure |
@@ -43,6 +43,8 @@ Persisted media policy remains active when the integration switches or deploymen
 | `/watch/playlist/{shareToken}`, `/embed/playlist/{shareToken}` | Every managed item must pass its own publication/password/email/expiry policy, then playlist policy |
 | Playlist `/verify`, `/identify` | No playlist token bypass of a managed item's policy |
 | Watch `/renew`, `/playback-session`, `/playback-start` | Publication, password, email and expiry rechecked |
+
+Share password checks are limited per address and per video. After 10 wrong passwords for one video within 15 minutes of the first, `/verify` answers 429 for the rest of that 15-minute window without checking the password, whatever address the request comes from. Viewers who already passed the form keep watching. Anyone holding the link can trigger this lock, so a viewer may have to wait up to 15 minutes.
 
 Playback/download GET links expire within five minutes. Watch, embed and playlist players renew them and preserve position and paused state. Denied renewal stops playback. Managed library/detail uses the private preview player; download clicks request a fresh authorized link.
 

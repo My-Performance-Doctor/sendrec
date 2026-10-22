@@ -611,8 +611,8 @@ func TestSCIMPutUserRouteRequiresAuth(t *testing.T) {
 func TestVerifyWatchPasswordRouteRegistered(t *testing.T) {
 	srv, mock := newServerWithDB(t)
 
-	mock.ExpectQuery("SELECT share_password FROM videos").
-		WithArgs("some-token").
+	mock.ExpectQuery("SELECT v.id, v.share_password").
+		WithArgs("some-token", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("no rows"))
 
 	rec := executeRequestWithBody(srv, http.MethodPost, "/api/watch/some-token/verify", `{"password":"test"}`)

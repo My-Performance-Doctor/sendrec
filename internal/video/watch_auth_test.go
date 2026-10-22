@@ -196,9 +196,9 @@ func TestVerifyWatchPassword_CorrectPassword(t *testing.T) {
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	shareToken := "abc123defghi"
 
-	mock.ExpectQuery(`SELECT share_password FROM videos WHERE share_token = \$1 AND status IN \('ready', 'processing'\)`).
-		WithArgs(shareToken).
-		WillReturnRows(pgxmock.NewRows([]string{"share_password"}).AddRow(&passwordHash))
+	mock.ExpectQuery(`SELECT v.id, v.share_password,.*FROM videos v LEFT JOIN share_password_attempts`).
+		WithArgs(shareToken, pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "share_password", "locked"}).AddRow("video-1", &passwordHash, false))
 
 	body, _ := json.Marshal(map[string]string{"password": "secret123"})
 	r := chi.NewRouter()
@@ -237,9 +237,13 @@ func TestVerifyWatchPassword_WrongPassword(t *testing.T) {
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	shareToken := "abc123defghi"
 
-	mock.ExpectQuery(`SELECT share_password FROM videos WHERE share_token = \$1 AND status IN \('ready', 'processing'\)`).
-		WithArgs(shareToken).
-		WillReturnRows(pgxmock.NewRows([]string{"share_password"}).AddRow(&passwordHash))
+	mock.ExpectQuery(`SELECT v.id, v.share_password,.*FROM videos v LEFT JOIN share_password_attempts`).
+		WithArgs(shareToken, pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "share_password", "locked"}).AddRow("video-1", &passwordHash, false))
+
+	mock.ExpectExec(`INSERT INTO share_password_attempts`).
+		WithArgs("video-1", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	body, _ := json.Marshal(map[string]string{"password": "wrongpassword"})
 	r := chi.NewRouter()
@@ -269,9 +273,9 @@ func TestVerifyWatchPassword_NoPasswordSet(t *testing.T) {
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	shareToken := "abc123defghi"
 
-	mock.ExpectQuery(`SELECT share_password FROM videos WHERE share_token = \$1 AND status IN \('ready', 'processing'\)`).
-		WithArgs(shareToken).
-		WillReturnRows(pgxmock.NewRows([]string{"share_password"}).AddRow((*string)(nil)))
+	mock.ExpectQuery(`SELECT v.id, v.share_password,.*FROM videos v LEFT JOIN share_password_attempts`).
+		WithArgs(shareToken, pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "share_password", "locked"}).AddRow("video-1", (*string)(nil), false))
 
 	body, _ := json.Marshal(map[string]string{"password": "anything"})
 	r := chi.NewRouter()
@@ -301,8 +305,8 @@ func TestVerifyWatchPassword_VideoNotFound(t *testing.T) {
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	shareToken := "abc123defghi"
 
-	mock.ExpectQuery(`SELECT share_password FROM videos WHERE share_token = \$1 AND status IN \('ready', 'processing'\)`).
-		WithArgs(shareToken).
+	mock.ExpectQuery(`SELECT v.id, v.share_password,.*FROM videos v LEFT JOIN share_password_attempts`).
+		WithArgs(shareToken, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("no rows"))
 
 	body, _ := json.Marshal(map[string]string{"password": "secret123"})

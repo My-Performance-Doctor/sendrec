@@ -911,7 +911,7 @@ func TestWatchPage_PasswordProtected_NoCookie_ShowsPasswordForm(t *testing.T) {
 	mock.ExpectQuery(`SELECT v.id, v.title, v.file_key`).
 		WithArgs(shareToken).
 		WillReturnRows(pgxmock.NewRows(watchPageColumns).AddRow(
-			"vid-1", "Protected Video", "recordings/u1/abc.webm", "Alice", createdAt, &expiresAt,
+			"vid-1", "Synthetic Recording Title", "recordings/u1/abc.webm", "Alice", createdAt, &expiresAt,
 			(*string)(nil), &passwordHash, "disabled",
 			(*string)(nil), (*string)(nil), "none",
 			"owner-user-id", "owner@example.com", (*string)(nil), "video/webm",
@@ -933,6 +933,13 @@ func TestWatchPage_PasswordProtected_NoCookie_ShowsPasswordForm(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
+	// The title can name a patient, so the gate page must not show it.
+	if strings.Contains(body, "Synthetic Recording Title") {
+		t.Error("gate page reveals the recording title")
+	}
+	if !strings.Contains(body, gatedPageTitle) {
+		t.Error("gate page lacks the generic title")
+	}
 
 	if !strings.Contains(body, "password protected") {
 		t.Error("expected password protected message")
@@ -2136,7 +2143,7 @@ func TestWatchPage_EmailGate_ShowsForm(t *testing.T) {
 	mock.ExpectQuery(`SELECT v.id, v.title, v.file_key`).
 		WithArgs(shareToken).
 		WillReturnRows(pgxmock.NewRows(watchPageColumns).AddRow(
-			"vid-1", "Gated Video", "recordings/u1/abc.webm", "Alice", createdAt, &expiresAt,
+			"vid-1", "Synthetic Recording Title", "recordings/u1/abc.webm", "Alice", createdAt, &expiresAt,
 			(*string)(nil), (*string)(nil), "disabled",
 			(*string)(nil), (*string)(nil), "none",
 			"owner-user-id", "owner@example.com", (*string)(nil), "video/webm",
@@ -2158,6 +2165,13 @@ func TestWatchPage_EmailGate_ShowsForm(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
+	// The title can name a patient, so the gate page must not show it.
+	if strings.Contains(body, "Synthetic Recording Title") {
+		t.Error("gate page reveals the recording title")
+	}
+	if !strings.Contains(body, gatedPageTitle) {
+		t.Error("gate page lacks the generic title")
+	}
 
 	if !strings.Contains(body, "Enter your email to watch this video") {
 		t.Error("expected email gate message")
