@@ -25,13 +25,15 @@ RUN mkdir -p /app/models && \
 
 # Stage 3: Fail the build if the CA store trusts a root removed after the 2026
 # eMudhra intermediate compromise: emSign ECC Root CA - G3 (86A1ECBA...) or
-# AAA Certificate Services (D7A7A0FB...).
+# AAA Certificate Services (D7A7A0FB...). The shell has no pipefail, so a cert
+# openssl cannot parse hashes as empty input; refuse that hash too.
 FROM runtime AS ca-check
 RUN apk add --no-cache openssl && \
     mkdir /tmp/ca && cd /tmp/ca && \
     awk '/BEGIN CERTIFICATE/{n++} n{print > ("cert" n ".pem")}' /etc/ssl/certs/ca-certificates.crt && \
     for cert in cert*.pem; do openssl x509 -in "$cert" -outform der | sha256sum; done > /tmp/roots && \
     test "$(wc -l < /tmp/roots)" -gt 100 && \
+    ! grep -q '^e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ' /tmp/roots && \
     ! grep -Eq '^(86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b|d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4) ' /tmp/roots && \
     touch /ca-roots-checked
 
