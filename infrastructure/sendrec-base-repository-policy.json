@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CdkAssetBuildsPullBase",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::537421187871:role/cdk-hnb659fds-image-publishing-role-537421187871-ap-southeast-2"
+      },
+      "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]
+    }
+  ]
+}

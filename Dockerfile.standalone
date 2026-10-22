@@ -14,8 +14,9 @@ RUN pnpm build
 FROM alpine:3.21 AS whisper
 RUN apk add --no-cache build-base cmake git
 WORKDIR /build
-# GGML_NATIVE=OFF: tuning for the build host's CPU, such as AVX-512, would crash
-# whisper-cli on a host without it.
+# GGML_NATIVE=OFF: on x86-64 this builds for any CPU with AVX2, FMA and F16C
+# rather than for the build host's CPU, whose extras, such as AVX-512, would
+# crash whisper-cli on a host without them. CPUs without AVX2 cannot run it.
 RUN git clone --depth 1 --branch v1.8.3 https://github.com/ggerganov/whisper.cpp.git . && \
     cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF && \
     cmake --build build --target whisper-cli -j$(nproc)
@@ -33,6 +34,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o sendre
 # Stage 4: Final image
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates ffmpeg libstdc++
+RUN --mount=type=bind,source=scripts/check-ca-roots.sh,target=/tmp/check-ca-roots.sh sh /tmp/check-ca-roots.sh
 RUN addgroup -S sendrec && adduser -S sendrec -G sendrec
 WORKDIR /app
 COPY --from=backend /app/sendrec .
