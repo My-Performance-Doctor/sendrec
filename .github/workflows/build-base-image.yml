@@ -16,6 +16,8 @@ permissions:
 
 jobs:
   build:
+    # Upstream publishing only. MPD pushes its own build to ECR; see infrastructure/README.md.
+    if: github.repository == 'sendrec/sendrec'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

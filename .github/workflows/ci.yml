@@ -137,8 +137,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The runtime base lives in MPD's private ECR, so build Dockerfile.base,
+      # including its CA root check, and use that instead.
+      - name: Build base image
+        run: docker build -f Dockerfile.base -t sendrec-base:ci .
+
       - name: Build image
-        run: docker build -t sendrec:ci .
+        run: docker build --build-arg BASE_IMAGE=sendrec-base:ci -t sendrec:ci .
 
   e2e:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
@@ -149,8 +154,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Build base image
+        run: docker build -f Dockerfile.base -t sendrec-base:ci .
+
       - name: Start e2e environment
         run: docker compose -f docker-compose.e2e.yml up --build -d
+        env:
+          BASE_IMAGE: sendrec-base:ci
 
       - name: Wait for app to be healthy
         run: |

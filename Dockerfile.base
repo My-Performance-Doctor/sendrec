@@ -1,21 +1,44 @@
 # Base image with slow-changing dependencies: whisper.cpp, ffmpeg, RNNoise model.
 # Rebuild only when whisper version or system deps change.
-# Published as alexneamtu/sendrec-base:<whisper-version>
+# MPD builds this itself and pushes it to the staging account's ECR repository
+# sendrec-base; Dockerfile pins the pushed digest. See infrastructure/README.md.
 
 # Stage 1: Build whisper.cpp
 FROM alpine:3.21 AS whisper
 RUN apk add --no-cache build-base cmake git
 WORKDIR /build
 ARG WHISPER_VERSION=v1.8.3
+# GGML_NATIVE=OFF: tuning for the build host's CPU, such as AVX-512, would crash
+# whisper-cli on a Fargate host without it.
 RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov/whisper.cpp.git . && \
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF && \
     cmake --build build --target whisper-cli -j$(nproc)
 
 # Stage 2: Final base image
-FROM alpine:3.21
+FROM alpine:3.21 AS runtime
 RUN apk add --no-cache ca-certificates ffmpeg libstdc++
 RUN addgroup -S sendrec && adduser -S sendrec -G sendrec
 WORKDIR /app
 COPY --from=whisper /build/build/bin/whisper-cli /usr/local/bin/whisper-cli
 RUN mkdir -p /app/models && \
     wget -q -O /app/models/std.rnnn https://github.com/richardpl/arnndn-models/raw/master/std.rnnn
+
+# Stage 3: Fail the build if the CA store trusts a root removed after the 2026
+# eMudhra intermediate compromise: emSign ECC Root CA - G3 (86A1ECBA...) or
+# AAA Certificate Services (D7A7A0FB...). It reads every file in /etc/ssl/certs,
+# as Go does, not just the bundle. The shell has no pipefail, so a cert
+# openssl cannot parse hashes as empty input; refuse that hash too.
+FROM runtime AS ca-check
+RUN apk add --no-cache openssl && \
+    mkdir /tmp/ca && cd /tmp/ca && \
+    awk '/BEGIN CERTIFICATE/{n++} n{print > ("cert" n ".pem")}' /etc/ssl/certs/* && \
+    for cert in cert*.pem; do openssl x509 -in "$cert" -outform der | sha256sum; done > /tmp/roots && \
+    test "$(wc -l < /tmp/roots)" -gt 100 && \
+    ! grep -q '^e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ' /tmp/roots && \
+    ! grep -Eq '^(86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b|d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4) ' /tmp/roots && \
+    touch /ca-roots-checked
+
+FROM runtime
+# Copying the marker makes every builder run the check, including BuildKit,
+# which skips stages nothing depends on.
+COPY --from=ca-check /ca-roots-checked /etc/ssl/ca-roots-checked

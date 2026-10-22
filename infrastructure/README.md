@@ -22,6 +22,23 @@ The CDK helper loads short-lived credentials through the AWS CLI because the ins
 
 Run the Go suite with the toolchain in `go.mod`, ffmpeg and a dedicated synthetic PostgreSQL 18 database through `TEST_DATABASE_URL`. SendRec uses `RETURNING old/new` when publishing thumbnails and transcripts, so PostgreSQL 17 can pass migrations and health checks but fails media processing. The stack uses RDS PostgreSQL 18.6, a verified upgrade target in Sydney. Major upgrades retain the instance and take pre-upgrade and post-upgrade snapshots under the seven-day backup policy. Build `web/dist` first. Never point tests at patient databases. CDK builds the repository Dockerfile and pushes the asset to its existing staging bootstrap registry.
 
+## Runtime base image
+
+The runtime stage builds `FROM` MPD's own build of `Dockerfile.base` (whisper.cpp, ffmpeg, the RNNoise model and Alpine's CA store), pinned by digest in the `Dockerfile`'s `BASE_IMAGE` argument. It lives in this account's ECR repository `sendrec-base`, which has immutable tags and scans on push. Log Docker in to the registry before a CDK deploy or a local image build:
+
+```bash
+aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com
+```
+
+`Dockerfile.base` fails its build if the CA store holds `emSign ECC Root CA - G3` or `AAA Certificate Services`, the roots removed after the 2026 eMudhra intermediate compromise. To rebuild it, for a new whisper.cpp or Alpine CA update, build `Dockerfile.base`, push it under a new dated tag and put the pushed digest in `BASE_IMAGE`:
+
+```bash
+docker build --platform linux/amd64 -f Dockerfile.base -t 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd> .
+docker push 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd>
+```
+
+CI cannot read this registry, so it builds `Dockerfile.base` itself and passes that local tag as `BASE_IMAGE`.
+
 ## First owner
 
 Verify the source machine's public IPv4 address and use only that `/32`. Bootstrap mode without a valid address fails before synthesis. Substitute that non-secret CIDR in the commands below:

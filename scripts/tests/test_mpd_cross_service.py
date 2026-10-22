@@ -119,7 +119,7 @@ def test_actual_provider_and_consumer(db, monkeypatch, tmp_path):
     for key, value in env.items():
         command += ["-e", f"{key}={value}"]
     command += [
-        "golang:1.26.6-alpine",
+        "golang:1.26.10-alpine",
         "go",
         "test",
         "./internal/video",

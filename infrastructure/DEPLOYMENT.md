@@ -55,6 +55,14 @@ Stack deletion retains the encrypted database, recordings bucket and stack-owned
 
 The interrupted draft's unencrypted `sendrec-staging-db` is still available and retained outside the replacement stack. Its public ALB was replaced by the private origin. The old database was not deleted or inspected for application content. An operator must inspect its metadata and confirm disposal before cleanup. Leave the shared VPC and CDK registry untouched.
 
+## Update, 2026-10-22
+
+- Deployment source: `6219925` on `feat/staff-os-staging-access`, deployed at 04:48 UTC with the normal-access contexts and the MPD integration activated. The service runs task definition `sendrec-staging:9`, image digest `sha256:feba15d199ac1efc692ac06a69b51848a50e4711789703ffd4b8bd68e506d203`. Against the previous template, CloudFormation changed only the recordings bucket's CORS origins, `MPD_ALLOWED_ORIGINS` and the image.
+- The image is built with Go 1.26.10 on MPD's own base, `537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:1873a2db2afa5a76aa30699c149ed6675480fd7724fae2b18cd694b5eb105a20`: Alpine 3.21.9 with `ca-certificates-20261020-r0`. The deployed image's CA bundle has 118 roots and neither `emSign ECC Root CA - G3` nor `AAA Certificate Services`. The binary reports `go1.26.10`.
+- An earlier deploy that day, definition 8 from `a90bb9c`, used a base whose whisper.cpp was tuned to the build host and held AVX-512 instructions, which a Fargate host without them would crash on. Definition 9's base builds with `GGML_NATIVE=OFF`; its `whisper-cli` has no AVX-512 instructions. The first base digest, `a390707441f2...`, stays in ECR unused.
+- The replacement tasks applied migrations against the retained database, verified the pinned model and reported zero processing failures, upload failures and stuck jobs.
+- Before this, staging had returned 503 since 2026-10-20 04:50 UTC, with the service at zero tasks and the database stopped. Both were restored first.
+
 ## Exact remaining action
 
-Retry `~/.config/wattson-t3/global/bin/review-loop run https://github.com/My-Performance-Doctor/sendrec/pull/2` when the reviewer is available. Inspect and resolve any findings, run applicable checks and record only a round for the unchanged reviewed head. Then complete task 4.4 and sync and archive `add-aws-staging-deployment`. Humans merge PR #2. No production rollout, patient integration, real recordings or Vimeo migration was performed.
+A human merged PR #2 on 2026-10-07, so its review loop can no longer run; the merge settles the final review. Task 4.4 is complete. Archive `add-aws-staging-deployment` with `openspec archive add-aws-staging-deployment` in its own change of work. No production rollout, patient integration, real recordings or Vimeo migration was performed.
