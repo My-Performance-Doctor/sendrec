@@ -24,20 +24,28 @@ Run the Go suite with the toolchain in `go.mod`, ffmpeg and a dedicated syntheti
 
 ## Runtime base image
 
-The runtime stage builds `FROM` MPD's own build of `Dockerfile.base` (whisper.cpp, ffmpeg, the RNNoise model and Alpine's CA store), pinned by digest in the `Dockerfile`'s `BASE_IMAGE` argument. It lives in this account's ECR repository `sendrec-base`, which has immutable tags and scans on push. Log Docker in to the registry before a CDK deploy or a local image build:
+The runtime stage builds `FROM` MPD's own build of `Dockerfile.base` (whisper.cpp, ffmpeg, the RNNoise model and Alpine's CA store), pinned by digest in the `Dockerfile`'s `BASE_IMAGE` argument. It lives in this account's ECR repository `sendrec-base`, which has immutable tags and scans on push.
+
+Before it builds the image, cdk-assets logs Docker in to this registry as the CDK image-publishing role, replacing any login of your own. The repository policy in `sendrec-base-repository-policy.json` lets that role pull the base, so a CDK deploy needs no extra login. Reapply the policy if the repository is recreated:
+
+```bash
+aws ecr set-repository-policy --region ap-southeast-2 --repository-name sendrec-base --policy-text file://sendrec-base-repository-policy.json
+```
+
+Log Docker in yourself for a local build against the pinned base:
 
 ```bash
 aws ecr get-login-password --region ap-southeast-2 | docker login --username AWS --password-stdin 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com
 ```
 
-`Dockerfile.base` fails its build if the CA store holds `emSign ECC Root CA - G3` or `AAA Certificate Services`, the roots removed after the 2026 eMudhra intermediate compromise. To rebuild it, for a new whisper.cpp or Alpine CA update, build `Dockerfile.base`, push it under a new dated tag and put the pushed digest in `BASE_IMAGE`:
+`Dockerfile.base`, `Dockerfile` and `Dockerfile.standalone` all run `scripts/check-ca-roots.sh`. It fails the build if the CA store holds `emSign ECC Root CA - G3`, `emSign Root CA - C1` or `emSign ECC Root CA - C3`, the roots Alpine removed after the 2026 eMudhra intermediate compromise, or `AAA Certificate Services`. The `Dockerfile` checks the store it ships, so a stale or outside base fails there too. To rebuild the base, for a new whisper.cpp or Alpine CA update, build `Dockerfile.base` without cache from the repository root, push it under a new dated tag and put the pushed digest in `BASE_IMAGE`. Without `--pull --no-cache` a cached Alpine layer can carry the old CA store into the new tag:
 
 ```bash
-docker build --platform linux/amd64 -f Dockerfile.base -t 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd> .
+docker build --pull --no-cache --platform linux/amd64 -f Dockerfile.base -t 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd> .
 docker push 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd>
 ```
 
-CI cannot read this registry, so it builds `Dockerfile.base` itself and passes that local tag as `BASE_IMAGE`.
+CI cannot read this registry, so it builds `Dockerfile.base` itself and passes that local tag as `BASE_IMAGE`. `make docker-up` does the same for local stacks.
 
 ## First owner
 
@@ -73,7 +81,7 @@ RDS takes daily backups retained for seven days. One Fargate task runs at a time
 
 The transcription worker requeues an abandoned `processing` job after its 30-minute deadline plus one minute. To recover sooner, use the owner's retranscribe action, backed by authenticated `POST /api/videos/<video-id>/retranscribe`. A successful retry returns 202. Verify the job reaches `ready` and its signed VTT contains cues before calling recovery complete. The staging task-replacement check uses this explicit retry; it does not claim to have waited for the automatic stale-job path.
 
-To recover a bad application update, check out the last verified revision and deploy it with the current approved access contexts. Read the CloudFormation diff first. Do not reset a dirty checkout or replace retained state. A failed initial deployment needs resource and failure readback before any cleanup.
+To recover a bad application update, check out the last verified revision and deploy it with the current approved access contexts. `DEPLOYMENT.md` records the current staging `MPD_ALLOWED_ORIGINS`. A deploy that leaves out an origin removes it from the service and from the recordings bucket's CORS rule. Read the CloudFormation diff first. Do not reset a dirty checkout or replace retained state. A failed initial deployment needs resource and failure readback before any cleanup.
 
 ## Retained resources
 
