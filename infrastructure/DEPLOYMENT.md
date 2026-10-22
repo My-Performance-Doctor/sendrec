@@ -62,6 +62,8 @@ The interrupted draft's unencrypted `sendrec-staging-db` is still available and 
 - An earlier deploy that day, definition 8 from `a90bb9c`, used a base whose whisper.cpp was tuned to the build host and held AVX-512 instructions, which a Fargate host without them would crash on. Definition 9's base builds with `GGML_NATIVE=OFF`; its `whisper-cli` has no AVX-512 instructions. The first base digest, `a390707441f2...`, stays in ECR unused.
 - The replacement tasks applied migrations against the retained database, verified the pinned model and reported zero processing failures, upload failures and stuck jobs.
 - Before this, staging had returned 503 since 2026-10-20 04:50 UTC, with the service at zero tasks and the database stopped. Both were restored first.
+- `MPD_ALLOWED_ORIGINS` is exactly `https://staff.example.test,https://app-staging.mpd.health`, read back from task definition 9. Pass both origins on every later staging deploy, or CloudFormation removes the missing one from the service and from the recordings bucket's CORS rule.
+- After review, `sendrec-base` got the repository policy in `sendrec-base-repository-policy.json`. Before that, a CDK deploy from a machine without the base cached would have failed, because cdk-assets pulls it as the CDK image-publishing role, which could read only the CDK asset repository. A pull of the pinned digest as that role then succeeded. Staging was not redeployed.
 
 ## Exact remaining action
 
