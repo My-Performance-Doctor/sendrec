@@ -38,6 +38,9 @@ class SendRecStackTest {
     template.hasResource("AWS::S3::Bucket", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "PublicAccessBlockConfiguration", Map.of("BlockPublicAcls", true, "BlockPublicPolicy", true, "IgnorePublicAcls", true, "RestrictPublicBuckets", true),
         "BucketEncryption", Match.anyValue())))));
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Match.absent()));
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "ExpireOldVersions", "Status", "Enabled",
+        "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec",
         "EngineVersion", "18.6", "AllowMajorVersionUpgrade", true, "BackupRetentionPeriod", 7)))));
@@ -94,7 +97,10 @@ class SendRecStackTest {
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
-    template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"), "LifecycleConfiguration", Match.absent()));
+    // Versioning on and nothing expires; only abandoned multipart uploads are cleaned up.
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
+        "LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "AbortIncompleteUploads", "Status", "Enabled",
+            "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();

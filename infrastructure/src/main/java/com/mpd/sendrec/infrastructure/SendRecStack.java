@@ -59,6 +59,7 @@ import software.amazon.awscdk.services.s3.Bucket;
 import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.CorsRule;
 import software.amazon.awscdk.services.s3.HttpMethods;
+import software.amazon.awscdk.services.s3.LifecycleRule;
 import software.amazon.awscdk.services.secretsmanager.SecretStringGenerator;
 import software.constructs.Construct;
 
@@ -113,6 +114,7 @@ public class SendRecStack extends Stack {
             .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
             .encryption(BucketEncryption.S3_MANAGED)
             .versioned(config.production())
+            .lifecycleRules(List.of(recordingsLifecycle(config.production())))
             .enforceSsl(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
@@ -497,4 +499,18 @@ public class SendRecStack extends Stack {
     }
   }
 
+
+  /**
+   * Abandoned multipart uploads never keep their parts. Outside production, deleted or replaced
+   * media also stops living on as old versions after 30 days. Production keeps every version: its
+   * noncurrent expiry waits on MPD's clinical retention policy and must be at least the RDS
+   * point-in-time window, so a restored database never points at expired media.
+   */
+  static LifecycleRule recordingsLifecycle(boolean production) {
+    LifecycleRule.Builder rule = LifecycleRule.builder()
+        .id(production ? "AbortIncompleteUploads" : "ExpireOldVersions")
+        .abortIncompleteMultipartUploadAfter(Duration.days(7));
+    if (!production) rule.noncurrentVersionExpiration(Duration.days(30));
+    return rule.build();
+  }
 }

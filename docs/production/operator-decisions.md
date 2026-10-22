@@ -83,6 +83,8 @@ Proposed. In plain terms, these are the worst case MPD accepts.
 | Media retention | Versioning on, nothing expires or is deleted automatically | Holds until MPD approves a clinical retention policy |
 | Staging | Seven-day backups, unchanged | |
 
+Expiring old media versions in production waits on MPD's clinical retention policy, and the expiry must be at least the database point-in-time window, so a restored database never points at expired media. Until then, production's only lifecycle rule removes abandoned multipart uploads after seven days.
+
 Follow-ups:
 
 - The AWS restore drill in task 3.2 must measure both numbers, document the database cutover, and restore the media versions that restored rows reference.
