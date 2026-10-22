@@ -24,12 +24,16 @@ dev-web:
 # build Dockerfile.base themselves. The first build compiles whisper.cpp.
 LOCAL_BASE_IMAGE := sendrec-base:local
 
+# Compose builds with the selected buildx builder, which may not see local
+# images, so pin it to the current context's builder, which docker build uses.
+LOCAL_COMPOSE = BASE_IMAGE=$(LOCAL_BASE_IMAGE) BUILDX_BUILDER=$$(docker context show) docker compose
+
 docker-base:
 	docker build -f Dockerfile.base -t $(LOCAL_BASE_IMAGE) .
 
 # Start full stack via Docker Compose
 docker-up: docker-base
-	BASE_IMAGE=$(LOCAL_BASE_IMAGE) docker compose -f docker-compose.dev.yml up --build -d
+	$(LOCAL_COMPOSE) -f docker-compose.dev.yml up --build -d
 
 # Stop full stack
 docker-down:
@@ -37,7 +41,7 @@ docker-down:
 
 # Start e2e test environment
 e2e-up: docker-base
-	BASE_IMAGE=$(LOCAL_BASE_IMAGE) docker compose -f docker-compose.e2e.yml up --build -d
+	$(LOCAL_COMPOSE) -f docker-compose.e2e.yml up --build -d
 
 # Stop e2e test environment
 e2e-down:

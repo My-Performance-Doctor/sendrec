@@ -63,7 +63,7 @@ The interrupted draft's unencrypted `sendrec-staging-db` is still available and 
 - The replacement tasks applied migrations against the retained database, verified the pinned model and reported zero processing failures, upload failures and stuck jobs.
 - Before this, staging had returned 503 since 2026-10-20 04:50 UTC, with the service at zero tasks and the database stopped. Both were restored first.
 - `MPD_ALLOWED_ORIGINS` is exactly `https://staff.example.test,https://app-staging.mpd.health`, read back from task definition 9. Pass both origins on every later staging deploy, or CloudFormation removes the missing one from the service and from the recordings bucket's CORS rule.
-- After review, `sendrec-base` got the repository policy in `sendrec-base-repository-policy.json`. Before that, a CDK deploy from a machine without the base cached would have failed, because cdk-assets pulls it as the CDK image-publishing role, which could read only the CDK asset repository. A pull of the pinned digest as that role then succeeded. Staging was not redeployed.
+- After review, `sendrec-base` got the repository policy in `sendrec-base-repository-policy.json`. Before that, a CDK deploy from a machine without the base cached would have failed, because cdk-assets pulls it as the CDK image-publishing role, which could read only the CDK asset repository. A pull of the pinned digest as that role then succeeded. The `Dockerfile` built locally against that digest, and its new check, which also blocks `emSign Root CA - C1` and `emSign ECC Root CA - C3`, found 118 distinct roots and none blocked. Staging was not redeployed.
 
 ## Exact remaining action
 

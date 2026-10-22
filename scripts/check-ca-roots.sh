@@ -20,7 +20,18 @@ cd "$work"
 awk '/-----BEGIN CERTIFICATE-----/ { n++; body = 1; next }
      /-----END CERTIFICATE-----/ { body = 0; close("cert" n); next }
      body { print > ("cert" n) }' /etc/ssl/certs/*
-for cert in cert*; do base64 -d "$cert" | sha256sum | cut -d ' ' -f 1; done | sort -u > roots
+for cert in cert*; do
+  base64 -d "$cert" > der
+  # A whole certificate is a DER SEQUENCE (30 82) whose two length bytes cover
+  # the rest of it, so this refuses truncated or stray data.
+  # shellcheck disable=SC2046 # split od's four numbers into $1..$4
+  set -- $(od -A n -t u1 -N 4 der)
+  if [ "$#" -ne 4 ] || [ "$1" -ne 48 ] || [ "$2" -ne 130 ] || [ $(($3 * 256 + $4 + 4)) -ne "$(wc -c < der)" ]; then
+    echo "A certificate in /etc/ssl/certs is truncated or malformed" >&2
+    exit 1
+  fi
+  sha256sum der | cut -d ' ' -f 1
+done | sort -u > roots
 
 # Each root appears several times (bundle, ca-cert-*.pem, hash link), so count
 # unique fingerprints. Alpine 3.21 ships 118; far fewer means a broken store.
@@ -30,7 +41,8 @@ if [ "$count" -lt 100 ]; then
   exit 1
 fi
 if echo "$blocked" | grep -F -f roots; then
-  echo "CA store trusts the blocked roots above" >&2
+  echo "CA store trusts the blocked roots above. If a cached layer holds an old" >&2
+  echo "ca-certificates, rebuild with: docker build --pull --no-cache ..." >&2
   exit 1
 fi
 cd /

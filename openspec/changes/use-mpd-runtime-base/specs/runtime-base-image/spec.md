@@ -19,5 +19,5 @@ Every SendRec image build SHALL fail if the image's CA store trusts a root remov
 - **THEN** the build fails and names the root
 
 #### Scenario: Truncated store
-- **WHEN** the store holds fewer than 100 distinct roots or a certificate that does not decode
+- **WHEN** the store holds fewer than 100 distinct roots or a certificate that is not valid base64 or not a whole DER certificate
 - **THEN** the build fails
