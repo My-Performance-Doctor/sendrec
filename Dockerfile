@@ -1,6 +1,6 @@
 # MPD's own build of Dockerfile.base in the staging account's ECR, pinned by
 # digest. CI builds Dockerfile.base and passes its local tag here instead.
-ARG BASE_IMAGE=537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:a390707441f24b9e8629a79fd2dc4e0565d0aa331c60969a10b2fafb0d49a31c
+ARG BASE_IMAGE=537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:1873a2db2afa5a76aa30699c149ed6675480fd7724fae2b18cd694b5eb105a20
 
 # Stage 1: Build frontend
 FROM node:24-alpine AS frontend
@@ -23,6 +23,9 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o sendre
 
 # Stage 3: Final image (base includes whisper-cli, ffmpeg, RNNoise model)
 FROM ${BASE_IMAGE}
+# Refuse a base that skipped Dockerfile.base's CA root check, such as an
+# upstream image passed through BASE_IMAGE.
+RUN test -f /etc/ssl/ca-roots-checked
 COPY --from=backend /app/sendrec .
 # --chmod: a checkout made under a strict umask (077, or 027 on hardened
 # hosts) leaves the script unreadable to the sendrec user, and the container

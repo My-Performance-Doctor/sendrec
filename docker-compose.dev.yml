@@ -1,6 +1,10 @@
 services:
   sendrec:
-    build: .
+    build:
+      context: .
+      # Without ECR access, build Dockerfile.base locally and set BASE_IMAGE to its tag.
+      args:
+        - BASE_IMAGE
     restart: unless-stopped
     ports:
       - "8080:8080"

@@ -33,7 +33,7 @@ aws ecr get-login-password | docker login --username AWS --password-stdin 537421
 `Dockerfile.base` fails its build if the CA store holds `emSign ECC Root CA - G3` or `AAA Certificate Services`, the roots removed after the 2026 eMudhra intermediate compromise. To rebuild it, for a new whisper.cpp or Alpine CA update, build `Dockerfile.base`, push it under a new dated tag and put the pushed digest in `BASE_IMAGE`:
 
 ```bash
-docker build -f Dockerfile.base -t 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd> .
+docker build --platform linux/amd64 -f Dockerfile.base -t 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd> .
 docker push 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisper-<version>-alpine<release>-<yyyymmdd>
 ```
 

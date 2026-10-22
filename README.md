@@ -189,7 +189,8 @@ For production setup details such as reverse proxying, object storage, and opera
 git clone https://github.com/sendrec/sendrec.git
 cd sendrec
 cp .env.example .env
-docker compose -f docker-compose.dev.yml up --build
+docker build -f Dockerfile.base -t sendrec-base:local .
+BASE_IMAGE=sendrec-base:local docker compose -f docker-compose.dev.yml up --build
 ```
 
 ## Development

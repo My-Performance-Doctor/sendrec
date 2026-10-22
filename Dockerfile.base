@@ -8,8 +8,10 @@ FROM alpine:3.21 AS whisper
 RUN apk add --no-cache build-base cmake git
 WORKDIR /build
 ARG WHISPER_VERSION=v1.8.3
+# GGML_NATIVE=OFF: tuning for the build host's CPU, such as AVX-512, would crash
+# whisper-cli on a Fargate host without it.
 RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov/whisper.cpp.git . && \
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF && \
     cmake --build build --target whisper-cli -j$(nproc)
 
 # Stage 2: Final base image
