@@ -30,7 +30,7 @@ func TestBacklogAlarmsDoNotRemoveServingAPIAndSampleFailuresDo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, err = pool.Exec(ctx, `CREATE TEMP TABLE videos(status text,created_at timestamptz,processing_started_at timestamptz,updated_at timestamptz,transcript_status text);
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE videos(status text,created_at timestamptz,processing_started_at timestamptz,updated_at timestamptz,transcript_status text,duration int);
  CREATE TEMP TABLE mpd_event_outbox(state text,created_at timestamptz);`)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,8 @@ func TestBacklogAlarmsDoNotRemoveServingAPIAndSampleFailuresDo(t *testing.T) {
 	if err != nil || metrics != (Metrics{}) || monitor.WorkersProbe(ctx) != nil {
 		t.Fatalf("empty healthy control: %+v %v", metrics, err)
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO videos VALUES('uploading',now()-interval '2 hours',NULL,now(),'none'),('processing',now(),now()-interval '40 minutes',now(),'none');
+	_, err = pool.Exec(ctx, `INSERT INTO videos VALUES('uploading',now()-interval '2 hours',NULL,now(),'none',0),('processing',now(),now()-interval '40 minutes',now(),'none',60),
+  ('processing',now(),now()-interval '40 minutes',now(),'none',600);
  INSERT INTO mpd_event_outbox VALUES('pending',now()-interval '6 minutes'),('dead',now()),('blocked',now());`)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +114,7 @@ func TestProcessingFailureAlarmRecoversAfterWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	_, err = pool.Exec(ctx, `CREATE TEMP TABLE videos(status text,created_at timestamptz,processing_started_at timestamptz,updated_at timestamptz,transcript_status text);
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE videos(status text,created_at timestamptz,processing_started_at timestamptz,updated_at timestamptz,transcript_status text,duration int);
  CREATE TEMP TABLE mpd_event_outbox(state text,created_at timestamptz);
  INSERT INTO videos VALUES('ready',now(),NULL,now()-interval '1 day','failed'),('ready',now(),NULL,now(),'failed');`)
 	if err != nil {

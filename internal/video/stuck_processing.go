@@ -10,10 +10,11 @@ import (
 )
 
 // stuckProcessingAfter is how long a video may sit in status='processing'
-// before the owning job is presumed dead. Trim and remove-segments run under a
-// 10 minute context, so anything past this bound belongs to a process that can
-// no longer finish it. Composite runs longer on long recordings and gets the
-// same extra allowance here as its own timeout.
+// before the owning job is presumed dead. Composite, trim and remove-segments
+// run under encodeTimeout: a 10 minute base plus twice the recording's length.
+// This bound covers the base, and resetStuckProcessing adds the same extra
+// allowance, so anything past both belongs to a process that can no longer
+// finish it.
 const stuckProcessingAfter = "15 minutes"
 
 // resetStuckProcessing does what the in-process setReadyFallback would have
