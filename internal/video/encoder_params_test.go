@@ -168,12 +168,8 @@ func TestFFmpegHonoursTheBounds(t *testing.T) {
 
 	dir := t.TempDir()
 	src := dir + "/src.mp4"
-	mk := exec.Command("ffmpeg", "-nostdin", "-loglevel", "error",
-		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=2",
+	ffmpegFixture(t, "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=2",
 		"-c:v", "libx264", "-y", src)
-	if out, err := mk.CombinedOutput(); err != nil {
-		t.Skipf("cannot build fixture: %v: %s", err, out)
-	}
 
 	t.Run("x264 encoder honours the bounds", func(t *testing.T) {
 		args := buildTranscodeArgs(src, dir+"/out.mp4", "", fitFrame(320, 240))
