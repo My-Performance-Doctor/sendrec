@@ -27,10 +27,17 @@ type videoProperties struct {
 	Level     int
 	FrameRate float64
 	CodecName string
+	CodecTag  string
 }
 
 func (p videoProperties) needsNormalization() bool {
 	if p.CodecName != "h264" {
+		return true
+	}
+	// avc3 carries its parameter sets in-band, so the header's size holds for
+	// the first frame only: a browser take that went full screen changes size
+	// part way through. Re-encoding gives it one frame and a plain avc1 track.
+	if p.CodecTag == "avc3" {
 		return true
 	}
 	if p.Width > iOSMaxWidth || p.Height > iOSMaxHeight {
@@ -73,6 +80,7 @@ type ffprobeResult struct {
 		Level      int    `json:"level"`
 		RFrameRate string `json:"r_frame_rate"`
 		CodecName  string `json:"codec_name"`
+		CodecTag   string `json:"codec_tag_string"`
 	} `json:"streams"`
 }
 
@@ -81,7 +89,7 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height,level,r_frame_rate,codec_name",
+		"-show_entries", "stream=width,height,level,r_frame_rate,codec_name,codec_tag_string",
 		"-of", "json",
 		inputPath,
 	)
@@ -106,6 +114,7 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 		Level:     s.Level,
 		FrameRate: parseFrameRate(s.RFrameRate),
 		CodecName: s.CodecName,
+		CodecTag:  s.CodecTag,
 	}, nil
 }
 
@@ -210,7 +219,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	slog.Info("normalize: re-encoding", "video_id", videoID,
 		"width", props.Width, "height", props.Height, "level", props.Level,
-		"fps", props.FrameRate, "codec", props.CodecName)
+		"fps", props.FrameRate, "codec", props.CodecName, "tag", props.CodecTag)
 
 	tmpOutput, err := os.CreateTemp("", "sendrec-normalize-out-*.mp4")
 	if err != nil {
