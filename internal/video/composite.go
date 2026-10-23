@@ -78,18 +78,6 @@ func buildCompositeArgs(screenPath, webcamPath, outputPath string) []string {
 // be added and the screen recording was published on its own. #283.
 const webcamDroppedWarning = "The webcam overlay could not be added, so this video shows the screen recording only."
 
-// compositeExtraCapSeconds bounds how far a long recording can stretch the
-// composite deadline, so a bogus duration cannot hold an encoder slot for hours.
-const compositeExtraCapSeconds = 110 * 60
-
-// compositeTimeout is ten minutes plus twice the recording's length: H.264 runs
-// at about real time on a hard 1080p source with four CPUs, so this leaves
-// room for smaller hosts. resetStuckProcessing applies the same allowance.
-func compositeTimeout(durationSeconds int) time.Duration {
-	extra := min(max(2*durationSeconds, 0), compositeExtraCapSeconds)
-	return 10*time.Minute + time.Duration(extra)*time.Second
-}
-
 var compositeOverlay = func(ctx context.Context, screenPath, webcamPath, outputPath string) (string, error) {
 	args := buildCompositeArgs(screenPath, webcamPath, outputPath)
 

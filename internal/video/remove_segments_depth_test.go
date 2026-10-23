@@ -40,7 +40,7 @@ func TestSegmentExpressionsStayWithinFFmpegDepthLimit(t *testing.T) {
 	for i := range segments {
 		segments[i] = segmentRange{Start: float64(i), End: float64(i) + 0.5}
 	}
-	args := buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", segments, true)
+	args := buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", segments, true, outputFrame{})
 	var filter string
 	for i, a := range args {
 		if a == "-filter_complex" {

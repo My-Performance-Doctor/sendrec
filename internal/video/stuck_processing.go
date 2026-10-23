@@ -10,10 +10,11 @@ import (
 )
 
 // stuckProcessingAfter is how long a video may sit in status='processing'
-// before the owning job is presumed dead. Trim and remove-segments run under a
-// 10 minute context, so anything past this bound belongs to a process that can
-// no longer finish it. Composite runs longer on long recordings and gets the
-// same extra allowance here as its own timeout.
+// before the owning job is presumed dead. Composite, trim and remove-segments
+// run under encodeTimeout: a 10 minute base plus twice the recording's length.
+// This bound covers the base, and resetStuckProcessing adds the same extra
+// allowance, so anything past both belongs to a process that can no longer
+// finish it.
 const stuckProcessingAfter = "15 minutes"
 
 // resetStuckProcessing does what the in-process setReadyFallback would have
@@ -46,9 +47,10 @@ const stuckProcessingAfter = "15 minutes"
 // watchable here and ready sends video.ready. Other edits were watchable
 // before they started and send nothing. BG-13.
 func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectStorage, ready videoReadyHook) {
-	// A composite's own deadline grows with the recording (compositeTimeout),
-	// so rows still holding a webcam get the same allowance before they are
-	// presumed dead, and the owner is told the webcam was dropped.
+	// Every job that holds a row in processing (composite, trim, remove
+	// segments) runs under encodeTimeout, which grows with the recording, so
+	// each row gets the same allowance before it is presumed dead. The owner
+	// is told when a webcam was dropped.
 	rows, err := db.Query(ctx,
 		`UPDATE videos SET status = 'ready', processing_started_at = NULL,
 		        capture_warning = CASE
@@ -58,10 +60,10 @@ func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectS
 		        updated_at = now()
 		 WHERE status = 'processing'
 		   AND (processing_started_at < now() - INTERVAL '`+stuckProcessingAfter+`'
-		            - CASE WHEN webcam_key IS NOT NULL THEN make_interval(secs => LEAST(2 * duration, $2)) ELSE INTERVAL '0 seconds' END
+		            - make_interval(secs => LEAST(2 * duration::bigint, $2))
 		        OR processing_started_at IS NULL)
 		 RETURNING id, webcam_key, user_id, share_token, duration`,
-		webcamDroppedWarning, compositeExtraCapSeconds,
+		webcamDroppedWarning, encodeExtraCapSeconds,
 	)
 	if err != nil {
 		slog.Error("stuck-processing: failed to reset abandoned jobs", "error", err)

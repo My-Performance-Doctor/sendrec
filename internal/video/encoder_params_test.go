@@ -25,17 +25,17 @@ func allBuilders() []struct {
 		codec  string
 		output string
 	}{
-		{"transcode", buildTranscodeArgs("in.webm", "out.mp4", ""), 1, "libx264", "out.mp4"},
-		{"normalize", buildNormalizeArgs("in.mp4", "out.mp4", ""), 1, "libx264", "out.mp4"},
-		{"trim mp4", buildTrimArgs("in.mp4", "out.mp4", "video/mp4", 1, 5), 1, "libx264", "out.mp4"},
-		{"trim quicktime", buildTrimArgs("in.mov", "out.mov", "video/quicktime", 1, 5), 1, "libx264", "out.mov"},
-		{"trim webm", buildTrimArgs("in.webm", "out.webm", "video/webm", 1, 5), 1, "libvpx-vp9", "out.webm"},
+		{"transcode", buildTranscodeArgs("in.webm", "out.mp4", "", outputFrame{}), 1, "libx264", "out.mp4"},
+		{"normalize", buildNormalizeArgs("in.mp4", "out.mp4", "", outputFrame{}), 1, "libx264", "out.mp4"},
+		{"trim mp4", buildTrimArgs("in.mp4", "out.mp4", "video/mp4", 1, 5, outputFrame{}), 1, "libx264", "out.mp4"},
+		{"trim quicktime", buildTrimArgs("in.mov", "out.mov", "video/quicktime", 1, 5, outputFrame{}), 1, "libx264", "out.mov"},
+		{"trim webm", buildTrimArgs("in.webm", "out.webm", "video/webm", 1, 5, outputFrame{}), 1, "libvpx-vp9", "out.webm"},
 		{"composite mp4", buildCompositeArgs("s.mp4", "w.mp4", "out.mp4"), 2, "libx264", "out.mp4"},
 		{"composite webm", buildCompositeArgs("s.webm", "w.webm", "out.mp4"), 2, "libx264", "out.mp4"},
-		{"remove-segments mp4", buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true), 1, "libx264", "out.mp4"},
-		{"remove-segments quicktime", buildRemoveSegmentsArgs("in.mov", "out.mov", "video/quicktime", []segmentRange{{Start: 1, End: 2}}, true), 1, "libx264", "out.mov"},
-		{"remove-segments webm", buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, true), 1, "libvpx-vp9", "out.webm"},
-		{"remove-segments silent", buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, false), 1, "libx264", "out.mp4"},
+		{"remove-segments mp4", buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{}), 1, "libx264", "out.mp4"},
+		{"remove-segments quicktime", buildRemoveSegmentsArgs("in.mov", "out.mov", "video/quicktime", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{}), 1, "libx264", "out.mov"},
+		{"remove-segments webm", buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{}), 1, "libvpx-vp9", "out.webm"},
+		{"remove-segments silent", buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, false, outputFrame{}), 1, "libx264", "out.mp4"},
 	}
 }
 
@@ -168,15 +168,11 @@ func TestFFmpegHonoursTheBounds(t *testing.T) {
 
 	dir := t.TempDir()
 	src := dir + "/src.mp4"
-	mk := exec.Command("ffmpeg", "-nostdin", "-loglevel", "error",
-		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=2",
+	ffmpegFixture(t, "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=15:duration=2",
 		"-c:v", "libx264", "-y", src)
-	if out, err := mk.CombinedOutput(); err != nil {
-		t.Skipf("cannot build fixture: %v: %s", err, out)
-	}
 
 	t.Run("x264 encoder honours the bounds", func(t *testing.T) {
-		args := buildTranscodeArgs(src, dir+"/out.mp4", "")
+		args := buildTranscodeArgs(src, dir+"/out.mp4", "", fitFrame(320, 240))
 		out, err := exec.Command("ffmpeg", append([]string{"-nostdin", "-loglevel", "info"}, args...)...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("ffmpeg failed: %v: %s", err, out)
@@ -206,7 +202,7 @@ func TestFFmpegHonoursTheBounds(t *testing.T) {
 	})
 
 	t.Run("vp9 output carries a thread cap", func(t *testing.T) {
-		args := buildTrimArgs(src, dir+"/out.webm", "video/webm", 0, 1)
+		args := buildTrimArgs(src, dir+"/out.webm", "video/webm", 0, 1, outputFrame{})
 		lastInput := 0
 		for i, a := range args {
 			if a == "-i" {

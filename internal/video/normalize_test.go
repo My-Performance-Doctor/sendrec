@@ -79,6 +79,16 @@ func TestNeedsNormalization(t *testing.T) {
 			props:    videoProperties{Width: 1920, Height: 1080, Level: 51, FrameRate: 60.1, CodecName: "h264"},
 			expected: true,
 		},
+		{
+			name:     "avc1 within limits",
+			props:    videoProperties{Width: 1500, Height: 1018, Level: 40, FrameRate: 30, CodecName: "h264", CodecTag: "avc1"},
+			expected: false,
+		},
+		{
+			name:     "avc3 within limits may change size mid-stream",
+			props:    videoProperties{Width: 1500, Height: 1018, Level: 40, FrameRate: 30, CodecName: "h264", CodecTag: "avc3"},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

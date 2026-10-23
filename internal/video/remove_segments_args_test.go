@@ -2,6 +2,7 @@ package video
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -19,7 +20,7 @@ func codecPair(args []string) (video, audio string) {
 // with "Only VP8 or VP9 or AV1 video and Vorbis or Opus audio ... are supported
 // for WebM", so remove-segments could never succeed on a WebM with audio.
 func TestBuildRemoveSegmentsArgs_WebMUsesOpus(t *testing.T) {
-	args := buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, true)
+	args := buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{})
 
 	v, a := codecPair(args)
 	if v != "libvpx-vp9" {
@@ -31,7 +32,7 @@ func TestBuildRemoveSegmentsArgs_WebMUsesOpus(t *testing.T) {
 }
 
 func TestBuildRemoveSegmentsArgs_MP4UsesAAC(t *testing.T) {
-	args := buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true)
+	args := buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{})
 
 	v, a := codecPair(args)
 	if v != "libx264" {
@@ -51,7 +52,7 @@ func TestBuildRemoveSegmentsArgs_CodecPairMatchesContainer(t *testing.T) {
 		{"video/webm", "libvpx-vp9", "libopus"},
 		{"", "libvpx-vp9", "libopus"},
 	} {
-		args := buildRemoveSegmentsArgs("in", "out", tc.contentType, []segmentRange{{Start: 1, End: 2}}, true)
+		args := buildRemoveSegmentsArgs("in", "out", tc.contentType, []segmentRange{{Start: 1, End: 2}}, true, outputFrame{})
 		v, a := codecPair(args)
 		if v != tc.wantVideo || a != tc.wantAudio {
 			t.Errorf("contentType %q: got %s/%s, want %s/%s", tc.contentType, v, a, tc.wantVideo, tc.wantAudio)
@@ -60,8 +61,17 @@ func TestBuildRemoveSegmentsArgs_CodecPairMatchesContainer(t *testing.T) {
 }
 
 // Silent sources take the -an branch, which has no audio codec to get wrong.
+func TestBuildRemoveSegmentsArgs_FixedFrameFollowsTheCut(t *testing.T) {
+	args := buildRemoveSegmentsArgs("in.mp4", "out.mp4", "video/mp4", []segmentRange{{Start: 1, End: 2}}, true, outputFrame{1500, 1018})
+	fc := args[slices.Index(args, "-filter_complex")+1]
+	want := "fps=60," + (outputFrame{1500, 1018}).filter() + "[v]"
+	if !strings.Contains(fc, want) {
+		t.Errorf("video filter does not end with the fixed frame: %q", fc)
+	}
+}
+
 func TestBuildRemoveSegmentsArgs_NoAudioStream(t *testing.T) {
-	args := buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, false)
+	args := buildRemoveSegmentsArgs("in.webm", "out.webm", "video/webm", []segmentRange{{Start: 1, End: 2}}, false, outputFrame{})
 
 	if !slices.Contains(args, "-an") {
 		t.Error("expected -an when the source has no audio stream")

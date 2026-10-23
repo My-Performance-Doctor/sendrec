@@ -33,8 +33,9 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 	case JobTypeTranscode:
 		fileKey, _ := payload["fileKey"].(string)
 		audioFilter, _ := payload["audioFilter"].(string)
+		duration, _ := payload["duration"].(int)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), encodeTimeout(duration))
 			defer cancel()
 			TranscodeWebMAsync(ctx, h.db, h.storage, videoID, fileKey, audioFilter)
 		}()
@@ -45,8 +46,9 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 	case JobTypeNormalize:
 		fileKey, _ := payload["fileKey"].(string)
 		audioFilter, _ := payload["audioFilter"].(string)
+		duration, _ := payload["duration"].(int)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), encodeTimeout(duration))
 			defer cancel()
 			NormalizeVideoAsync(ctx, h.db, h.storage, videoID, fileKey, audioFilter)
 		}()
@@ -69,7 +71,7 @@ func (h *Handler) EnqueueJob(ctx context.Context, jobType JobType, videoID strin
 			if hasVersion {
 				jobContext = context.WithValue(jobContext, editVersionKey{}, version)
 			}
-			ctx, cancel := context.WithTimeout(jobContext, compositeTimeout(duration))
+			ctx, cancel := context.WithTimeout(jobContext, encodeTimeout(duration))
 			defer cancel()
 			CompositeWithWebcam(ctx, h.db, h.storage, videoID, fileKey, webcamKey, thumbKey, contentType)
 			// Overlaid or fallen back, the video is watchable now. On a context

@@ -20,7 +20,7 @@ func videoCodecForContentType(ct string) string {
 	}
 }
 
-func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endSeconds float64) []string {
+func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endSeconds float64, frame outputFrame) []string {
 	var args []string
 	if contentType == "video/mp4" || contentType == "video/quicktime" {
 		// iOS-safe encoding: constrain resolution, set profile/level, transcode audio to AAC
@@ -34,7 +34,7 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 			"-level:v", "5.1",
 			"-preset", "fast",
 			"-crf", "23",
-			"-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+			"-vf", frame.filter(),
 			"-r", "60",
 			"-c:a", "aac",
 			"-movflags", "+faststart",
@@ -46,6 +46,7 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 			"-ss", fmt.Sprintf("%.3f", startSeconds),
 			"-to", fmt.Sprintf("%.3f", endSeconds),
 			"-c:v", "libvpx-vp9",
+			"-vf", frame.filter(),
 			"-c:a", "copy",
 		)
 	}
@@ -58,7 +59,7 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 
 // See transcodeToMP4 for why this is a var.
 var trimVideo = func(ctx context.Context, inputPath, outputPath, contentType string, startSeconds, endSeconds float64) error {
-	args := buildTrimArgs(inputPath, outputPath, contentType, startSeconds, endSeconds)
+	args := buildTrimArgs(inputPath, outputPath, contentType, startSeconds, endSeconds, probeOutputFrame(ctx, inputPath))
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.
