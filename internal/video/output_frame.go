@@ -54,14 +54,19 @@ func (f outputFrame) filter() string {
 }
 
 // probeOutputFrame sizes the output from the input's first frame, which is
-// what the container header reports. A failed probe is not an error here: the
-// encode goes ahead sizing each frame on its own, as before, rather than
-// failing an edit over a header ffmpeg may still decode.
+// what the container header reports. The header gives the stored size; ffmpeg
+// applies the display rotation before any filter, so a quarter turn swaps the
+// sides the filter sees. A failed probe is not an error here: the encode goes
+// ahead sizing each frame on its own, as before, rather than failing an edit
+// over a header ffmpeg may still decode.
 func probeOutputFrame(ctx context.Context, inputPath string) outputFrame {
 	props, err := probeVideoProperties(ctx, inputPath)
 	if err != nil {
 		slog.Warn("encode: could not size the output frame, sizing each frame on its own", "error", err)
 		return outputFrame{}
+	}
+	if props.Rotation%180 != 0 {
+		return fitFrame(props.Height, props.Width)
 	}
 	return fitFrame(props.Width, props.Height)
 }

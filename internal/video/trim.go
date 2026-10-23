@@ -46,6 +46,7 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 			"-ss", fmt.Sprintf("%.3f", startSeconds),
 			"-to", fmt.Sprintf("%.3f", endSeconds),
 			"-c:v", "libvpx-vp9",
+			"-vf", frame.filter(),
 			"-c:a", "copy",
 		)
 	}
@@ -58,12 +59,7 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 
 // See transcodeToMP4 for why this is a var.
 var trimVideo = func(ctx context.Context, inputPath, outputPath, contentType string, startSeconds, endSeconds float64) error {
-	// Only the libx264 branch scales; the WebM branch keeps the source as is.
-	var frame outputFrame
-	if videoCodecForContentType(contentType) == "libx264" {
-		frame = probeOutputFrame(ctx, inputPath)
-	}
-	args := buildTrimArgs(inputPath, outputPath, contentType, startSeconds, endSeconds, frame)
+	args := buildTrimArgs(inputPath, outputPath, contentType, startSeconds, endSeconds, probeOutputFrame(ctx, inputPath))
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.

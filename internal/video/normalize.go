@@ -24,6 +24,7 @@ const (
 type videoProperties struct {
 	Width     int
 	Height    int
+	Rotation  int // degrees from the display matrix; ffmpeg applies it before any filter
 	Level     int
 	FrameRate float64
 	CodecName string
@@ -81,6 +82,9 @@ type ffprobeResult struct {
 		RFrameRate string `json:"r_frame_rate"`
 		CodecName  string `json:"codec_name"`
 		CodecTag   string `json:"codec_tag_string"`
+		SideData   []struct {
+			Rotation int `json:"rotation"`
+		} `json:"side_data_list"`
 	} `json:"streams"`
 }
 
@@ -89,7 +93,7 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=width,height,level,r_frame_rate,codec_name,codec_tag_string",
+		"-show_entries", "stream=width,height,level,r_frame_rate,codec_name,codec_tag_string:stream_side_data=rotation",
 		"-of", "json",
 		inputPath,
 	)
@@ -108,9 +112,19 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 	}
 
 	s := result.Streams[0]
+	// Rotation is the display matrix side data. ffprobe 6.1 in the image and 9
+	// locally both report it there and neither reports the legacy rotate tag.
+	var rotation int
+	for _, sd := range s.SideData {
+		if sd.Rotation != 0 {
+			rotation = sd.Rotation
+			break
+		}
+	}
 	return videoProperties{
 		Width:     s.Width,
 		Height:    s.Height,
+		Rotation:  rotation,
 		Level:     s.Level,
 		FrameRate: parseFrameRate(s.RFrameRate),
 		CodecName: s.CodecName,
