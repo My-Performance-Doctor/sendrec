@@ -37,6 +37,12 @@ mpd-api PR 219 merged on 2026-10-12 at 13:29 UTC and reached staging that aftern
 - mpd-api PR 250, which sets a link password on every claim, is in the image staging runs, `2cb0bda`. No claim was rerun, and the staging password-key failure from 2026-10-13 was not rechecked.
 - Still not run: a real Staff OS sign-in and recording, which needs a staff member's sign-in.
 
+## Hosted Staff OS check, 2026-10-23
+
+- Opened `https://app-staging.mpd.health/login` in the T3 server browser. The page returned 200 in Chrome 154.0.0.0 on Linux x86_64. Staff sign-in is pending; no credential was entered by the worker. Counts so far: zero patient records opened, recordings, uploads, playback checks, password attempts and caption checks.
+- Before recording, inspected the deployed Staff OS `videos-C5y4pkpi.js` bundle and the mpd-api SendRec processing path. Staff OS claims a recording to the selected patient automatically after upload and finalize. A completed claim can queue a Zapier effect if transcript processing extracts follow-up tasks. The shared webhook can create Asana tasks, including for an assigned PEM. The SendRec worker has no direct email or SMS call in that path. The webhook's staging destination remains unconfirmed because this host has no AWS credentials; no secret value was read. An Asana task ID cannot be inferred from the worker's `http_success` receipt.
+- The T3 server browser has no camera, microphone or screen capture device. A later recorder check must label its canvas and oscillator input as synthetic. Real camera capture and Safari remain with the operator. Until sign-in and a synthetic patient check complete, this section supplies no browser evidence for tasks 2.5, 2.6, 3.1 or 3.4.
+
 The local cross-service drill runs the actual Go producer/outbox/service adapter and the actual mpd-api PR 211 webhook, inbox, claims and report processing on disposable PostgreSQL databases. It stubs media/LLM enrichment and external task delivery. It passed these checks on 2026-10-08:
 
 - The consumer durably accepted an event, the response was lost, and retry created one receipt/effect.
@@ -75,7 +81,7 @@ The final expanded Go run passed 1,806 checks and hit one stale test fixture com
 
 ## Delivery
 
-The operator refreshed GitHub access on 2026-10-08. The verified `workflow` scope allowed the full branch, including release workflows, to push. [Implementation PR 4](https://github.com/My-Performance-Doctor/sendrec/pull/4) is open. At implementation revision `58504bc8116d259b49672e0e69597f69d34e2ff5`, Application, Docker build and AWS infrastructure CI passed. The application job included Go race/coverage tests and vulnerability scanning. Browser E2E and preview deployment skipped under the PR workflow. The review helper failed all three attempts; recovered findings have fixes, but no clean formal round is recorded. Final-revision checks are tracked in the PR. No deployment occurred.
+The operator refreshed GitHub access on 2026-10-08. The verified `workflow` scope allowed the full branch, including release workflows, to push. [Implementation PR 4](https://github.com/My-Performance-Doctor/sendrec/pull/4) has merged, as checked on 2026-10-23. At implementation revision `58504bc8116d259b49672e0e69597f69d34e2ff5`, Application, Docker build and AWS infrastructure CI passed. The application job included Go race/coverage tests and vulnerability scanning. Browser E2E and preview deployment skipped under the PR workflow. The review helper failed all three attempts; recovered findings have fixes, but no clean formal round is recorded. Final-revision checks are tracked in the PR. That PR's checks did not deploy production.
 
 
 ## PR review corrections
