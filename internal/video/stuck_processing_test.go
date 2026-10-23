@@ -16,7 +16,7 @@ func TestResetStuckProcessing_ResetsAbandonedRows(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`UPDATE videos SET status = 'ready'`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows().AddRow("v1", (*string)(nil), "u1", "tok", 60).AddRow("v2", (*string)(nil), "u1", "tok", 60))
 
 	resetStuckProcessing(context.Background(), mock, &mockStorage{}, videoReadyHook{})
@@ -43,7 +43,7 @@ func TestResetStuckProcessing_DeletesAbandonedWebcam(t *testing.T) {
 
 	webcam := "recordings/u/v_webcam.webm"
 	mock.ExpectQuery(`processing_started_at = NULL`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows().AddRow("v1", &webcam, "u1", "tok", 60))
 	mock.ExpectExec(`UPDATE videos SET webcam_key = NULL WHERE id = \$1 AND webcam_key = \$2`).
 		WithArgs("v1", webcam).
@@ -71,7 +71,7 @@ func TestResetStuckProcessing_KeysOffProcessingStartedAt(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`processing_started_at < now\(\) - INTERVAL '15 minutes'`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows())
 
 	resetStuckProcessing(context.Background(), mock, &mockStorage{}, videoReadyHook{})
@@ -91,7 +91,7 @@ func TestResetStuckProcessing_SweepsRowsWithNullStartedAt(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`processing_started_at IS NULL`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows().AddRow("v1", (*string)(nil), "u1", "tok", 60))
 
 	resetStuckProcessing(context.Background(), mock, &mockStorage{}, videoReadyHook{})
@@ -109,7 +109,7 @@ func TestResetStuckProcessing_SurvivesQueryFailure(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`UPDATE videos SET status = 'ready'`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnError(errors.New("connection refused"))
 
 	resetStuckProcessing(context.Background(), mock, &mockStorage{}, videoReadyHook{})
@@ -130,7 +130,7 @@ func TestResetStuckProcessing_GivesCompositesTheirLongerDeadline(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`CASE WHEN webcam_key IS NOT NULL THEN make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
-		WithArgs(webcamDroppedWarning, compositeExtraCapSeconds).
+		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows())
 
 	resetStuckProcessing(context.Background(), mock, &mockStorage{}, videoReadyHook{})

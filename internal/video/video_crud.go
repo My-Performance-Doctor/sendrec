@@ -459,12 +459,14 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 				h.EnqueueJob(r.Context(), JobTypeTranscode, videoID, map[string]any{
 					"fileKey":     fileKey,
 					"audioFilter": audioFilter,
+					"duration":    duration,
 				})
 			}
 			if expectedContentType == "video/mp4" || expectedContentType == "video/quicktime" {
 				h.EnqueueJob(r.Context(), JobTypeNormalize, videoID, map[string]any{
 					"fileKey":     fileKey,
 					"audioFilter": audioFilter,
+					"duration":    duration,
 				})
 			}
 		}

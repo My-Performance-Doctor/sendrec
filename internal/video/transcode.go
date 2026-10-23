@@ -54,11 +54,26 @@ var transcodeToMP4 = func(ctx context.Context, inputPath, outputPath, audioFilte
 	return nil
 }
 
-// perJobTimeout bounds a single worker-driven encode. The HTTP-triggered jobs
-// already build a 10 minute context each; the periodic workers passed their own
-// long-lived context straight through, so before ffmpeg was bound to a context
-// that made no difference and now it would mean no deadline at all.
+// perJobTimeout is the base of every encode deadline, HTTP-triggered or
+// worker-driven. The periodic workers once passed their own long-lived context
+// straight through; with ffmpeg bound to its context that would mean no
+// deadline at all.
 const perJobTimeout = 10 * time.Minute
+
+// encodeExtraCapSeconds bounds how far a long recording can stretch an encode
+// deadline, so a bogus duration cannot hold an encoder slot for hours.
+const encodeExtraCapSeconds = 110 * 60
+
+// encodeTimeout is perJobTimeout plus twice the recording's length: H.264 runs
+// at about real time on a hard 1080p source with four CPUs, so this leaves
+// room for smaller hosts. The composite, the WebM conversion and the
+// normalisation all use it, and resetStuckProcessing applies the same
+// allowance to composites. A zero duration, as for a recording not yet
+// probed, gives the base alone.
+func encodeTimeout(durationSeconds int) time.Duration {
+	extra := min(max(2*durationSeconds, 0), encodeExtraCapSeconds)
+	return perJobTimeout + time.Duration(extra)*time.Second
+}
 
 // maxTranscodeAttempts bounds how often a single video is fed to ffmpeg before
 // it is abandoned. Without it a corrupt upload is retried on every worker tick
@@ -273,7 +288,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 func transcodeExistingWebM(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
-		`SELECT id, file_key FROM videos
+		`SELECT id, file_key, duration FROM videos
 		 WHERE content_type = 'video/webm' AND status = 'ready'
 		   AND created_at < now() - interval '5 minutes'
 		   AND transcode_attempts < $1
@@ -286,11 +301,12 @@ func transcodeExistingWebM(ctx context.Context, db database.DBTX, storage Object
 
 	for rows.Next() {
 		var videoID, fileKey string
-		if err := rows.Scan(&videoID, &fileKey); err != nil {
+		var duration int
+		if err := rows.Scan(&videoID, &fileKey, &duration); err != nil {
 			slog.Error("transcode-worker: failed to scan", "error", err)
 			continue
 		}
-		jobCtx, cancel := context.WithTimeout(ctx, perJobTimeout)
+		jobCtx, cancel := context.WithTimeout(ctx, encodeTimeout(duration))
 		TranscodeWebMAsync(jobCtx, db, storage, videoID, fileKey, "")
 		cancel()
 	}
@@ -298,7 +314,7 @@ func transcodeExistingWebM(ctx context.Context, db database.DBTX, storage Object
 
 func normalizeExistingVideos(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
-		`SELECT id, file_key FROM videos
+		`SELECT id, file_key, duration FROM videos
 		 WHERE content_type IN ('video/mp4', 'video/quicktime')
 		   AND status = 'ready' AND ios_normalized = false
 		   AND created_at < now() - interval '5 minutes'
@@ -312,11 +328,12 @@ func normalizeExistingVideos(ctx context.Context, db database.DBTX, storage Obje
 
 	for rows.Next() {
 		var videoID, fileKey string
-		if err := rows.Scan(&videoID, &fileKey); err != nil {
+		var duration int
+		if err := rows.Scan(&videoID, &fileKey, &duration); err != nil {
 			slog.Error("normalize-worker: failed to scan", "error", err)
 			continue
 		}
-		jobCtx, cancel := context.WithTimeout(ctx, perJobTimeout)
+		jobCtx, cancel := context.WithTimeout(ctx, encodeTimeout(duration))
 		NormalizeVideoAsync(jobCtx, db, storage, videoID, fileKey, "")
 		cancel()
 	}

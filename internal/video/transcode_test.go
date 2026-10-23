@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/sendrec/sendrec/internal/database"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
+	"github.com/sendrec/sendrec/internal/database"
 )
 
 func TestTranscodeWebMAsync_DownloadError(t *testing.T) {
@@ -245,7 +246,7 @@ func TestTranscodeExistingWebM_SkipsExhaustedVideos(t *testing.T) {
 
 	mock.ExpectQuery(`transcode_attempts < \$1`).
 		WithArgs(maxTranscodeAttempts).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "duration"}))
 
 	transcodeExistingWebM(context.Background(), mock, &mockStorage{})
 
@@ -263,7 +264,7 @@ func TestNormalizeExistingVideos_SkipsExhaustedVideos(t *testing.T) {
 
 	mock.ExpectQuery(`transcode_attempts < \$1`).
 		WithArgs(maxTranscodeAttempts).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "duration"}))
 
 	normalizeExistingVideos(context.Background(), mock, &mockStorage{})
 
@@ -606,5 +607,109 @@ func TestNormalizeVideoAsync_ProbeFailureIsAnAttemptNotAVerdict(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// deadlineDB records the deadline of the context each job reads its row with.
+type deadlineDB struct {
+	database.DBTX
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (db *deadlineDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	deadline, _ := ctx.Deadline()
+	db.mu.Lock()
+	db.deadlines = append(db.deadlines, deadline)
+	db.mu.Unlock()
+	return db.DBTX.QueryRow(ctx, sql, args...)
+}
+
+func (db *deadlineDB) recorded() []time.Time {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return append([]time.Time(nil), db.deadlines...)
+}
+
+// expectEncodeDeadline checks that one job ran with encodeTimeout(600): ten
+// minutes plus twice ten minutes, so a bit under thirty from now.
+func expectEncodeDeadline(t *testing.T, deadlines []time.Time) {
+	t.Helper()
+	if len(deadlines) != 1 {
+		t.Fatalf("got %d job contexts, want one", len(deadlines))
+	}
+	if remaining := time.Until(deadlines[0]); remaining <= 29*time.Minute || remaining > 30*time.Minute {
+		t.Errorf("job deadline is %v away, want just under 30 min for a 600 s recording", remaining.Round(time.Second))
+	}
+}
+
+// Every Staff OS take is re-encoded once now, on a two-vCPU host with one
+// encoder slot, so a flat ten minutes cut long takes off. The deadline grows
+// with the recording the way the composite's does, from the worker and from
+// the upload handler alike.
+func TestEncodeDeadlinesGrowWithTheRecording(t *testing.T) {
+	expectAlreadyDone := func(mock pgxmock.PgxPoolIface, job JobType) {
+		// The row says the job is done, so it exits after this first read.
+		switch job {
+		case JobTypeTranscode:
+			mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
+				WithArgs("video-1").
+				WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
+					AddRow("video/mp4", 0, 600))
+		case JobTypeNormalize:
+			mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
+				WithArgs("video-1").
+				WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
+					AddRow(true, 0, 600))
+		}
+	}
+
+	for _, job := range []JobType{JobTypeTranscode, JobTypeNormalize} {
+		t.Run(string(job)+" worker", func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			mock.ExpectQuery(`transcode_attempts < \$1`).
+				WithArgs(maxTranscodeAttempts).
+				WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "duration"}).AddRow("video-1", "recordings/user/video", 600))
+			expectAlreadyDone(mock, job)
+
+			db := &deadlineDB{DBTX: mock}
+			if job == JobTypeTranscode {
+				transcodeExistingWebM(context.Background(), db, &mockStorage{})
+			} else {
+				normalizeExistingVideos(context.Background(), db, &mockStorage{})
+			}
+			expectEncodeDeadline(t, db.recorded())
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+		})
+
+		t.Run(string(job)+" job", func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			expectAlreadyDone(mock, job)
+
+			db := &deadlineDB{DBTX: mock}
+			handler := NewHandler(db, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+			handler.EnqueueJob(context.Background(), job, "video-1", map[string]any{
+				"fileKey": "recordings/user/video", "audioFilter": "", "duration": 600,
+			})
+			// The job runs on its own goroutine.
+			deadline := time.Now().Add(5 * time.Second)
+			for len(db.recorded()) == 0 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			expectEncodeDeadline(t, db.recorded())
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+		})
 	}
 }

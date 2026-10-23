@@ -46,7 +46,7 @@ const stuckProcessingAfter = "15 minutes"
 // watchable here and ready sends video.ready. Other edits were watchable
 // before they started and send nothing. BG-13.
 func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectStorage, ready videoReadyHook) {
-	// A composite's own deadline grows with the recording (compositeTimeout),
+	// A composite's own deadline grows with the recording (encodeTimeout),
 	// so rows still holding a webcam get the same allowance before they are
 	// presumed dead, and the owner is told the webcam was dropped.
 	rows, err := db.Query(ctx,
@@ -61,7 +61,7 @@ func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectS
 		            - CASE WHEN webcam_key IS NOT NULL THEN make_interval(secs => LEAST(2 * duration, $2)) ELSE INTERVAL '0 seconds' END
 		        OR processing_started_at IS NULL)
 		 RETURNING id, webcam_key, user_id, share_token, duration`,
-		webcamDroppedWarning, compositeExtraCapSeconds,
+		webcamDroppedWarning, encodeExtraCapSeconds,
 	)
 	if err != nil {
 		slog.Error("stuck-processing: failed to reset abandoned jobs", "error", err)

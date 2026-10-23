@@ -226,9 +226,9 @@ func TestWebcamDroppedWarning_NamesTheLoss(t *testing.T) {
 	}
 }
 
-// The composite deadline grows with the recording, so a long one is not cut
-// off at a flat ten minutes, but a bogus duration cannot hold a slot forever.
-func TestCompositeTimeout(t *testing.T) {
+// An encode deadline grows with the recording, so a long one is not cut off
+// at a flat ten minutes, but a bogus duration cannot hold a slot forever.
+func TestEncodeTimeout(t *testing.T) {
 	for _, c := range []struct {
 		seconds int
 		want    time.Duration
@@ -236,11 +236,11 @@ func TestCompositeTimeout(t *testing.T) {
 		{0, 10 * time.Minute},
 		{60, 12 * time.Minute},
 		{300, 20 * time.Minute},
-		{1 << 30, 10*time.Minute + compositeExtraCapSeconds*time.Second},
+		{1 << 30, 10*time.Minute + encodeExtraCapSeconds*time.Second},
 		{-5, 10 * time.Minute},
 	} {
-		if got := compositeTimeout(c.seconds); got != c.want {
-			t.Errorf("compositeTimeout(%d) = %v, want %v", c.seconds, got, c.want)
+		if got := encodeTimeout(c.seconds); got != c.want {
+			t.Errorf("encodeTimeout(%d) = %v, want %v", c.seconds, got, c.want)
 		}
 	}
 }
