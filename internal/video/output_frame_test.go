@@ -88,11 +88,15 @@ func requireFFmpeg(t *testing.T) {
 	}
 }
 
-// ffmpegFixture runs ffmpeg to build a test input and skips if it cannot.
+// ffmpegFixture runs ffmpeg to build a test input. It skips if it cannot,
+// except in CI, where a skip would pass the encode checks without running them.
 func ffmpegFixture(t *testing.T, args ...string) {
 	t.Helper()
 	mk := exec.Command("ffmpeg", append([]string{"-nostdin", "-loglevel", "error"}, args...)...)
 	if out, err := mk.CombinedOutput(); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("cannot build fixture in CI: %v: %s", err, out)
+		}
 		t.Skipf("cannot build fixture: %v: %s", err, out)
 	}
 }
