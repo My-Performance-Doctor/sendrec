@@ -119,17 +119,18 @@ func TestResetStuckProcessing_SurvivesQueryFailure(t *testing.T) {
 	}
 }
 
-// A composite may legitimately run past the flat deadline: its own timeout
-// grows with the recording. The sweep waits as long for rows that still have
-// a webcam to composite, and tells the owner when it drops one. #283.
-func TestResetStuckProcessing_GivesCompositesTheirLongerDeadline(t *testing.T) {
+// A composite, trim or segment removal may legitimately run past the flat
+// deadline: its own timeout grows with the recording. The sweep waits as long
+// for every row in processing, webcam or not, and tells the owner when it
+// drops a webcam. #283.
+func TestResetStuckProcessing_GivesEditsTheirLongerDeadline(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`CASE WHEN webcam_key IS NOT NULL THEN make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
+	mock.ExpectQuery(`processing_started_at < now\(\) - INTERVAL '15 minutes'\s+- make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
 		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows())
 

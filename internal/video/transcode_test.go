@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
@@ -710,6 +713,87 @@ func TestEncodeDeadlinesGrowWithTheRecording(t *testing.T) {
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)
 			}
+		})
+	}
+}
+
+// deadlineStorage records the deadline of the context an edit downloads its
+// input with, then fails the download so the edit stops there.
+type deadlineStorage struct {
+	*mockStorage
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (s *deadlineStorage) DownloadToFile(ctx context.Context, _ string, _ string) error {
+	deadline, _ := ctx.Deadline()
+	s.mu.Lock()
+	s.deadlines = append(s.deadlines, deadline)
+	s.mu.Unlock()
+	return errors.New("download stopped by the test")
+}
+
+func (s *deadlineStorage) recorded() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.deadlines...)
+}
+
+// A trim or segment removal re-encodes the whole take and can wait for the
+// one encoder slot behind a normalisation that now runs on every avc3 take,
+// so a flat ten minutes failed edits of long recordings. They get the same
+// deadline as the other encodes.
+func TestEditDeadlinesGrowWithTheRecording(t *testing.T) {
+	const videoID = "video-123"
+	const fileKey = "recordings/user/video.mp4"
+	edits := []struct {
+		name  string
+		route string
+		body  string
+		serve func(*Handler) http.HandlerFunc
+	}{
+		{"trim", "/api/videos/{id}/trim", `{"startSeconds": 5.0, "endSeconds": 30.0}`, func(h *Handler) http.HandlerFunc { return h.Trim }},
+		{"remove-segments", "/api/videos/{id}/remove-segments", `{"segments": [{"start": 5.0, "end": 10.0}]}`, func(h *Handler) http.HandlerFunc { return h.RemoveSegments }},
+	}
+	for _, edit := range edits {
+		t.Run(edit.name, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			mock.ExpectQuery(`SELECT duration, file_key, share_token, status, content_type, user_id FROM videos`).
+				WithArgs(videoID, testUserID).
+				WillReturnRows(pgxmock.NewRows([]string{"duration", "file_key", "share_token", "status", "content_type", "user_id"}).
+					AddRow(600, fileKey, "abc123defghi", "ready", "video/mp4", testUserID))
+			mock.ExpectQuery(`UPDATE videos SET status = 'processing'.* RETURNING media_version`).
+				WithArgs(fileKey, videoID, testUserID).
+				WillReturnRows(pgxmock.NewRows([]string{"media_version"}).AddRow(1))
+			mock.ExpectExec(`UPDATE videos SET status = 'ready'`).
+				WithArgs(videoID, editFailedMessage, fileKey).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+			storage := &deadlineStorage{mockStorage: &mockStorage{}}
+			handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+			r := chi.NewRouter()
+			r.With(newAuthMiddleware()).Post(edit.route, edit.serve(handler))
+			rec := httptest.NewRecorder()
+			path := strings.Replace(edit.route, "{id}", videoID, 1)
+			r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPost, path, []byte(edit.body)))
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("got status %d: %s", rec.Code, rec.Body.String())
+			}
+
+			// The edit runs on its own goroutine and resets the row once the
+			// download fails.
+			deadline := time.Now().Add(5 * time.Second)
+			for mock.ExpectationsWereMet() != nil && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+			expectEncodeDeadline(t, storage.recorded())
 		})
 	}
 }

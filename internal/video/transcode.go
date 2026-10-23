@@ -66,10 +66,9 @@ const encodeExtraCapSeconds = 110 * 60
 
 // encodeTimeout is perJobTimeout plus twice the recording's length: H.264 runs
 // at about real time on a hard 1080p source with four CPUs, so this leaves
-// room for smaller hosts. The composite, the WebM conversion and the
-// normalisation all use it, and resetStuckProcessing applies the same
-// allowance to composites. A zero duration, as for a recording not yet
-// probed, gives the base alone.
+// room for smaller hosts. Every encode uses it, and resetStuckProcessing
+// applies the same allowance to rows held in processing. A zero duration, as
+// for a recording not yet probed, gives the base alone.
 func encodeTimeout(durationSeconds int) time.Duration {
 	extra := min(max(2*durationSeconds, 0), encodeExtraCapSeconds)
 	return perJobTimeout + time.Duration(extra)*time.Second

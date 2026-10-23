@@ -11,3 +11,4 @@
 ## 3. Encode deadline
 
 - [x] 3.1 Run the WebM conversion and the normalisation under the composite's deadline, ten minutes plus twice the recording's length, from the worker and the upload handler; test the deadline each job runs with.
+- [x] 3.2 Run trim and remove-segments under the same deadline, and give every row in processing the same allowance in the stuck-processing sweep; test both.

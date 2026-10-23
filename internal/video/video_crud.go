@@ -577,7 +577,9 @@ func (h *Handler) Trim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), editVersionKey{}, acceptedVersion), 10*time.Minute)
+		// The edit re-encodes the take and may wait for the encoder slot behind
+		// a normalisation, so it gets the same deadline as the other encodes.
+		ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), editVersionKey{}, acceptedVersion), encodeTimeout(duration))
 		defer cancel()
 		TrimVideoAsync(ctx, h.db, h.storage, videoID, fileKey, thumbnailFileKey(videoOwnerID, shareToken), contentType, req.StartSeconds, req.EndSeconds)
 	}()

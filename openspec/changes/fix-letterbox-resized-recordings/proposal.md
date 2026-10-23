@@ -6,7 +6,7 @@ Staff OS records a browser tab with `MediaRecorder` as H.264 MP4. When the docto
 
 - Every encode for playback keeps one frame for the whole output: the first frame's size as displayed, fitted within 1920×1080 with its proportions and even dimensions. Later frames of another size are scaled to fit and centred on black, so a full-screen section is letterboxed rather than stretched. This covers the MP4 normalisation, the WebM conversion, trim (of an MP4 or a WebM) and remove-segments. A phone upload that stores its frame with a display rotation gets the turned size, as ffmpeg turns the picture before scaling it.
 - An MP4 upload whose video track is tagged `avc3` is re-encoded even when it is otherwise within limits. The tag means the parameter sets travel in-band and the header's size holds for the first frame only, so the file may change size part way through; the re-encode gives it one frame and a plain `avc1` track.
-- The WebM conversion and the normalisation run under the composite's deadline, ten minutes plus twice the recording's length, instead of a flat ten minutes: every Staff OS take is re-encoded now, on a two-vCPU host with one encoder slot.
+- The WebM conversion, the normalisation, trim and remove-segments run under the composite's deadline, ten minutes plus twice the recording's length, instead of a flat ten minutes: every Staff OS take is re-encoded now, on a two-vCPU host with one encoder slot, and an edit made straight after upload waits for that slot behind the normalisation. The stuck-processing sweep gives every row in processing the same allowance, not only composites.
 - The webcam composite and the frame rate are unchanged.
 
 ## Capabilities
