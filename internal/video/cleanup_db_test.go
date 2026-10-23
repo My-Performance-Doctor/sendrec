@@ -32,6 +32,28 @@ func TestResetStuckProcessing_DB_DeletesAbandonedWebcam(t *testing.T) {
 	}
 }
 
+// A trim of a ten minute take that is twenty minutes in may still be inside
+// its deadline, so the sweep leaves it; a row with a bogus duration is swept
+// at the cap rather than overflowing the query.
+func TestResetStuckProcessing_DB_WaitsForEditsOnLongTakes(t *testing.T) {
+	pool := accountDB(t)
+	name := uniqueName(t)
+	user := mustID(t, pool, `INSERT INTO users (email, password, name) VALUES ($1, 'x', 'U') RETURNING id`, name+"@example.com")
+	live := seedVideo(t, pool, user, nil, name+"-live")
+	mustExec(t, pool, `UPDATE videos SET webcam_key = NULL, duration = 600, status = 'processing', processing_started_at = now() - interval '20 minutes' WHERE id = $1`, live)
+	bogus := seedVideo(t, pool, user, nil, name+"-bogus")
+	mustExec(t, pool, `UPDATE videos SET webcam_key = NULL, duration = 2000000000, status = 'processing', processing_started_at = now() - interval '3 hours' WHERE id = $1`, bogus)
+
+	resetStuckProcessing(context.Background(), pool, &mockStorage{}, videoReadyHook{})
+
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND status = 'processing'`, live) {
+		t.Error("want the edit inside its deadline left in processing")
+	}
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND status = 'ready'`, bogus) {
+		t.Error("want the row with a bogus duration swept at the cap")
+	}
+}
+
 // The sweep removes every object a deleted video references, webcam included,
 // before marking it purged. #296.
 func TestPurgeOrphanedFiles_DB_DeletesEveryObject(t *testing.T) {

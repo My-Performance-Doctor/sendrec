@@ -45,14 +45,14 @@ func TestBacklogAlarmsDoNotRemoveServingAPIAndSampleFailuresDo(t *testing.T) {
 		t.Fatalf("empty healthy control: %+v %v", metrics, err)
 	}
 	_, err = pool.Exec(ctx, `INSERT INTO videos VALUES('uploading',now()-interval '2 hours',NULL,now(),'none',0),('processing',now(),now()-interval '40 minutes',now(),'none',60),
-  ('processing',now(),now()-interval '40 minutes',now(),'none',600);
+  ('processing',now(),now()-interval '40 minutes',now(),'none',600),('processing',now(),now()-interval '150 minutes',now(),'none',2000000000);
  INSERT INTO mpd_event_outbox VALUES('pending',now()-interval '6 minutes'),('dead',now()),('blocked',now());`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	output.Reset()
 	metrics, err = monitor.Sample(ctx)
-	if err != nil || metrics.UploadFailures != 1 || metrics.OldProcessingJobs != 1 || metrics.OutboxOldestSeconds < 360 || metrics.OutboxDeadLetters != 2 {
+	if err != nil || metrics.UploadFailures != 1 || metrics.OldProcessingJobs != 2 || metrics.OutboxOldestSeconds < 360 || metrics.OutboxDeadLetters != 2 {
 		t.Fatalf("fault metrics: %+v %v", metrics, err)
 	}
 	if err := monitor.WorkersProbe(ctx); err != nil {

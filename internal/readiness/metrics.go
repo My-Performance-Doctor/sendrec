@@ -35,11 +35,13 @@ func (m *Monitor) Sample(ctx context.Context) (Metrics, error) {
 	var result Metrics
 	// A row in processing may legitimately run for twice the recording's length
 	// on top of the base, capped at 6600 s, as the video package's encode
-	// deadline and stuck-processing sweep allow; only rows past that count.
+	// deadline and stuck-processing sweep allow; only rows past that count. The
+	// bigint cast keeps a bogus probed duration from overflowing int4 and
+	// failing the whole sample.
 	err := m.Pool.QueryRow(ctx, `SELECT
  (SELECT count(*) FROM videos WHERE status<>'deleted' AND transcript_status='failed' AND updated_at>=now()-interval '15 minutes'),
  (SELECT count(*) FROM videos WHERE status='uploading' AND created_at<now()-interval '1 hour'),
- (SELECT count(*) FROM videos WHERE (status='processing' AND COALESCE(processing_started_at,updated_at)<now()-interval '32 minutes'-make_interval(secs => LEAST(2*COALESCE(duration,0),6600))) OR (transcript_status IN ('pending','processing') AND updated_at<now()-interval '32 minutes')),
+ (SELECT count(*) FROM videos WHERE (status='processing' AND COALESCE(processing_started_at,updated_at)<now()-interval '32 minutes'-make_interval(secs => LEAST(2*duration::bigint,6600))) OR (transcript_status IN ('pending','processing') AND updated_at<now()-interval '32 minutes')),
  (SELECT COALESCE(EXTRACT(EPOCH FROM now()-min(created_at))::bigint,0) FROM mpd_event_outbox WHERE state IN ('pending','leased','blocked')),
  (SELECT count(*) FROM mpd_event_outbox WHERE state IN ('dead','blocked'))`).Scan(
 		&result.ProcessingFailures, &result.UploadFailures, &result.OldProcessingJobs, &result.OutboxOldestSeconds, &result.OutboxDeadLetters)

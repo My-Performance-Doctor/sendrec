@@ -60,7 +60,7 @@ func resetStuckProcessing(ctx context.Context, db database.DBTX, storage ObjectS
 		        updated_at = now()
 		 WHERE status = 'processing'
 		   AND (processing_started_at < now() - INTERVAL '`+stuckProcessingAfter+`'
-		            - make_interval(secs => LEAST(2 * duration, $2))
+		            - make_interval(secs => LEAST(2 * duration::bigint, $2))
 		        OR processing_started_at IS NULL)
 		 RETURNING id, webcam_key, user_id, share_token, duration`,
 		webcamDroppedWarning, encodeExtraCapSeconds,

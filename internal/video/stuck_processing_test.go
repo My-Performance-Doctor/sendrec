@@ -130,7 +130,7 @@ func TestResetStuckProcessing_GivesEditsTheirLongerDeadline(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery(`processing_started_at < now\(\) - INTERVAL '15 minutes'\s+- make_interval\(secs => LEAST\(2 \* duration, \$2\)\)`).
+	mock.ExpectQuery(`processing_started_at < now\(\) - INTERVAL '15 minutes'\s+- make_interval\(secs => LEAST\(2 \* duration::bigint, \$2\)\)`).
 		WithArgs(webcamDroppedWarning, encodeExtraCapSeconds).
 		WillReturnRows(stuckRows())
 
