@@ -57,6 +57,7 @@ X-Organization-Id: {organizationId}
 ### 2. Record and upload
 
 Record in the browser with `MediaRecorder`. Chrome and Firefox produce WebM; SendRec converts every recording to MP4, so Safari and the patient app can play it.
+A take whose frame size changes part way through, such as one where the doctor went full screen, is converted at its first frame's size with the later section letterboxed. Chrome's `avc3` MP4 recordings are converted for the same reason.
 
 ```http
 POST {SENDREC}/api/videos

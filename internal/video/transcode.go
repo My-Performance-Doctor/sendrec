@@ -14,7 +14,7 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 )
 
-func buildTranscodeArgs(inputPath, outputPath, audioFilter string) []string {
+func buildTranscodeArgs(inputPath, outputPath, audioFilter string, frame outputFrame) []string {
 	args := append(globalThreads(), inputThreads()...)
 	args = append(args,
 		"-i", inputPath,
@@ -23,7 +23,7 @@ func buildTranscodeArgs(inputPath, outputPath, audioFilter string) []string {
 		"-level:v", "5.1",
 		"-preset", "fast",
 		"-crf", "23",
-		"-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-vf", frame.filter(),
 		"-r", "60",
 	)
 	args = appendEncoderBounds(args, "video/mp4")
@@ -37,7 +37,7 @@ func buildTranscodeArgs(inputPath, outputPath, audioFilter string) []string {
 // Package-level var so tests can reach the steps after ffmpeg without needing
 // an ffmpeg binary or a real video fixture.
 var transcodeToMP4 = func(ctx context.Context, inputPath, outputPath, audioFilter string) error {
-	args := buildTranscodeArgs(inputPath, outputPath, audioFilter)
+	args := buildTranscodeArgs(inputPath, outputPath, audioFilter, probeOutputFrame(ctx, inputPath))
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.
 	release, err := encoders().acquire(ctx)

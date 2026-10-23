@@ -65,7 +65,7 @@ func TestIsPermanentFFmpegError(t *testing.T) {
 
 func TestBuildTranscodeArgs(t *testing.T) {
 	t.Run("without audio filter", func(t *testing.T) {
-		args := buildTranscodeArgs("input.webm", "output.mp4", "")
+		args := buildTranscodeArgs("input.webm", "output.mp4", "", outputFrame{})
 		if slices.Contains(args, "-af") {
 			t.Error("expected no -af flag when audioFilter is empty")
 		}
@@ -75,7 +75,7 @@ func TestBuildTranscodeArgs(t *testing.T) {
 	})
 
 	t.Run("with audio filter", func(t *testing.T) {
-		args := buildTranscodeArgs("input.webm", "output.mp4", "arnndn=m=/app/models/std.rnnn")
+		args := buildTranscodeArgs("input.webm", "output.mp4", "arnndn=m=/app/models/std.rnnn", outputFrame{})
 		afIdx := slices.Index(args, "-af")
 		if afIdx == -1 {
 			t.Fatal("expected -af flag")
@@ -93,20 +93,37 @@ func TestBuildTranscodeArgs(t *testing.T) {
 
 func TestBuildNormalizeArgs(t *testing.T) {
 	t.Run("without audio filter", func(t *testing.T) {
-		args := buildNormalizeArgs("input.mp4", "output.mp4", "")
+		args := buildNormalizeArgs("input.mp4", "output.mp4", "", outputFrame{})
 		if slices.Contains(args, "-af") {
 			t.Error("expected no -af flag when audioFilter is empty")
 		}
 	})
 
 	t.Run("with audio filter", func(t *testing.T) {
-		args := buildNormalizeArgs("input.mp4", "output.mp4", "afftdn=nr=12:nf=-50")
+		args := buildNormalizeArgs("input.mp4", "output.mp4", "afftdn=nr=12:nf=-50", outputFrame{})
 		afIdx := slices.Index(args, "-af")
 		if afIdx == -1 {
 			t.Fatal("expected -af flag")
 		}
 		if args[afIdx+1] != "afftdn=nr=12:nf=-50" {
 			t.Errorf("expected filter value, got %q", args[afIdx+1])
+		}
+	})
+
+	t.Run("video filter keeps one frame across a resize", func(t *testing.T) {
+		for name, args := range map[string][]string{
+			"normalize": buildNormalizeArgs("input.mp4", "output.mp4", "", outputFrame{1500, 1018}),
+			"transcode": buildTranscodeArgs("input.webm", "output.mp4", "", outputFrame{1500, 1018}),
+			"trim":      buildTrimArgs("input.mp4", "output.mp4", "video/mp4", 0, 1, outputFrame{1500, 1018}),
+		} {
+			vfIdx := slices.Index(args, "-vf")
+			if vfIdx == -1 {
+				t.Fatalf("%s: expected -vf flag", name)
+			}
+			want := (outputFrame{1500, 1018}).filter()
+			if args[vfIdx+1] != want {
+				t.Errorf("%s: -vf = %q, want the fixed frame filter", name, args[vfIdx+1])
+			}
 		}
 	})
 }

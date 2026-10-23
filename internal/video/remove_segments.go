@@ -191,7 +191,7 @@ func buildSegmentAudioFilter(segments []segmentRange) string {
 		strings.Join(filters, ";") + ";" + strings.Join(kept, "") + fmt.Sprintf("concat=n=%d:v=0:a=1[a]", len(kept))
 }
 
-func buildRemoveSegmentsArgs(inputPath, outputPath, contentType string, segments []segmentRange, audioPresent bool) []string {
+func buildRemoveSegmentsArgs(inputPath, outputPath, contentType string, segments []segmentRange, audioPresent bool, frame outputFrame) []string {
 	betweenExpr := buildSegmentFilter(segments)
 	removedTime := make([]string, len(segments))
 	for i, seg := range segments {
@@ -201,7 +201,7 @@ func buildRemoveSegmentsArgs(inputPath, outputPath, contentType string, segments
 	// otherwise erase retained source frames. Bound frames before scaling/encoding.
 	// Shift by elapsed cut time, not retained frame count: rounding every cut to
 	// whole frames accumulates A/V drift when many boundaries fall between frames.
-	videoFilter := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS,select='not(%s)',setpts='PTS-%s/TB',fps=60,scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2[v]", betweenExpr, balancedSum(removedTime))
+	videoFilter := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS,select='not(%s)',setpts='PTS-%s/TB',fps=60,%s[v]", betweenExpr, balancedSum(removedTime), frame.filter())
 
 	args := append(globalThreads(), inputThreads()...)
 	args = append(args, "-i", inputPath)
@@ -224,7 +224,7 @@ func buildRemoveSegmentsArgs(inputPath, outputPath, contentType string, segments
 
 // See transcodeToMP4 for why this is a var.
 var removeSegmentsFromVideo = func(ctx context.Context, inputPath, outputPath, contentType string, segments []segmentRange, audioPresent bool) error {
-	args := buildRemoveSegmentsArgs(inputPath, outputPath, contentType, segments, audioPresent)
+	args := buildRemoveSegmentsArgs(inputPath, outputPath, contentType, segments, audioPresent, probeOutputFrame(ctx, inputPath))
 
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.

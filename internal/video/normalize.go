@@ -109,7 +109,7 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 	}, nil
 }
 
-func buildNormalizeArgs(inputPath, outputPath, audioFilter string) []string {
+func buildNormalizeArgs(inputPath, outputPath, audioFilter string, frame outputFrame) []string {
 	args := append(globalThreads(), inputThreads()...)
 	args = append(args,
 		"-i", inputPath,
@@ -118,7 +118,7 @@ func buildNormalizeArgs(inputPath, outputPath, audioFilter string) []string {
 		"-level:v", "5.1",
 		"-preset", "fast",
 		"-crf", "23",
-		"-vf", "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-vf", frame.filter(),
 		"-r", "60",
 	)
 	args = appendEncoderBounds(args, "video/mp4")
@@ -131,7 +131,9 @@ func buildNormalizeArgs(inputPath, outputPath, audioFilter string) []string {
 
 // See transcodeToMP4 for why this is a var.
 var transcodeToIOSCompatible = func(ctx context.Context, inputPath, outputPath, audioFilter string) error {
-	args := buildNormalizeArgs(inputPath, outputPath, audioFilter)
+	// The caller probed this file to decide on the encode; sizing the frame
+	// here as well keeps the four encoders alike and the probe is cheap.
+	args := buildNormalizeArgs(inputPath, outputPath, audioFilter, probeOutputFrame(ctx, inputPath))
 	// Hold a slot only around ffmpeg itself: the download and upload either
 	// side are I/O and would waste the slot.
 	release, err := encoders().acquire(ctx)
