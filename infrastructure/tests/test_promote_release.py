@@ -151,6 +151,12 @@ class PromotionTest(unittest.TestCase):
         self.manifest['staging']['image'] = self.manifest['image']
         promote.validate(self.manifest, 'staging')
 
+    def test_staging_refuses_a_production_copy_of_another_digest(self):
+        self.manifest['production']['image'] = '222222222222.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:' + 'c' * 64
+        with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(ValueError, 'reviewed image digest'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: True)
+        self.assertFalse(any(c[1] == 'run-task' for c in self.calls))
+
     def test_reviewed_template_change_blocks_before_migration(self):
         pathlib.Path(self.manifest['staging']['templatePath']).write_text('{"Resources":{"Unexpected":{}}}')
         with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(ValueError, 'templates differ'):

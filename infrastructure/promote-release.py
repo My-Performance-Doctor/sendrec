@@ -37,7 +37,9 @@ def validate(manifest, target, staged=None):
     if not re.fullmatch(r"[a-f0-9]{64}", manifest["infrastructureSha256"]):
         raise ValueError("The reviewed infrastructure digest is required")
     config = manifest[target]
-    target_image(manifest, target)
+    # Check both environments' images now, so a bad production copy stops the release before staging migrates.
+    for environment in ("staging", "production"):
+        target_image(manifest, environment)
     if config.get("desiredCount") != (2 if target == "production" else 1):
         raise ValueError("Only one staging or two approved production tasks are supported")
     parsed = urllib.parse.urlparse(config["readinessUrl"])
@@ -62,9 +64,9 @@ def target_image(manifest, target):
     name another account and repository but must carry the reviewed digest. Staging runs the
     top-level image itself, because that is the image its evidence vouches for.
     """
-    if target == "staging" and manifest["staging"].get("image", manifest["image"]) != manifest["image"]:
-        raise ValueError("Staging must run the top-level reviewed image")
     image = manifest[target].get("image", manifest["image"])
+    if target == "staging" and image != manifest["image"]:
+        raise ValueError("Staging must run the top-level reviewed image")
     if not IMAGE.fullmatch(image):
         raise ValueError("A Sydney ECR image digest is required")
     if image.split("@", 1)[1] != manifest["image"].split("@", 1)[1]:
