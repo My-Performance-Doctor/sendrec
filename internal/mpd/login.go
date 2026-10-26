@@ -3,6 +3,7 @@ package mpd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/httputil"
 	"github.com/sendrec/sendrec/internal/integration"
@@ -381,13 +383,42 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		identityError(w, ErrUnavailable)
 		return
 	}
+	// Cognito may have rotated the refresh token already. Keep it when this refresh
+	// stops short, so the next attempt does not present a retired credential.
+	keepRotation := func() {
+		if token.RefreshToken == "" || token.RefreshToken == raw {
+			return
+		}
+		rotated, err := integration.Encrypt(h.key, token.RefreshToken)
+		if err != nil {
+			return
+		}
+		if _, err = tx.Exec(ctx, `UPDATE mpd_sessions SET refresh_encrypted=$2 WHERE id=$1 AND NOT revoked`, sid, rotated); err == nil {
+			_ = tx.Commit(ctx)
+		}
+	}
+	// The session now belongs to someone else: end it rather than retry upstream forever.
+	revoke := func() {
+		if _, err := tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid); err == nil {
+			_ = tx.Commit(ctx)
+		}
+	}
 	id, e := h.VerifyAccess(ctx, token.AccessToken)
 	if e != nil {
+		// VerifyAccess cannot tell a bad token from an unreachable key set, so the
+		// session stays and only the rotated credential is kept.
+		keepRotation()
 		identityError(w, e)
 		return
 	}
 	var subject string
-	if tx.QueryRow(ctx, `SELECT subject FROM mpd_external_identities WHERE user_id=$1 AND issuer=$2`, s.UserID, id.Issuer).Scan(&subject) != nil || subject != id.Subject {
+	if err := tx.QueryRow(ctx, `SELECT subject FROM mpd_external_identities WHERE user_id=$1 AND issuer=$2`, s.UserID, id.Issuer).Scan(&subject); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		keepRotation()
+		identityError(w, ErrUnavailable)
+		return
+	}
+	if subject != id.Subject {
+		revoke()
 		identityError(w, ErrDenied)
 		return
 	}
@@ -429,6 +460,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.StaffID != s.StaffID || g.TenantID != s.TenantID {
+		revoke()
 		identityError(w, ErrDenied)
 		return
 	}

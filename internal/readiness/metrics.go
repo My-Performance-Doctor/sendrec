@@ -21,6 +21,9 @@ type Monitor struct {
 	mu            sync.RWMutex
 	lastSuccess   time.Time
 	sampleHealthy bool
+	// Consecutive failed samples. One failure is tolerated: every task samples on its
+	// own minute, and a single statement timeout must not fail them all at once.
+	failures int
 }
 
 type Metrics struct {
@@ -52,16 +55,19 @@ func (m *Monitor) Sample(ctx context.Context) (Metrics, error) {
 	if err == nil {
 		m.lastSuccess = time.Now()
 		m.sampleHealthy = true
+		m.failures = 0
 	} else {
-		m.sampleHealthy = false
+		m.failures++
+		m.sampleHealthy = m.failures < 2
 	}
 	m.mu.Unlock()
 	return result, err
 }
 
 // WorkersProbe checks recent successful monitoring, independently of queue depth.
-// It fails closed before the first sample, on a sample failure, or after monitoring
-// stops. It does not assert liveness of each individual processing loop.
+// It fails closed before the first sample, after two consecutive failed samples,
+// after two minutes without a success, or once monitoring stops. It does not assert
+// liveness of each individual processing loop.
 func (m *Monitor) WorkersProbe(context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -245,6 +245,11 @@ func (h *Handler) TestWebhook(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "no webhook URL configured")
 		return
 	}
+	if h.webhookClient == nil {
+		// Legacy webhooks are off (LEGACY_WEBHOOKS_ENABLED=false, as in managed mode).
+		httputil.WriteError(w, http.StatusConflict, "webhooks are disabled on this server")
+		return
+	}
 	event := webhook.Event{
 		Name:      "webhook.test",
 		Timestamp: time.Now().UTC(),

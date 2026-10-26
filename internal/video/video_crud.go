@@ -394,16 +394,22 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			tag, err = h.db.Exec(r.Context(), updateSQL, newStatus, videoID, userID)
 		}
 		if err != nil {
-			if req.Title == "" && errors.Is(err, pgx.ErrNoRows) {
-				completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
-				if replayErr != nil {
-					httputil.WriteError(w, 503, "finalization state unavailable")
-					return
+			if errors.Is(err, pgx.ErrNoRows) {
+				if req.Title == "" {
+					completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
+					if replayErr != nil {
+						httputil.WriteError(w, 503, "finalization state unavailable")
+						return
+					}
+					if completed {
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
 				}
-				if completed {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+				// No uploading row matched and this is not a replay: the same answer as
+				// the unmanaged path, so a client stops retrying a take that cannot finish.
+				httputil.WriteError(w, http.StatusNotFound, "video not found")
+				return
 			}
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to update video")
 			return

@@ -19,6 +19,7 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/auth"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 )
 
 type mockStorage struct {
@@ -1460,6 +1461,50 @@ func TestUpdate_InvalidJSON(t *testing.T) {
 	errMsg := parseErrorResponse(t, rec.Body.Bytes())
 	if errMsg != "invalid request body" {
 		t.Errorf("expected error %q, got %q", "invalid request body", errMsg)
+	}
+}
+
+// A managed finalize whose uploading row is gone (abandoned or deleted meanwhile)
+// and that is not a completed replay answers 404, as the unmanaged path does.
+func TestUpdate_ManagedFinalizeOfMissingUploadReturnsNotFound(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	storage := &mockStorage{headSize: 1000, headType: "video/webm"}
+	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+	videoID := "video-123"
+
+	mock.ExpectQuery(`SELECT file_key, file_size, share_token, webcam_key, content_type, duration FROM videos`).
+		WithArgs(videoID, testUserID).
+		WillReturnRows(pgxmock.NewRows([]string{"file_key", "file_size", "share_token", "webcam_key", "content_type", "duration"}).AddRow("recordings/user/video.webm", int64(1000), "abc123defghi", (*string)(nil), "video/webm", 120))
+	mock.ExpectQuery(`UPDATE videos SET status`).
+		WithArgs("ready", videoID, testUserID).
+		WillReturnRows(pgxmock.NewRows([]string{"media_version"}))
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM videos v JOIN mpd_video_state`).
+		WithArgs(videoID, testUserID, "org-1").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+
+	body, _ := json.Marshal(updateRequest{Status: "ready"})
+	managed := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal := &mpd.Principal{UserID: testUserID, OrganizationID: "org-1"}
+			next.ServeHTTP(w, r.WithContext(mpd.ContextWithPrincipal(r.Context(), principal)))
+		})
+	}
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware(), managed).Patch("/api/videos/{id}", handler.Update)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPatch, "/api/videos/"+videoID, body))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet pgxmock expectations: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sendrec/sendrec/internal/mpd"
+	"github.com/sendrec/sendrec/internal/ratelimit"
 	"net/http"
 )
 
@@ -23,7 +24,11 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 		r.Put("/publication", adapter.Publication)
 	})
 	media := s.videoHandler.MPDMedia(s.mpdHandler, cfg.MPDService, cfg.MPD.AllowedOrigins)
+	// The same rate as the other /api/videos routes: preview handoffs and upload
+	// links each write a row or sign a URL.
+	mediaLimiter := ratelimit.NewLimiter(2, 10)
 	s.router.Group(func(r chi.Router) {
+		r.Use(mediaLimiter.Middleware)
 		r.Use(s.authHandler.Middleware)
 		r.Use(maxBodySize(64 * 1024))
 		r.Get("/api/videos/{id}/mpd", media.Info)
