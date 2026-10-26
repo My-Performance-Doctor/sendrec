@@ -59,8 +59,11 @@ def target_image(manifest, target):
     """The image this environment's task definitions name.
 
     Production runs in its own account, so it pulls a copy from its own registry. The copy may
-    name another account and repository but must carry the reviewed digest.
+    name another account and repository but must carry the reviewed digest. Staging runs the
+    top-level image itself, because that is the image its evidence vouches for.
     """
+    if target == "staging" and manifest["staging"].get("image", manifest["image"]) != manifest["image"]:
+        raise ValueError("Staging must run the top-level reviewed image")
     image = manifest[target].get("image", manifest["image"])
     if not IMAGE.fullmatch(image):
         raise ValueError("A Sydney ECR image digest is required")

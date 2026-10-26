@@ -140,6 +140,16 @@ class PromotionTest(unittest.TestCase):
         self.manifest['production']['image'] = copy.replace('b' * 64, 'c' * 64)
         with self.assertRaisesRegex(ValueError, 'reviewed image digest'):
             promote.validate(self.manifest, 'production', evidence)
+        self.manifest['production']['image'] = copy.split('@')[0] + ':' + 'a' * 40
+        with self.assertRaisesRegex(ValueError, 'Sydney ECR image digest'):
+            promote.validate(self.manifest, 'production', evidence)
+
+    def test_staging_runs_the_top_level_image(self):
+        self.manifest['staging']['image'] = '222222222222.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:' + 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'top-level reviewed image'):
+            promote.validate(self.manifest, 'staging')
+        self.manifest['staging']['image'] = self.manifest['image']
+        promote.validate(self.manifest, 'staging')
 
     def test_reviewed_template_change_blocks_before_migration(self):
         pathlib.Path(self.manifest['staging']['templatePath']).write_text('{"Resources":{"Unexpected":{}}}')
