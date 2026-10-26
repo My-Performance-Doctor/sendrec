@@ -120,6 +120,24 @@ class PromotionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             promote.validate(self.manifest, 'staging')
 
+    def test_production_runs_its_own_copy_of_the_reviewed_digest(self):
+        copy = '222222222222.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:' + 'b' * 64
+        self.manifest['production']['image'] = copy
+        evidence = {k: self.manifest[k] for k in ('image','revision','infrastructureSha256')}
+        evidence.update(target='staging', verified=True)
+        def aws(*args):
+            reply = self.aws(*args)
+            if args[1] == 'describe-task-definition':
+                reply['taskDefinition']['containerDefinitions'][0]['image'] = copy
+            return reply
+        with patch.object(promote, 'aws', aws):
+            result = promote.promote(self.manifest, 'production', evidence, probe=lambda _: True)
+        self.assertEqual(self.manifest['image'], result['image'])
+        self.assertIn(('ecr', 'describe-images', '--repository-name', 'sendrec', '--image-ids', 'imageDigest=sha256:' + 'b' * 64), self.calls)
+        self.manifest['production']['image'] = copy.replace('b' * 64, 'c' * 64)
+        with self.assertRaisesRegex(ValueError, 'reviewed image digest'):
+            promote.validate(self.manifest, 'production', evidence)
+
     def test_reviewed_template_change_blocks_before_migration(self):
         pathlib.Path(self.manifest['staging']['templatePath']).write_text('{"Resources":{"Unexpected":{}}}')
         with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(ValueError, 'templates differ'):

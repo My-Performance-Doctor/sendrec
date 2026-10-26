@@ -37,12 +37,13 @@ The operator prepares a reviewed manifest with these fields:
     "subnets": ["<private-subnet-id>"],
     "securityGroups": ["<service-security-group-id>"],
     "readinessUrl": "https://<production-cloudfront-host>/api/ready",
-    "desiredCount": 2
+    "desiredCount": 2,
+    "image": "<production-account>.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:<digest>"
   }
 }
 ```
 
-A manifest contains references, never credentials. Record the reviewed template hash and cost estimate in the activation PR. Hash the JSON array `[stagingTemplate, productionTemplate]` with sorted keys and compact separators. The promotion script checks that digest and compares the target live CloudFormation template with its reviewed file before migration. Both environments currently consume the same-account digest. A different production account needs reviewed ECR replication and release changes first.
+A manifest contains references, never credentials. Record the reviewed template hash and cost estimate in the activation PR. Hash the JSON array `[stagingTemplate, productionTemplate]` with sorted keys and compact separators. The promotion script checks that digest and compares the target live CloudFormation template with its reviewed file before migration. Production runs in its own account and pulls from its own `sendrec` repository. Copy the image there with the full source revision as its tag, and name the copy in the production section's `image`. The copy must carry the same digest as the top-level `image`, which staging runs; the script refuses any other digest and checks the revision tag in the production repository. An environment without its own `image` uses the top-level one.
 
 The promotion workflow runs only from main. It checks that the source revision is an ancestor of its workflow revision and that the immutable image tag binds that revision to the requested digest. Configure the staging build/release roles and production release role through GitHub environment variables. Give the release roles only the relevant ECS, ECR read, CloudFormation GetTemplate and PassRole permissions. The staging build role also needs ECR read access to `sendrec-base`, because the `Dockerfile` pulls its runtime base from there. Their trust policies must match this repository and the corresponding GitHub environment.
 
