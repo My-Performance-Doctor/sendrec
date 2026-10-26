@@ -662,7 +662,6 @@ export function VideoDetail() {
           className="detail-btn detail-btn--accent"
           onClick={copyLink}
           disabled={video.status !== "ready" || !!video.managed && !video.published}
-          style={{ opacity: video.status === "processing" ? 0.5 : undefined }}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
           Copy share link
@@ -671,7 +670,6 @@ export function VideoDetail() {
           className="detail-btn"
           onClick={() => navigate(`/videos/${video.id}/analytics`)}
           disabled={video.status === "processing"}
-          style={{ opacity: video.status === "processing" ? 0.5 : undefined }}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
           View analytics

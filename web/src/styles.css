@@ -3147,9 +3147,14 @@ textarea.form-input {
   white-space: nowrap;
 }
 
-.detail-btn:hover {
+.detail-btn:hover:not(:disabled) {
   color: var(--color-text);
   border-color: var(--color-text-secondary);
+}
+
+.detail-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .detail-btn--accent {
@@ -3158,7 +3163,7 @@ textarea.form-input {
   border-color: var(--color-accent);
 }
 
-.detail-btn--accent:hover {
+.detail-btn--accent:hover:not(:disabled) {
   background: var(--color-accent-hover);
   border-color: var(--color-accent-hover);
 }
@@ -3168,7 +3173,7 @@ textarea.form-input {
   border-color: var(--color-error);
 }
 
-.detail-btn--danger:hover {
+.detail-btn--danger:hover:not(:disabled) {
   background: var(--color-error);
   color: var(--color-on-accent);
 }
