@@ -108,7 +108,11 @@ def promote(manifest, target, staged=None, probe=readiness):
     if started.get("failures") or len(started.get("tasks", [])) != 1:
         raise ReleaseFailure("Single migration task failed to start")
     task = started["tasks"][0]["taskArn"]
-    aws("ecs", "wait", "tasks-stopped", "--cluster", config["cluster"], "--tasks", task)
+    try:
+        aws("ecs", "wait", "tasks-stopped", "--cluster", config["cluster"], "--tasks", task)
+    except subprocess.CalledProcessError:
+        # The waiter gives up after about ten minutes; the migration may still be running.
+        raise ReleaseFailure("Migration did not finish within the wait; application was not changed") from None
     stopped = aws("ecs", "describe-tasks", "--cluster", config["cluster"], "--tasks", task)["tasks"][0]
     if len(stopped.get("containers", [])) != 1 or stopped["containers"][0].get("exitCode") != 0:
         raise ReleaseFailure("Migration failed; application was not changed")
@@ -122,11 +126,17 @@ def promote(manifest, target, staged=None, probe=readiness):
         if not all(probe(config["readinessUrl"]) for _ in range(3)):
             raise RuntimeError("Release readiness failed")
     except Exception:
-        aws("ecs", "update-service", "--cluster", config["cluster"], "--service", config["service"],
-            "--task-definition", old_definition, "--desired-count", str(old_count))
-        aws("ecs", "wait", "services-stable", "--cluster", config["cluster"], "--services", config["service"])
-        rolled_back = aws("ecs", "describe-services", "--cluster", config["cluster"], "--services", config["service"])["services"][0]
-        if rolled_back["taskDefinition"] != old_definition or rolled_back["runningCount"] != old_count or (old_count and not probe(config["readinessUrl"])):
+        try:
+            aws("ecs", "update-service", "--cluster", config["cluster"], "--service", config["service"],
+                "--task-definition", old_definition, "--desired-count", str(old_count))
+            aws("ecs", "wait", "services-stable", "--cluster", config["cluster"], "--services", config["service"])
+            rolled_back = aws("ecs", "describe-services", "--cluster", config["cluster"], "--services", config["service"])["services"][0]
+            restored = (rolled_back["taskDefinition"] == old_definition and rolled_back["runningCount"] == old_count
+                        and (not old_count or probe(config["readinessUrl"])))
+        except Exception:
+            # A rollback call that fails or times out is an unconfirmed rollback.
+            restored = False
+        if not restored:
             raise ReleaseFailure("Rollback needs operator recovery; state was retained") from None
         raise ReleaseFailure("Release failed; prior application restored; migration and media retained") from None
     return {"target": target, "verified": True, "image": manifest["image"], "revision": manifest["revision"],

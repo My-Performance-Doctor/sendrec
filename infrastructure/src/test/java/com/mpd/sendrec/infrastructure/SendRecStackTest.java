@@ -9,6 +9,7 @@ import software.amazon.awscdk.assertions.*;
 import software.amazon.awscdk.services.ec2.*;
 
 class SendRecStackTest {
+  private static final String PRODUCTION_TOPIC = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";
   private final StackProps props = StackProps.builder().env(Environment.builder()
       .account(StagingConfig.ACCOUNT).region(StagingConfig.REGION).build()).build();
 
@@ -83,16 +84,8 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("bootstrap", "false", "bootstrapCidr", "0.0.0.0/0")));
   }
   @Test void productionIsIsolatedImmutableAndUnactivated() {
-    App app = new App(AppProps.builder().outdir("build/synthetic-production").build());
-    Stack network = new Stack(app, "ProductionSyntheticNetwork", props);
-    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
-        SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
-        SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
-        SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
-    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
-    var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production", image,
-        "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations");
-    Template template = Template.fromStack(new SendRecStack(app, "Production", props, config, vpc));
+    SendRecStack stack = production(Map.of());
+    Template template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
@@ -119,8 +112,8 @@ class SendRecStackTest {
     }
     for (var alarm : template.findResources("AWS::CloudWatch::Alarm").values()) {
       String definition = alarm.toString();
-      assertTrue(definition.contains("AlarmActions=[" + config.alertTopicArn() + "]"));
-      assertTrue(definition.contains("OKActions=[" + config.alertTopicArn() + "]"));
+      assertTrue(definition.contains("AlarmActions=[" + PRODUCTION_TOPIC + "]"));
+      assertTrue(definition.contains("OKActions=[" + PRODUCTION_TOPIC + "]"));
       assertTrue(definition.contains("TreatMissingData=breaching") || definition.contains("TreatMissingData=notBreaching"));
     }
     template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeStorageSpace",
@@ -146,7 +139,7 @@ class SendRecStackTest {
       }
     }
     assertEquals(7, gated);
-    app.synth();
+    Stage.of(stack).synth();
   }
 
   @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
@@ -220,16 +213,16 @@ class SendRecStackTest {
   }
 
   private SendRecStack production(Map<String, Object> context) {
-    App app = new App(AppProps.builder().outdir("build/synthetic-production-size").context(context).build());
-    Stack network = new Stack(app, "ProductionSizeNetwork", props);
+    App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
+    Stack network = new Stack(app, "ProductionSyntheticNetwork", props);
     IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
         SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
         SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
         SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
         "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
-        "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations");
-    return new SendRecStack(app, "ProductionSize", props, config, vpc);
+        PRODUCTION_TOPIC);
+    return new SendRecStack(app, "Production", props, config, vpc);
   }
 
 }

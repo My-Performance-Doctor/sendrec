@@ -495,23 +495,27 @@ public class SendRecStack extends Stack {
           .treatMissingData(item.getKey().equals("Target5xx")
               ? software.amazon.awscdk.services.cloudwatch.TreatMissingData.NOT_BREACHING
               : software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
-      alarm.addAlarmAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
-      // The destination also hears the recovery, so an operator can confirm it there.
-      alarm.addOkAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
+      notifyBothWays(alarm, destination);
     }
-    // The database has 20 GB without storage autoscaling and 1 GiB of memory on the pinned class.
-    Map<String, Object[]> lowDatabase = Map.of(
-        "DatabaseFreeStorage", new Object[] {database.metricFreeStorageSpace(), 4.0 * 1024 * 1024 * 1024},
-        "DatabaseFreeableMemory", new Object[] {database.metricFreeableMemory(), 64.0 * 1024 * 1024});
-    for (var item : lowDatabase.entrySet()) {
-      var alarm = software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, item.getKey() + "Alarm")
-          .metric((software.amazon.awscdk.services.cloudwatch.IMetric) item.getValue()[0])
-          .threshold((double) item.getValue()[1]).evaluationPeriods(2)
-          .comparisonOperator(software.amazon.awscdk.services.cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD)
-          .treatMissingData(software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
-      alarm.addAlarmAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
-      alarm.addOkAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
-    }
+    // The database has 20 GB without storage autoscaling. Micro has 1 GiB of memory, small 2 GiB.
+    lowDatabaseAlarm("DatabaseFreeStorage", database.metricFreeStorageSpace(), 4.0 * 1024 * 1024 * 1024, destination);
+    lowDatabaseAlarm("DatabaseFreeableMemory", database.metricFreeableMemory(), 64.0 * 1024 * 1024, destination);
+  }
+
+  private void lowDatabaseAlarm(String name, software.amazon.awscdk.services.cloudwatch.IMetric metric, double threshold,
+      software.amazon.awscdk.services.sns.ITopic destination) {
+    notifyBothWays(software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, name + "Alarm")
+        .metric(metric).threshold(threshold).evaluationPeriods(2)
+        .comparisonOperator(software.amazon.awscdk.services.cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD)
+        .treatMissingData(software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build(), destination);
+  }
+
+  /** The destination also hears the recovery, so an operator can confirm it there. */
+  private static void notifyBothWays(software.amazon.awscdk.services.cloudwatch.Alarm alarm,
+      software.amazon.awscdk.services.sns.ITopic destination) {
+    var action = new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination);
+    alarm.addAlarmAction(action);
+    alarm.addOkAction(action);
   }
 
 
