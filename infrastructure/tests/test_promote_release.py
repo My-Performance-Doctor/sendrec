@@ -93,6 +93,11 @@ class PromotionTest(unittest.TestCase):
         with patch.object(promote, 'aws', aws), self.assertRaisesRegex(promote.ReleaseFailure, 'operator recovery'):
             promote.promote(self.manifest, 'staging', probe=lambda _: False)
 
+    def test_unready_rollback_asks_for_operator_recovery(self):
+        with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(promote.ReleaseFailure, 'operator recovery'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: False)
+        self.assertEqual('old-app:1', self.current)
+
     def test_exit_message_says_whether_the_prior_application_is_back(self):
         failure = promote.ReleaseFailure('Release failed; prior application restored; migration and media retained')
         with patch.object(promote, 'main', side_effect=failure), self.assertRaises(SystemExit) as stopped:

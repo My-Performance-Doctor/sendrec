@@ -102,7 +102,7 @@ The 2026-10-08 cross-service drill passed in 67.45 seconds. It exercised the rea
 
 The receiver intentionally lost the response after its first durable commit. Seven delivery attempts across the recording lifecycle retained one report, one timeline item and one task intent. Staff preview produced no watched mark. Anonymous playback and its duplicate produced one watched result, a second transcript revision updated the existing report, and deletion removed URLs while preserving the clinical timeline. Media bytes and transcript enrichment were synthetic. No external task delivery occurred.
 
-The readiness checks also passed 15 Python tests, six Java infrastructure tests and the bootstrap access positive/negative controls. The actual synthesized production template contains zero application tasks, Multi-AZ RDS, 35-day backups and nine alarms. These results verify local implementation. They do not close the deployment, browser or alert-receipt tasks in [the readiness checklist](../../openspec/changes/prepare-production-video-service/tasks.md).
+The readiness checks also passed 15 Python tests, six Java infrastructure tests and the bootstrap access positive/negative controls. The synthesized production template then contained zero application tasks, Multi-AZ RDS, 35-day backups and nine alarms; it now has eleven. These results verify local implementation. They do not close the deployment, browser or alert-receipt tasks in [the readiness checklist](../../openspec/changes/prepare-production-video-service/tasks.md).
 
 ## Browser checklist
 

@@ -15,12 +15,15 @@ class SendRecStackTest {
 
   private SendRecStack stack(Map<String, Object> context) {
     App app = new App(AppProps.builder().context(context).build());
-    Stack network = new Stack(app, "SyntheticNetwork", props);
-    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
+    return new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE, syntheticVpc(app, "SyntheticNetwork"));
+  }
+
+  private IVpc syntheticVpc(App app, String networkName) {
+    Stack network = new Stack(app, networkName, props);
+    return Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
         SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
         SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
         SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
-    return new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE, vpc);
   }
 
   @Test void normalDeploymentHasPrivateOriginsAndStorage() {
@@ -216,11 +219,7 @@ class SendRecStackTest {
 
   private SendRecStack production(Map<String, Object> context) {
     App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
-    Stack network = new Stack(app, "ProductionSyntheticNetwork", props);
-    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
-        SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
-        SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
-        SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
+    IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
         "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
         PRODUCTION_TOPIC);
