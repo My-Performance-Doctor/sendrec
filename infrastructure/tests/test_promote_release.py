@@ -73,7 +73,7 @@ class PromotionTest(unittest.TestCase):
             if args[1] == 'wait' and args[2] == 'tasks-stopped':
                 raise promote.subprocess.CalledProcessError(255, ['aws'])
             return self.aws(*args)
-        with patch.object(promote, 'aws', aws), self.assertRaisesRegex(promote.ReleaseFailure, 'did not finish'):
+        with patch.object(promote, 'aws', aws), self.assertRaisesRegex(promote.ReleaseFailure, 'not confirmed finished'):
             promote.promote(self.manifest, 'staging', probe=lambda _: True)
         self.assertFalse(any(c[1]=='update-service' for c in self.calls))
 

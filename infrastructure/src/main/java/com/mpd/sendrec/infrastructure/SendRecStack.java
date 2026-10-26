@@ -497,9 +497,11 @@ public class SendRecStack extends Stack {
               : software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
       notifyBothWays(alarm, destination);
     }
-    // The database has 20 GB without storage autoscaling. Micro has 1 GiB of memory, small 2 GiB.
+    // The database has 20 GB without storage autoscaling. Micro has 1 GiB of memory and small 2 GiB,
+    // so the memory floor scales with it: 64 MiB as the operator proposed for micro, 128 MiB for small.
     lowDatabaseAlarm("DatabaseFreeStorage", database.metricFreeStorageSpace(), 4.0 * 1024 * 1024 * 1024, destination);
-    lowDatabaseAlarm("DatabaseFreeableMemory", database.metricFreeableMemory(), 64.0 * 1024 * 1024, destination);
+    double memoryFloor = (databaseSize(config) == InstanceSize.SMALL ? 128.0 : 64.0) * 1024 * 1024;
+    lowDatabaseAlarm("DatabaseFreeableMemory", database.metricFreeableMemory(), memoryFloor, destination);
   }
 
   private void lowDatabaseAlarm(String name, software.amazon.awscdk.services.cloudwatch.IMetric metric, double threshold,

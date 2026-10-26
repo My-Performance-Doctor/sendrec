@@ -37,7 +37,7 @@ Alarm gaps to close in task 2.4. The first three were added on 2026-10-26:
 
 - Add OK actions, so the destination hears when an alarm clears. Design decision 3 requires recovery to be verified at the destination.
 - Add an RDS free storage alarm, proposed below 4 GB free. The instance has 20 GB and no storage autoscaling.
-- Add an RDS freeable memory alarm, proposed below 64 MB.
+- Add an RDS freeable memory alarm, proposed below 64 MB. Added at 64 MiB on micro and 128 MiB on small.
 - Keep Target5xx at one error over two periods for the pilot, and review it after two weeks of data.
 
 ## 3. Hostname
@@ -118,5 +118,5 @@ Four inputs remain before the production deploy window. Each has a recommended d
 |---|---|---|
 | SendRec's production Cognito client | A new confidential `mpd-staff-sendrec` client in the production staff pool, added by an mpd-api production change like PR 219: authorization code with PKCE, `openid email profile`, callback and sign-out on SendRec's production CloudFront host at `/api/auth/mpd/callback`, and a hosted sign-in domain on the staff pool. Its secret goes into `sendrec-production/mpd-integration` through the secret workflow. `MPD_ALLOWED_CLIENT_IDS` lists it and Staff OS's production client; `MPD_ALLOWED_ORIGINS` lists Staff OS's production origin only | The callback host exists only after the empty stack deploys, so the client follows it, as section 5 orders. Production does not reuse the EHR client |
 | Alert email | One email subscription on `sendrec-production-alerts` for MPD's operations automation mailbox, chosen on 2026-10-12. The address stays in the private record. The mailbox owner confirms AWS's subscription email in the window | Every alarm now sends both the fault and the recovery, so the mailbox shows when to act and when it cleared |
-| Database size | db.t4g.small Multi-AZ, $37.23 a month more than micro | Staging micro fell to 74 MB freeable memory with one task and test traffic; production runs two tasks. The free-memory alarm fires below 64 MB |
+| Database size | db.t4g.small Multi-AZ, $37.23 a month more than micro | Staging micro fell to 74 MB freeable memory with one task and test traffic; production runs two tasks. On micro, the free-memory alarm's 64 MiB floor would sit close to normal use; on small it fires below 128 MiB |
 | Recovery objectives | Approve at most 15 minutes of database data loss and four hours from alarm to patients watching again | The backup alarm fires when the restorable point is 15 minutes old. The staging restore took 31 minutes, which leaves the rest of the four hours for detection, the decision, the cutover and checks |

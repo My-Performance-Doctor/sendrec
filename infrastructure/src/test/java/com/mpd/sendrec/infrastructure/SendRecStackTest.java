@@ -119,7 +119,7 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeStorageSpace",
         "Threshold", 4.0 * 1024 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
     template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory",
-        "Threshold", 64.0 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
+        "Threshold", 128.0 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
     // Desired count comes from the independent probe, not this dormant template.
     template.hasResourceProperties("AWS::Lambda::Function", Map.of("Environment", Match.objectLike(Map.of(
         "Variables", Match.objectLike(Map.of("SERVICE_ARN", Match.anyValue(), "CLUSTER_ARN", Match.anyValue()))))));
@@ -209,6 +209,8 @@ class SendRecStackTest {
     Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
     Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
         .hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
+    Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
+        .hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory", "Threshold", 64.0 * 1024 * 1024));
     assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
   }
 

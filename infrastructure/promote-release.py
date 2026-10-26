@@ -111,8 +111,8 @@ def promote(manifest, target, staged=None, probe=readiness):
     try:
         aws("ecs", "wait", "tasks-stopped", "--cluster", config["cluster"], "--tasks", task)
     except subprocess.CalledProcessError:
-        # The waiter gives up after about ten minutes; the migration may still be running.
-        raise ReleaseFailure("Migration did not finish within the wait; application was not changed") from None
+        # The waiter fails on its ten-minute limit and on any AWS error, so the task's state is unknown.
+        raise ReleaseFailure("Migration was not confirmed finished and may still be running; application was not changed") from None
     stopped = aws("ecs", "describe-tasks", "--cluster", config["cluster"], "--tasks", task)["tasks"][0]
     if len(stopped.get("containers", [])) != 1 or stopped["containers"][0].get("exitCode") != 0:
         raise ReleaseFailure("Migration failed; application was not changed")
