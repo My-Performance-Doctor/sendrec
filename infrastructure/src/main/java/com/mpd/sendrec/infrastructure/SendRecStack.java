@@ -208,7 +208,7 @@ public class SendRecStack extends Stack {
                         .build()))
             .vpc(vpc)
             .vpcSubnets(SubnetSelection.builder().subnetType(SubnetType.PRIVATE_ISOLATED).build())
-            .instanceType(InstanceType.of(InstanceClass.T4G, InstanceSize.MICRO))
+            .instanceType(InstanceType.of(InstanceClass.T4G, databaseSize(config)))
             .storageType(StorageType.GP3)
             .allocatedStorage(20)
             .storageEncrypted(true)
@@ -496,9 +496,36 @@ public class SendRecStack extends Stack {
               ? software.amazon.awscdk.services.cloudwatch.TreatMissingData.NOT_BREACHING
               : software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
       alarm.addAlarmAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
+      // The destination also hears the recovery, so an operator can confirm it there.
+      alarm.addOkAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
+    }
+    // The database has 20 GB without storage autoscaling and 1 GiB of memory on the pinned class.
+    Map<String, Object[]> lowDatabase = Map.of(
+        "DatabaseFreeStorage", new Object[] {database.metricFreeStorageSpace(), 4.0 * 1024 * 1024 * 1024},
+        "DatabaseFreeableMemory", new Object[] {database.metricFreeableMemory(), 64.0 * 1024 * 1024});
+    for (var item : lowDatabase.entrySet()) {
+      var alarm = software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, item.getKey() + "Alarm")
+          .metric((software.amazon.awscdk.services.cloudwatch.IMetric) item.getValue()[0])
+          .threshold((double) item.getValue()[1]).evaluationPeriods(2)
+          .comparisonOperator(software.amazon.awscdk.services.cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD)
+          .treatMissingData(software.amazon.awscdk.services.cloudwatch.TreatMissingData.BREACHING).build();
+      alarm.addAlarmAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
+      alarm.addOkAction(new software.amazon.awscdk.services.cloudwatch.actions.SnsAction(destination));
     }
   }
 
+
+  /**
+   * Staging stays on micro. Production takes `productionDatabaseSize`, micro or small, and defaults
+   * to small: on staging, one task with test traffic left micro with 74 MB of freeable memory.
+   */
+  private InstanceSize databaseSize(EnvironmentConfig config) {
+    if (!config.production()) return InstanceSize.MICRO;
+    Object size = getNode().tryGetContext("productionDatabaseSize");
+    if (size == null || "small".equals(size.toString())) return InstanceSize.SMALL;
+    if ("micro".equals(size.toString())) return InstanceSize.MICRO;
+    throw new IllegalArgumentException("productionDatabaseSize must be micro or small");
+  }
 
   /**
    * Abandoned multipart uploads never keep their parts. Outside production, deleted or replaced

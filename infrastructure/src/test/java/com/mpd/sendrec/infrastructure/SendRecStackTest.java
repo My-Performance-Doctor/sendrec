@@ -95,7 +95,7 @@ class SendRecStackTest {
     Template template = Template.fromStack(new SendRecStack(app, "Production", props, config, vpc));
     template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
-    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("MultiAZ", true, "BackupRetentionPeriod", 35,
+    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
     // Versioning on and nothing expires; only abandoned multipart uploads are cleaned up.
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
@@ -109,7 +109,7 @@ class SendRecStackTest {
     assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
     template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
         "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 9);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 11);
     template.resourceCountIs("AWS::Events::Rule", 1);
     for (var task : template.findResources("AWS::ECS::TaskDefinition").values()) {
       String definition = task.toString();
@@ -119,9 +119,14 @@ class SendRecStackTest {
     }
     for (var alarm : template.findResources("AWS::CloudWatch::Alarm").values()) {
       String definition = alarm.toString();
-      assertTrue(definition.contains(config.alertTopicArn()));
+      assertTrue(definition.contains("AlarmActions=[" + config.alertTopicArn() + "]"));
+      assertTrue(definition.contains("OKActions=[" + config.alertTopicArn() + "]"));
       assertTrue(definition.contains("TreatMissingData=breaching") || definition.contains("TreatMissingData=notBreaching"));
     }
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeStorageSpace",
+        "Threshold", 4.0 * 1024 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory",
+        "Threshold", 64.0 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
     // Desired count comes from the independent probe, not this dormant template.
     template.hasResourceProperties("AWS::Lambda::Function", Map.of("Environment", Match.objectLike(Map.of(
         "Variables", Match.objectLike(Map.of("SERVICE_ARN", Match.anyValue(), "CLUSTER_ARN", Match.anyValue()))))));
@@ -130,7 +135,7 @@ class SendRecStackTest {
     int gated = 0;
     for (var alarm : template.findResources("AWS::CloudWatch::Alarm").entrySet()) {
       String definition = alarm.getValue().toString();
-      if (alarm.getKey().startsWith("DatabaseCPU") || alarm.getKey().startsWith("BackupAgeSeconds")) {
+      if (alarm.getKey().startsWith("Database") || alarm.getKey().startsWith("BackupAgeSeconds")) {
         assertFalse(definition.contains("Expression="));
       } else {
         gated++;
@@ -205,6 +210,26 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic));
     assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, ""));
     assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App()));
+  }
+
+  @Test void productionDatabaseSizeIsMicroOrSmallAndStagingStaysMicro() {
+    Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
+    Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
+        .hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
+    assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
+  }
+
+  private SendRecStack production(Map<String, Object> context) {
+    App app = new App(AppProps.builder().outdir("build/synthetic-production-size").context(context).build());
+    Stack network = new Stack(app, "ProductionSizeNetwork", props);
+    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
+        SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
+        SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
+        SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
+    var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
+        "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
+        "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations");
+    return new SendRecStack(app, "ProductionSize", props, config, vpc);
   }
 
 }
