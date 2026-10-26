@@ -228,3 +228,119 @@ func TestCleanupExpiresOnlyEphemeralCredentials(t *testing.T) {
 		t.Fatal("expired access destroyed refreshable session", e)
 	}
 }
+
+// A refresh that stops after Cognito rotated the refresh token keeps the new one
+// when the access token fails verification, and ends the session when MPD now
+// grants a different staff member.
+func TestRefreshKeepsRotationOnVerifyFailureAndRevokesOnStaffChange(t *testing.T) {
+	db := identityDB(t)
+	ctx := context.Background()
+	h, sign := signedFixture(t)
+	h.db = db
+	h.key = integration.DeriveKey(strings.Repeat("k", 32))
+	h.cfg.JWTSecret = strings.Repeat("j", 32)
+	h.cfg.BaseURL = "https://recorder.example"
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, e := db.Exec(ctx, q, args...); e != nil {
+			t.Fatal(e)
+		}
+	}
+	exec(`INSERT INTO organizations(id,name,slug) VALUES($1,'Synthetic','refresh-rotation')`, orgID)
+	exec(`INSERT INTO mpd_managed_workspaces(organization_id,tenant_id,issuer,enabled,seat_limit) VALUES($1,$2,$3,true,2)`, orgID, tenantID, h.cfg.Issuer)
+	id := &Identity{Issuer: h.cfg.Issuer, Subject: "synthetic-staff", Email: "rotation@example.test", ExpiresAt: time.Now().Add(time.Hour)}
+	grant := &Grant{SchemaVersion: 1, StaffID: staffID, TenantID: tenantID, Capabilities: Capabilities{Read: true}, ValidUntil: time.Now().Add(30 * time.Second)}
+	p, e := h.provision(ctx, id, grant)
+	if e != nil {
+		t.Fatal(e)
+	}
+	sid, e := h.createSession(ctx, p, id, grant, sign(nil), "upstream-refresh")
+	if e != nil {
+		t.Fatal(e)
+	}
+	cookie := strings.Repeat("r", 43)
+	exec(`UPDATE mpd_sessions SET refresh_hash=$2 WHERE id=$1`, sid, hash(cookie))
+	var badAccessToken, otherStaff atomic.Bool
+	var upstreamMu sync.Mutex
+	nextUpstream := "upstream-refresh"
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamMu.Lock()
+		defer upstreamMu.Unlock()
+		if err := r.ParseForm(); err != nil || r.Form.Get("refresh_token") != nextUpstream {
+			t.Error("refresh used a retired Cognito refresh credential")
+			w.WriteHeader(401)
+			return
+		}
+		nextUpstream += "-rotated"
+		access := sign(nil)
+		if badAccessToken.Load() {
+			access = sign(map[string]any{"token_use": "id"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": access, "refresh_token": nextUpstream, "token_type": "Bearer", "expires_in": 3600})
+	}))
+	defer tokenServer.Close()
+	accessServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		copy := *grant
+		copy.ValidUntil = time.Now().Add(30 * time.Second)
+		if otherStaff.Load() {
+			copy.StaffID = "00000000-0000-0000-0000-00000000beef"
+		}
+		_ = json.NewEncoder(w).Encode(copy)
+	}))
+	defer accessServer.Close()
+	h.cfg.AccessURL = accessServer.URL
+	h.oauth = oauth2.Config{ClientID: "recorder", ClientSecret: "synthetic", Endpoint: oauth2.Endpoint{TokenURL: tokenServer.URL, AuthStyle: oauth2.AuthStyleInHeader}}
+	refresh := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/auth/mpd/refresh", nil)
+		r.Header.Set("Origin", h.cfg.BaseURL)
+		r.AddCookie(&http.Cookie{Name: "mpd_refresh", Value: cookie})
+		w := httptest.NewRecorder()
+		h.Refresh(w, r)
+		return w
+	}
+	state := func() (revoked bool, upstream string) {
+		t.Helper()
+		var encrypted string
+		if e := db.QueryRow(ctx, `SELECT revoked,refresh_encrypted FROM mpd_sessions WHERE id=$1`, sid).Scan(&revoked, &encrypted); e != nil {
+			t.Fatal(e)
+		}
+		upstream, e := integration.Decrypt(h.key, encrypted)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return revoked, upstream
+	}
+
+	badAccessToken.Store(true)
+	if w := refresh(); w.Code == 200 {
+		t.Fatal("unverifiable access token refreshed the session")
+	}
+	if revoked, upstream := state(); revoked || upstream != nextUpstream {
+		t.Fatalf("verify failure: revoked=%v kept rotated credential=%v", revoked, upstream == nextUpstream)
+	}
+
+	badAccessToken.Store(false)
+	otherStaff.Store(true)
+	if w := refresh(); w.Code == 200 {
+		t.Fatal("a different staff member refreshed this session")
+	}
+	if revoked, _ := state(); !revoked {
+		t.Fatal("session granted to another staff member was not revoked")
+	}
+
+	// A session whose linked identity no longer matches the signed-in subject ends too.
+	otherStaff.Store(false)
+	if sid, e = h.createSession(ctx, p, id, grant, sign(nil), nextUpstream); e != nil {
+		t.Fatal(e)
+	}
+	cookie = strings.Repeat("s", 43)
+	exec(`UPDATE mpd_sessions SET refresh_hash=$2 WHERE id=$1`, sid, hash(cookie))
+	exec(`UPDATE mpd_external_identities SET subject='synthetic-other' WHERE user_id=$1`, p.UserID)
+	if w := refresh(); w.Code == 200 {
+		t.Fatal("a different subject refreshed this session")
+	}
+	if revoked, _ := state(); !revoked {
+		t.Fatal("session of a relinked identity was not revoked")
+	}
+}

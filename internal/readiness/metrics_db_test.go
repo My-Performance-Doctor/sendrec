@@ -89,8 +89,12 @@ func TestBacklogAlarmsDoNotRemoveServingAPIAndSampleFailuresDo(t *testing.T) {
 	pool.Close()
 	output.Reset()
 	_, err = monitor.Sample(ctx)
+	if err == nil || monitor.WorkersProbe(ctx) != nil {
+		t.Fatal("one failed sample should be tolerated")
+	}
+	_, err = monitor.Sample(ctx)
 	if err == nil || monitor.WorkersProbe(ctx) == nil {
-		t.Fatal("closed database reported healthy")
+		t.Fatal("closed database reported healthy after two failed samples")
 	}
 	assertStatus(http.StatusServiceUnavailable)
 	if strings.Contains(output.String(), "postgres") || output.Len() != 0 {

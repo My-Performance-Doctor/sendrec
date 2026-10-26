@@ -23,7 +23,10 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 		r.Put("/publication", adapter.Publication)
 	})
 	media := s.videoHandler.MPDMedia(s.mpdHandler, cfg.MPDService, cfg.MPD.AllowedOrigins)
+	// The same bucket as the other /api/videos routes: preview handoffs and upload
+	// links each write a row or sign a URL.
 	s.router.Group(func(r chi.Router) {
+		r.Use(s.videoLimiter.Middleware)
 		r.Use(s.authHandler.Middleware)
 		r.Use(maxBodySize(64 * 1024))
 		r.Get("/api/videos/{id}/mpd", media.Info)

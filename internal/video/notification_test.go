@@ -978,6 +978,7 @@ func TestTestWebhook_NoUrl(t *testing.T) {
 	defer mock.Close()
 
 	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+	handler.SetWebhookClient(webhook.New(mock))
 
 	mock.ExpectQuery(`SELECT webhook_url, webhook_secret FROM notification_preferences WHERE user_id = \$1`).
 		WithArgs(testUserID).
@@ -991,6 +992,27 @@ func TestTestWebhook_NoUrl(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// With legacy webhooks off there is no webhook client; the route must refuse, not panic.
+func TestTestWebhook_DisabledWebhooks(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware()).Post("/api/settings/notifications/test-webhook", handler.TestWebhook)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPost, "/api/settings/notifications/test-webhook", nil))
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

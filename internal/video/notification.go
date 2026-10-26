@@ -235,6 +235,11 @@ func (h *Handler) RegenerateWebhookSecret(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) TestWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.webhookClient == nil {
+		// Legacy webhooks are off (LEGACY_WEBHOOKS_ENABLED=false, as in managed mode).
+		httputil.WriteError(w, http.StatusConflict, "webhooks are disabled on this server")
+		return
+	}
 	userID := auth.UserIDFromContext(r.Context())
 	var webhookURL, webhookSecret *string
 	err := h.db.QueryRow(r.Context(),

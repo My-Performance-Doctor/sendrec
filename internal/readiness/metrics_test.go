@@ -17,6 +17,7 @@ func TestWorkersProbeRequiresRecentSuccessfulSample(t *testing.T) {
 		{name: "never sampled"},
 		{name: "recent success", sampleHealthy: true, lastSuccess: time.Now(), healthy: true},
 		{name: "stale success", sampleHealthy: true, lastSuccess: time.Now().Add(-3 * time.Minute)},
+		{name: "one tolerated failure and a slow next sample", sampleHealthy: true, lastSuccess: time.Now().Add(-2*time.Minute - 5*time.Second), healthy: true},
 		{name: "failed sample after success", sampleHealthy: false, lastSuccess: time.Now()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
