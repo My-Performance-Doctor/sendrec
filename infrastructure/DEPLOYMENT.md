@@ -78,6 +78,34 @@ The interrupted draft's unencrypted `sendrec-staging-db` is still available and 
   4. The recordings bucket has lifecycle rule `ExpireOldVersions`: noncurrent versions expire after 30 days and incomplete multipart uploads are aborted after 7. Staging versioning has never been enabled, so the version part takes effect only once it is.
 - Production was not deployed.
 
+## Update, 2026-10-26
+
+Main `3de745b`, the merge of PR #15, on staging, then the production release path rehearsed there. All checks used synthetic media. Production was not touched.
+
+### Promotion of main
+
+- Deployed from 02:56 to 03:09 UTC with `cdk-with-session.py deploy SendRecStaging` and the contexts read back from task definition 10. The diff changed only the image and the service's task definition. The service ran `sendrec-staging:11`, image digest `sha256:64158935c65f0455e63e77665ac0d54a8ef434cc46bbd30a2d4d0a1e0ac975a0`; health and readiness answered 200.
+- The `MPD immutable candidate` and `MPD approved immutable promotion` workflows could not be used: the repository has no workflow variables or release roles, no `production` environment and, until today, no application ECR repository.
+- #15's behaviour: two synthetic recordings whose frame size changes mid-take went through the same image digest, run against a disposable PostgreSQL 18 and Garage stack. One was an avc3 MP4, the format Staff OS #137 records, the other a VP8 WebM, each 640x480 for four seconds and then 1280x544. Both came out at one size, 640x480, at 60 frames a second and the original eight seconds. The top and bottom 40 rows held picture in the first half and black in the second, with the picture in the middle, so the wider half was fitted inside the first frame's size, not squeezed into it. The avc3 upload was re-encoded to avc1. The staging check ran off staging because the synthetic owner in `sendrec-staging/synthetic-owner` now gets 401 from local login, and staging holds no synthetic staff credentials.
+
+### Controlled release on staging
+
+- Created ECR repository `sendrec` with immutable tags and scan on push, and pushed the same digest tagged with the full source revision `3de745bef306212111ac3155ab486fde9d5efc4d`.
+- Deployed at 03:49 to 03:55 UTC with `-c releaseImage=537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:64158935…`. The diff added the migration task definition and its roles, moved the image to the `sendrec` repository, set `MPD_MANAGED_MODE=true`, `MIGRATIONS_MODE=skip`, `LEGACY_WEBHOOKS_ENABLED=false`, `OPTIONAL_WORKERS_ENABLED=false`, `AI_ENABLED=false` and `API_DOCS_ENABLED=false`, and moved the target group's health check to `/api/ready`. Staging now runs `sendrec-staging:12` and migration definition `sendrec-staging-migration:1`. Readiness reports database, storage and workers true; anonymous registration returns 403.
+- The live template equals the synthesized one. With a production template synthesized from read-only lookups, the release manifest's infrastructure digest was `470dd7e2537b21f90514976874c9e46c3030a689d2911eb6d1d7c9c3ebd51f2c`.
+
+### Release rehearsal
+
+| Check | Result |
+| --- | --- |
+| Promotion | `promote-release.py --target staging` ran one migration task, which exited 0, kept definition 12 and passed readiness three times. 03:56:30 to 03:58:31 UTC |
+| Rollback | A candidate, definition 13, pointed at a bucket that does not exist, so storage readiness failed. ECS's circuit breaker stopped it after three failed tasks and rolled back to definition 12; the script then confirmed definition 12, one running task and readiness, and failed the release. The migration was not reversed. Staging answered 502 or 503 from 04:00:32 to 04:10:15 UTC, because staging runs one task with minimum healthy 0%. Production uses 100% and 200%. Definition 13 is deregistered |
+| Failover | Scaled to two tasks in two availability zones, stopped the older one, waited for its replacement, then returned to one task, from 04:11:24 to 04:19:32 UTC. A probe every two seconds saw no 5xx. Its few timeouts matched a control URL's from this host, five in 25 each. Neither task logged an error. No media work ran, so overlapping media jobs on two tasks remain unproven |
+| Alarm delivery | A temporary SNS topic with an SQS subscriber, and an alarm on a synthetic metric. ALARM reached the subscriber 89 seconds after the fault was injected; OK arrived 104 seconds after it cleared. The topic, queue and alarm are deleted. Email receipt waits on the production topic and address |
+| Restore | Point-in-time restore of `sendrec-staging-encrypted-db` at its latest restorable time, which trailed real time by about four minutes, into private instance `sendrec-staging-restore-drill`. Requested 04:01:18, available 04:31:34, verified 04:32:47 UTC, 31 minutes in all. A one-off task compared both databases: migration 75 clean, 13 ready videos, 7 with link passwords, 13 ready transcripts, 3 identity links, 21 acknowledged events and the same fingerprint over every video's media keys, passwords and versions. All 26 media objects the restored rows reference exist in the bucket. The drill instance and checker are deleted |
+
+The restore did not run the application against the restored database, so protected playback, captions, identity sign-in and event delivery after a restore remain unexercised. Staging's bucket is unversioned, so it could not rehearse restoring object versions. Staging had no writes in the window, so the four-minute figure is RDS's log lag, not measured data loss.
+
 ## Exact remaining action
 
 A human merged PR #2 on 2026-10-07, so its review loop can no longer run; the merge settles the final review. Task 4.4 is complete. Archive `add-aws-staging-deployment` with `openspec archive add-aws-staging-deployment` in its own change of work. No production rollout, patient integration, real recordings or Vimeo migration was performed.
