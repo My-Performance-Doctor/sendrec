@@ -16,6 +16,10 @@ import urllib.request
 import urllib.parse
 
 
+class ReleaseFailure(RuntimeError):
+    """A release outcome in this script's own fixed words, safe to print."""
+
+
 def aws(*args):
     result = subprocess.run(["aws", *args, "--output", "json"], check=True, capture_output=True, text=True)
     return json.loads(result.stdout or "{}")
@@ -102,12 +106,12 @@ def promote(manifest, target, staged=None, probe=readiness):
                   "--network-configuration", json.dumps({"awsvpcConfiguration": {
                       "subnets": config["subnets"], "securityGroups": config["securityGroups"], "assignPublicIp": "DISABLED"}}))
     if started.get("failures") or len(started.get("tasks", [])) != 1:
-        raise RuntimeError("Single migration task failed to start")
+        raise ReleaseFailure("Single migration task failed to start")
     task = started["tasks"][0]["taskArn"]
     aws("ecs", "wait", "tasks-stopped", "--cluster", config["cluster"], "--tasks", task)
     stopped = aws("ecs", "describe-tasks", "--cluster", config["cluster"], "--tasks", task)["tasks"][0]
     if len(stopped.get("containers", [])) != 1 or stopped["containers"][0].get("exitCode") != 0:
-        raise RuntimeError("Migration failed; application was not changed")
+        raise ReleaseFailure("Migration failed; application was not changed")
     try:
         aws("ecs", "update-service", "--cluster", config["cluster"], "--service", config["service"],
             "--task-definition", config["applicationTaskDefinition"], "--desired-count", str(config["desiredCount"]))
@@ -123,8 +127,8 @@ def promote(manifest, target, staged=None, probe=readiness):
         aws("ecs", "wait", "services-stable", "--cluster", config["cluster"], "--services", config["service"])
         rolled_back = aws("ecs", "describe-services", "--cluster", config["cluster"], "--services", config["service"])["services"][0]
         if rolled_back["taskDefinition"] != old_definition or rolled_back["runningCount"] != old_count or (old_count and not probe(config["readinessUrl"])):
-            raise RuntimeError("Rollback needs operator recovery; state was retained") from None
-        raise RuntimeError("Release failed; prior application restored; migration and media retained") from None
+            raise ReleaseFailure("Rollback needs operator recovery; state was retained") from None
+        raise ReleaseFailure("Release failed; prior application restored; migration and media retained") from None
     return {"target": target, "verified": True, "image": manifest["image"], "revision": manifest["revision"],
             "infrastructureSha256": manifest["infrastructureSha256"], "verifiedAt": int(time.time())}
 
@@ -147,9 +151,16 @@ def main():
     args.output.write_text(json.dumps(result, indent=2) + "\n")
 
 
-if __name__ == "__main__":
+def run():
     try:
         main()
+    except ReleaseFailure as failure:
+        # Say whether the prior application is back, so the operator knows if recovery is theirs.
+        raise SystemExit(f"Release did not pass: {failure}.") from None
     except Exception:
         # AWS diagnostics may contain resource identifiers; the runbook covers private investigation.
-        raise SystemExit("Release did not pass. Inspect private ECS deployment and migration status; no state was deleted.")
+        raise SystemExit("Release did not pass. Inspect private ECS deployment and migration status; no state was deleted.") from None
+
+
+if __name__ == "__main__":
+    run()

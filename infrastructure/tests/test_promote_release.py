@@ -76,6 +76,15 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual(1, self.count)
         self.assertEqual(1, len([c for c in self.calls if c[1]=='run-task']))
 
+    def test_exit_message_says_whether_the_prior_application_is_back(self):
+        failure = promote.ReleaseFailure('Release failed; prior application restored; migration and media retained')
+        with patch.object(promote, 'main', side_effect=failure), self.assertRaises(SystemExit) as stopped:
+            promote.run()
+        self.assertIn('prior application restored', str(stopped.exception))
+        with patch.object(promote, 'main', side_effect=RuntimeError('arn:aws:ecs:synthetic diagnostics')), self.assertRaises(SystemExit) as stopped:
+            promote.run()
+        self.assertNotIn('arn:', str(stopped.exception))
+
     def test_production_requires_matching_staging_and_distinct_resources(self):
         with self.assertRaises(ValueError):
             promote.validate(self.manifest, 'production')
