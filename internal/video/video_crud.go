@@ -304,6 +304,24 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// finalizeMissing answers a finalize that found no uploading row: 204 for a
+// completed managed replay, otherwise 404, the same answer as the unmanaged
+// path, so a client stops retrying a take that cannot finish.
+func (h *Handler) finalizeMissing(w http.ResponseWriter, r *http.Request, req updateRequest, videoID, userID string) {
+	if req.Title == "" {
+		completed, err := h.managedFinalizeCompleted(r.Context(), videoID, userID)
+		if err != nil {
+			httputil.WriteError(w, 503, "finalization state unavailable")
+			return
+		}
+		if completed {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+	httputil.WriteError(w, http.StatusNotFound, "video not found")
+}
+
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	videoID := chi.URLParam(r, "id")
@@ -337,16 +355,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			videoID, userID,
 		).Scan(&fileKey, &fileSize, &shareToken, &webcamKey, &expectedContentType, &duration)
 		if err != nil {
-			if req.Title == "" && errors.Is(err, pgx.ErrNoRows) {
-				completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
-				if replayErr != nil {
-					httputil.WriteError(w, 503, "finalization state unavailable")
-					return
-				}
-				if completed {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
+			if errors.Is(err, pgx.ErrNoRows) {
+				h.finalizeMissing(w, r, req, videoID, userID)
+				return
 			}
 			httputil.WriteError(w, http.StatusNotFound, "video not found")
 			return
@@ -395,20 +406,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				if req.Title == "" {
-					completed, replayErr := h.managedFinalizeCompleted(r.Context(), videoID, userID)
-					if replayErr != nil {
-						httputil.WriteError(w, 503, "finalization state unavailable")
-						return
-					}
-					if completed {
-						w.WriteHeader(http.StatusNoContent)
-						return
-					}
-				}
-				// No uploading row matched and this is not a replay: the same answer as
-				// the unmanaged path, so a client stops retrying a take that cannot finish.
-				httputil.WriteError(w, http.StatusNotFound, "video not found")
+				h.finalizeMissing(w, r, req, videoID, userID)
 				return
 			}
 			httputil.WriteError(w, http.StatusInternalServerError, "failed to update video")

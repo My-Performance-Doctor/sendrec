@@ -82,6 +82,7 @@ type Config struct {
 
 type Server struct {
 	watchLimiter        *ratelimit.Limiter
+	videoLimiter        *ratelimit.Limiter
 	mpdMediaPolicy      bool
 	mpdHandler          *mpd.Handler
 	router              chi.Router
@@ -452,7 +453,8 @@ func (s *Server) routes() {
 			}
 		})
 
-		videoLimiter := ratelimit.NewLimiter(2, 10)
+		s.videoLimiter = ratelimit.NewLimiter(2, 10)
+		videoLimiter := s.videoLimiter
 		s.router.Route("/api/videos", func(r chi.Router) {
 			r.Use(videoLimiter.Middleware)
 			r.Use(maxBodySize(64 * 1024))

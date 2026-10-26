@@ -66,12 +66,16 @@ func (m *Monitor) Sample(ctx context.Context) (Metrics, error) {
 
 // WorkersProbe checks recent successful monitoring, independently of queue depth.
 // It fails closed before the first sample, after two consecutive failed samples,
-// after two minutes without a success, or once monitoring stops. It does not assert
+// after staleAfter without a success, or once monitoring stops. It does not assert
 // liveness of each individual processing loop.
+// staleAfter spans two sample intervals plus margin for the next sample's own
+// query time, so one tolerated failure is not undone by a slower next success.
+const staleAfter = 2*time.Minute + 30*time.Second
+
 func (m *Monitor) WorkersProbe(context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if !m.sampleHealthy || time.Since(m.lastSuccess) > 2*time.Minute {
+	if !m.sampleHealthy || time.Since(m.lastSuccess) > staleAfter {
 		return errors.New("worker monitoring unavailable")
 	}
 	return nil

@@ -978,6 +978,7 @@ func TestTestWebhook_NoUrl(t *testing.T) {
 	defer mock.Close()
 
 	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+	handler.SetWebhookClient(webhook.New(mock))
 
 	mock.ExpectQuery(`SELECT webhook_url, webhook_secret FROM notification_preferences WHERE user_id = \$1`).
 		WithArgs(testUserID).
@@ -1003,12 +1004,6 @@ func TestTestWebhook_DisabledWebhooks(t *testing.T) {
 	defer mock.Close()
 
 	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
-
-	webhookURL := "https://example.test/hook"
-	webhookSecret := "testsecret123"
-	mock.ExpectQuery(`SELECT webhook_url, webhook_secret FROM notification_preferences WHERE user_id = \$1`).
-		WithArgs(testUserID).
-		WillReturnRows(pgxmock.NewRows([]string{"webhook_url", "webhook_secret"}).AddRow(&webhookURL, &webhookSecret))
 
 	r := chi.NewRouter()
 	r.With(newAuthMiddleware()).Post("/api/settings/notifications/test-webhook", handler.TestWebhook)

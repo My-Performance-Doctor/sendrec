@@ -383,25 +383,43 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		identityError(w, ErrUnavailable)
 		return
 	}
-	// Cognito may have rotated the refresh token already. Keep it when this refresh
-	// stops short, so the next attempt does not present a retired credential.
+	// Cognito may have rotated the refresh token already. Store it before anything
+	// else can fail, under a savepoint, so a refresh that stops short keeps it even
+	// after a failed statement aborts the rest of the transaction.
+	rotated := token.RefreshToken != "" && token.RefreshToken != raw
+	if token.RefreshToken == "" {
+		token.RefreshToken = raw
+	}
+	refresh, e := integration.Encrypt(h.key, token.RefreshToken)
+	if e != nil {
+		identityError(w, ErrUnavailable)
+		return
+	}
+	if rotated {
+		if _, e = tx.Exec(ctx, `UPDATE mpd_sessions SET refresh_encrypted=$2 WHERE id=$1`, sid, refresh); e != nil {
+			identityError(w, ErrUnavailable)
+			return
+		}
+		if _, e = tx.Exec(ctx, `SAVEPOINT upstream_rotation`); e != nil {
+			identityError(w, ErrUnavailable)
+			return
+		}
+	}
 	keepRotation := func() {
-		if token.RefreshToken == "" || token.RefreshToken == raw {
+		if !rotated {
 			return
 		}
-		rotated, err := integration.Encrypt(h.key, token.RefreshToken)
-		if err != nil {
-			return
-		}
-		if _, err = tx.Exec(ctx, `UPDATE mpd_sessions SET refresh_encrypted=$2 WHERE id=$1 AND NOT revoked`, sid, rotated); err == nil {
+		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT upstream_rotation`); err == nil {
 			_ = tx.Commit(ctx)
 		}
 	}
 	// The session now belongs to someone else: end it rather than retry upstream forever.
 	revoke := func() {
-		if _, err := tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid); err == nil {
-			_ = tx.Commit(ctx)
+		if _, err := tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid); err != nil {
+			keepRotation()
+			return
 		}
+		_ = tx.Commit(ctx)
 	}
 	id, e := h.VerifyAccess(ctx, token.AccessToken)
 	if e != nil {
@@ -424,18 +442,12 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, e := integration.Encrypt(h.key, token.AccessToken)
 	if e != nil {
-		identityError(w, ErrUnavailable)
-		return
-	}
-	if token.RefreshToken == "" {
-		token.RefreshToken = raw
-	}
-	refresh, e := integration.Encrypt(h.key, token.RefreshToken)
-	if e != nil {
+		keepRotation()
 		identityError(w, ErrUnavailable)
 		return
 	}
 	if _, e = tx.Exec(ctx, `UPDATE mpd_sessions SET access_encrypted=$2,refresh_encrypted=$3,cognito_expires_at=$4 WHERE id=$1 AND NOT revoked`, sid, enc, refresh, id.ExpiresAt); e != nil {
+		keepRotation()
 		identityError(w, ErrUnavailable)
 		return
 	}

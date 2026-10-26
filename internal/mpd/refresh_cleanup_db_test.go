@@ -328,4 +328,19 @@ func TestRefreshKeepsRotationOnVerifyFailureAndRevokesOnStaffChange(t *testing.T
 	if revoked, _ := state(); !revoked {
 		t.Fatal("session granted to another staff member was not revoked")
 	}
+
+	// A session whose linked identity no longer matches the signed-in subject ends too.
+	otherStaff.Store(false)
+	if sid, e = h.createSession(ctx, p, id, grant, sign(nil), nextUpstream); e != nil {
+		t.Fatal(e)
+	}
+	cookie = strings.Repeat("s", 43)
+	exec(`UPDATE mpd_sessions SET refresh_hash=$2 WHERE id=$1`, sid, hash(cookie))
+	exec(`UPDATE mpd_external_identities SET subject='synthetic-other' WHERE user_id=$1`, p.UserID)
+	if w := refresh(); w.Code == 200 {
+		t.Fatal("a different subject refreshed this session")
+	}
+	if revoked, _ := state(); !revoked {
+		t.Fatal("session of a relinked identity was not revoked")
+	}
 }
