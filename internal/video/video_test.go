@@ -1437,6 +1437,33 @@ func TestUpdate_VideoNotFound(t *testing.T) {
 	}
 }
 
+// A transient lookup failure at finalize stays retryable instead of answering 404.
+func TestUpdate_FinalizeLookupErrorIsRetryable(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
+	mock.ExpectQuery(`SELECT file_key, file_size, share_token, webcam_key, content_type, duration FROM videos`).
+		WithArgs("video-123", testUserID).
+		WillReturnError(errors.New("database timeout"))
+
+	body, _ := json.Marshal(updateRequest{Status: "ready"})
+	r := chi.NewRouter()
+	r.With(newAuthMiddleware()).Patch("/api/videos/{id}", handler.Update)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPatch, "/api/videos/video-123", body))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet pgxmock expectations: %v", err)
+	}
+}
+
 func TestUpdate_InvalidJSON(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

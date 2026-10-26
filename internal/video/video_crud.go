@@ -359,7 +359,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 				h.finalizeMissing(w, r, req, videoID, userID)
 				return
 			}
-			httputil.WriteError(w, http.StatusNotFound, "video not found")
+			// A transient failure must stay retryable; 404 tells the client to give up.
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to update video")
 			return
 		}
 

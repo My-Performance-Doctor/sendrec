@@ -177,9 +177,6 @@ export function TranscriptSection({
                     onClick={() => uploadInputRef.current?.click()}
                     disabled={uploadingTranscript}
                     className="detail-btn"
-                    style={{
-                      opacity: uploadingTranscript ? 0.5 : undefined,
-                    }}
                   >
                     {uploadingTranscript ? "Uploading..." : "Upload transcript"}
                   </button>

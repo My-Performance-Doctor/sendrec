@@ -353,7 +353,9 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	// Serialize refreshes using the row lock. A failed upstream request leaves the
 	// cookie valid; a committed rotation makes a concurrent replay fail its lookup.
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// Detached from the request: once Cognito rotates the refresh token, a client
+	// that hangs up must not cancel the statements that keep it.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Second)
 	defer cancel()
 	tx, e := b.Begin(ctx)
 	if e != nil {
@@ -405,49 +407,51 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	keepRotation := func() {
+	// Every return that has not committed keeps the rotated credential. After a
+	// commit the transaction is closed, the Exec fails and this does nothing. It
+	// runs before the deferred Rollback above.
+	defer func() {
 		if !rotated {
 			return
 		}
 		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT upstream_rotation`); err == nil {
 			_ = tx.Commit(ctx)
 		}
-	}
-	// The session now belongs to someone else: end it rather than retry upstream forever.
-	revoke := func() {
+	}()
+	// The session now belongs to someone else: end it rather than retry upstream
+	// forever. It answers the error to write: ErrDenied once revoked, otherwise
+	// ErrUnavailable with the session left retryable.
+	revoke := func() error {
 		if _, err := tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid); err != nil {
-			keepRotation()
-			return
+			return ErrUnavailable
 		}
-		_ = tx.Commit(ctx)
+		if tx.Commit(ctx) != nil {
+			return ErrUnavailable
+		}
+		return ErrDenied
 	}
 	id, e := h.VerifyAccess(ctx, token.AccessToken)
 	if e != nil {
 		// VerifyAccess cannot tell a bad token from an unreachable key set, so the
 		// session stays and only the rotated credential is kept.
-		keepRotation()
 		identityError(w, e)
 		return
 	}
 	var subject string
 	if err := tx.QueryRow(ctx, `SELECT subject FROM mpd_external_identities WHERE user_id=$1 AND issuer=$2`, s.UserID, id.Issuer).Scan(&subject); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		keepRotation()
 		identityError(w, ErrUnavailable)
 		return
 	}
 	if subject != id.Subject {
-		revoke()
-		identityError(w, ErrDenied)
+		identityError(w, revoke())
 		return
 	}
 	enc, e := integration.Encrypt(h.key, token.AccessToken)
 	if e != nil {
-		keepRotation()
 		identityError(w, ErrUnavailable)
 		return
 	}
 	if _, e = tx.Exec(ctx, `UPDATE mpd_sessions SET access_encrypted=$2,refresh_encrypted=$3,cognito_expires_at=$4 WHERE id=$1 AND NOT revoked`, sid, enc, refresh, id.ExpiresAt); e != nil {
-		keepRotation()
 		identityError(w, ErrUnavailable)
 		return
 	}
@@ -456,12 +460,8 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		// Preserve a newly rotated Cognito credential after an MPD outage, while
 		// granting no local access and keeping the same browser cookie retryable.
 		if e == ErrDenied {
-			_, e = tx.Exec(ctx, `UPDATE mpd_sessions SET revoked=true,refresh_hash=NULL WHERE id=$1`, sid)
-			if e != nil {
-				identityError(w, ErrUnavailable)
-				return
-			}
-			e = ErrDenied
+			identityError(w, revoke())
+			return
 		}
 		failure := e
 		if tx.Commit(ctx) != nil {
@@ -472,8 +472,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.StaffID != s.StaffID || g.TenantID != s.TenantID {
-		revoke()
-		identityError(w, ErrDenied)
+		identityError(w, revoke())
 		return
 	}
 	// A local cookie-write failure must not discard credentials already rotated
