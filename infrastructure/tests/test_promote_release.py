@@ -133,7 +133,10 @@ class PromotionTest(unittest.TestCase):
         with patch.object(promote, 'aws', aws):
             result = promote.promote(self.manifest, 'production', evidence, probe=lambda _: True)
         self.assertEqual(self.manifest['image'], result['image'])
-        self.assertIn(('ecr', 'describe-images', '--repository-name', 'sendrec', '--image-ids', 'imageDigest=sha256:' + 'b' * 64), self.calls)
+        self.assertEqual(copy, result['deployedImage'])
+        self.assertIn(('ecr', 'describe-repositories', '--registry-id', '222222222222', '--repository-names', 'sendrec'), self.calls)
+        self.assertIn(('ecr', 'describe-images', '--registry-id', '222222222222', '--repository-name', 'sendrec',
+                       '--image-ids', 'imageDigest=sha256:' + 'b' * 64), self.calls)
         self.manifest['production']['image'] = copy.replace('b' * 64, 'c' * 64)
         with self.assertRaisesRegex(ValueError, 'reviewed image digest'):
             promote.validate(self.manifest, 'production', evidence)

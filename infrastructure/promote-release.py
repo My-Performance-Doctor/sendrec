@@ -107,11 +107,14 @@ def promote(manifest, target, staged=None, probe=readiness):
     config = validate(manifest, target, staged)
     check_infrastructure(manifest, target)
     image = target_image(manifest, target)
+    registry = image.split(".", 1)[0]
     repository, digest = image.split("/", 1)[1].split("@", 1)
-    policy = aws("ecr", "describe-repositories", "--repository-names", repository)["repositories"][0]
+    # Ask the registry the image names, not whichever account the caller's credentials default to.
+    policy = aws("ecr", "describe-repositories", "--registry-id", registry, "--repository-names", repository)["repositories"][0]
     if policy.get("imageTagMutability") != "IMMUTABLE":
         raise ValueError("The release repository must enforce immutable tags")
-    image_detail = aws("ecr", "describe-images", "--repository-name", repository, "--image-ids", "imageDigest=" + digest)["imageDetails"][0]
+    image_detail = aws("ecr", "describe-images", "--registry-id", registry, "--repository-name", repository,
+                       "--image-ids", "imageDigest=" + digest)["imageDetails"][0]
     if manifest["revision"] not in image_detail.get("imageTags", []):
         raise ValueError("The image digest is not bound to the reviewed source revision")
     check_definitions(config, image)
@@ -157,7 +160,7 @@ def promote(manifest, target, staged=None, probe=readiness):
         if not restored:
             raise ReleaseFailure("Rollback needs operator recovery; state was retained") from None
         raise ReleaseFailure("Release failed; prior application restored; migration and media retained") from None
-    return {"target": target, "verified": True, "image": manifest["image"], "revision": manifest["revision"],
+    return {"target": target, "verified": True, "image": manifest["image"], "deployedImage": image, "revision": manifest["revision"],
             "infrastructureSha256": manifest["infrastructureSha256"], "verifiedAt": int(time.time())}
 
 
