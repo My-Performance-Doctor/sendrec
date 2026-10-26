@@ -235,14 +235,6 @@ export function TranscriptSection({
                   video.summaryStatus === "processing"
                 }
                 className="detail-btn"
-                style={{
-                  opacity:
-                    video.transcriptStatus !== "ready" ||
-                    video.summaryStatus === "pending" ||
-                    video.summaryStatus === "processing"
-                      ? 0.5
-                      : undefined,
-                }}
               >
                 {video.summaryStatus === "ready"
                   ? "Re-summarize"
@@ -286,14 +278,6 @@ export function TranscriptSection({
                     video.documentStatus === "processing"
                   }
                   className="detail-btn"
-                  style={{
-                    opacity:
-                      video.transcriptStatus !== "ready" ||
-                      video.documentStatus === "pending" ||
-                      video.documentStatus === "processing"
-                        ? 0.5
-                        : undefined,
-                  }}
                 >
                   Generate
                 </button>

@@ -407,6 +407,12 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Statements that keep a rotated credential get their own short deadline: the
+	// request budget may already be spent by a slow MPD or key-set call, and a
+	// commit attempted on an expired context closes the transaction for good.
+	keepCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	}
 	// Every return that has not committed keeps the rotated credential. After a
 	// commit the transaction is closed, the Exec fails and this does nothing. It
 	// runs before the deferred Rollback above.
@@ -414,8 +420,10 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		if !rotated {
 			return
 		}
-		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT upstream_rotation`); err == nil {
-			_ = tx.Commit(ctx)
+		keep, done := keepCtx()
+		defer done()
+		if _, err := tx.Exec(keep, `ROLLBACK TO SAVEPOINT upstream_rotation`); err == nil {
+			_ = tx.Commit(keep)
 		}
 	}()
 	// The session now belongs to someone else: end it rather than retry upstream
@@ -464,7 +472,9 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		failure := e
-		if tx.Commit(ctx) != nil {
+		keep, done := keepCtx()
+		defer done()
+		if tx.Commit(keep) != nil {
 			identityError(w, ErrUnavailable)
 			return
 		}

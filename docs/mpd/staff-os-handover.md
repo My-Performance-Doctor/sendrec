@@ -81,7 +81,7 @@ Retrying finalize is safe. To throw a take away, `DELETE /api/videos/{id}`.
 
 ### 3. Wait for processing
 
-Poll `GET /api/videos/{id}/mpd` until `metadata.status` is `ready`. On staging a 10-second clip took about 5 seconds to transcode and about 70 seconds to transcribe. The transcript arrives after `ready`, so don't block the screen on it.
+Poll `GET /api/videos/{id}/mpd` until `metadata.status` is `ready`, a few seconds apart. Every `/api/videos` call, including this one, the preview and the upload-link renewal, shares one rate limit of 2 requests a second with bursts of 10 for each address SendRec sees, so clients behind one address share it. A 429 carries `Retry-After`; wait that long and retry. On staging a 10-second clip took about 5 seconds to transcode and about 70 seconds to transcribe. The transcript arrives after `ready`, so don't block the screen on it.
 
 ### 4. Private preview
 
