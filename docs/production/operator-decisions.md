@@ -46,7 +46,7 @@ Production launches on the managed `*.cloudfront.net` hostname, as staging does.
 
 ## 4. Image
 
-Production runs the exact image digest that passed on staging, copied into a production ECR repository. `ProductionConfig` already requires a same-account digest. Neither account has a SendRec application ECR repository yet, so creating one is part of task 2.2.
+Production runs the exact image digest that passed on staging, copied into a production ECR repository. `ProductionConfig` already requires a same-account digest. Staging got its immutable `sendrec` repository on 2026-10-26. Production still needs one, created in the deploy window.
 
 ## 5. Staff sign-in
 

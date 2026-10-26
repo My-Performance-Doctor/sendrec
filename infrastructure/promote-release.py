@@ -16,6 +16,9 @@ import urllib.request
 import urllib.parse
 
 
+IMAGE = re.compile(r"[0-9]{12}\.dkr\.ecr\.ap-southeast-2\.amazonaws\.com/[a-z0-9/_-]+@sha256:[a-f0-9]{64}")
+
+
 class ReleaseFailure(RuntimeError):
     """A release outcome in this script's own fixed words, safe to print."""
 
@@ -29,11 +32,14 @@ def validate(manifest, target, staged=None):
     if not re.fullmatch(r"[a-f0-9]{40}", manifest["revision"]):
         raise ValueError("A full source revision is required")
     image = manifest["image"]
-    if not re.fullmatch(r"[0-9]{12}\.dkr\.ecr\.ap-southeast-2\.amazonaws\.com/[a-z0-9/_-]+@sha256:[a-f0-9]{64}", image):
+    if not IMAGE.fullmatch(image):
         raise ValueError("A Sydney ECR image digest is required")
     if not re.fullmatch(r"[a-f0-9]{64}", manifest["infrastructureSha256"]):
         raise ValueError("The reviewed infrastructure digest is required")
     config = manifest[target]
+    # Check both environments' images now, so a bad production copy stops the release before staging migrates.
+    for environment in ("staging", "production"):
+        target_image(manifest, environment)
     if config.get("desiredCount") != (2 if target == "production" else 1):
         raise ValueError("Only one staging or two approved production tasks are supported")
     parsed = urllib.parse.urlparse(config["readinessUrl"])
@@ -49,6 +55,23 @@ def validate(manifest, target, staged=None):
             if config[key] == manifest["staging"][key]:
                 raise ValueError("Production and staging resources must differ")
     return config
+
+
+def target_image(manifest, target):
+    """The image this environment's task definitions name.
+
+    Production runs in its own account, so it pulls a copy from its own registry. The copy may
+    name another account and repository but must carry the reviewed digest. Staging runs the
+    top-level image itself, because that is the image its evidence vouches for.
+    """
+    image = manifest[target].get("image", manifest["image"])
+    if target == "staging" and image != manifest["image"]:
+        raise ValueError("Staging must run the top-level reviewed image")
+    if not IMAGE.fullmatch(image):
+        raise ValueError("A Sydney ECR image digest is required")
+    if image.split("@", 1)[1] != manifest["image"].split("@", 1)[1]:
+        raise ValueError("Every environment must run the reviewed image digest")
+    return image
 
 
 def check_infrastructure(manifest, target):
@@ -88,15 +111,18 @@ def readiness(url):
 def promote(manifest, target, staged=None, probe=readiness):
     config = validate(manifest, target, staged)
     check_infrastructure(manifest, target)
-    image_parts = manifest["image"].split("/", 1)[1].split("@", 1)
-    repository, digest = image_parts
-    policy = aws("ecr", "describe-repositories", "--repository-names", repository)["repositories"][0]
+    image = target_image(manifest, target)
+    registry = image.split(".", 1)[0]
+    repository, digest = image.split("/", 1)[1].split("@", 1)
+    # Ask the registry the image names, not whichever account the caller's credentials default to.
+    policy = aws("ecr", "describe-repositories", "--registry-id", registry, "--repository-names", repository)["repositories"][0]
     if policy.get("imageTagMutability") != "IMMUTABLE":
         raise ValueError("The release repository must enforce immutable tags")
-    image_detail = aws("ecr", "describe-images", "--repository-name", repository, "--image-ids", "imageDigest=" + digest)["imageDetails"][0]
+    image_detail = aws("ecr", "describe-images", "--registry-id", registry, "--repository-name", repository,
+                       "--image-ids", "imageDigest=" + digest)["imageDetails"][0]
     if manifest["revision"] not in image_detail.get("imageTags", []):
         raise ValueError("The image digest is not bound to the reviewed source revision")
-    check_definitions(config, manifest["image"])
+    check_definitions(config, image)
     previous = aws("ecs", "describe-services", "--cluster", config["cluster"], "--services", config["service"])["services"][0]
     old_definition, old_count = previous["taskDefinition"], previous["desiredCount"]
     # A stable token makes a transport retry of this exact migration run safe.
@@ -139,7 +165,7 @@ def promote(manifest, target, staged=None, probe=readiness):
         if not restored:
             raise ReleaseFailure("Rollback needs operator recovery; state was retained") from None
         raise ReleaseFailure("Release failed; prior application restored; migration and media retained") from None
-    return {"target": target, "verified": True, "image": manifest["image"], "revision": manifest["revision"],
+    return {"target": target, "verified": True, "image": manifest["image"], "deployedImage": image, "revision": manifest["revision"],
             "infrastructureSha256": manifest["infrastructureSha256"], "verifiedAt": int(time.time())}
 
 
