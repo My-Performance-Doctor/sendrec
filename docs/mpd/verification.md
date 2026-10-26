@@ -64,6 +64,33 @@ T3 browser initialization failed because the host's AppArmor configuration block
 
 Activation still needs the human-merged mpd-api and SendRec revisions, matching Cognito client/issuer and secret references, an empty managed workspace, actual staged recording/offboarding checks, tested alert receipt and an isolated AWS RDS/S3 restore. Production configuration/cost and recovery objectives require review, followed by separate rollout approval. The existing staging change stays open until its missing evidence is supplied honestly. Vimeo and evaluation media remain in place.
 
+## Hosted checks through Staff OS and SendRec, 2026-10-26
+
+Run on staging against SendRec main `3de745b`, in Chrome 154 in the T3 server browser, by an MPD HQ worker. It signed in with a synthetic Doctor staff account (password and TOTP) and used a synthetic test patient. The host has no camera, microphone or screen to share, so the recorder got labelled synthetic sources: a canvas "screen" that widens from 1280x720 to 1920x816 six seconds in, a canvas "camera" and generated speech. Faults were injected only in the worker's own browser tab, so no shared service was taken down. The test videos stay on staging.
+
+| Check | Result |
+|---|---|
+| Staff OS recording to report | A 21 s take from the patient's Videos tab: SendRec session exchange 200, create 201, upload, finalize 204. Normalise re-encoded the VP9 upload in 21 s and transcription finished in 2 min. mpd-api set the link password (200), published (200) and made the report |
+| Patient link and password | The report's link is the SendRec watch URL. Its watch API returned 403 with no password, a wrong one and an empty one, and 200 with the password read through mpd-api's staff password route |
+| Playback, embed and captions | In a separate incognito tab: 1280x720 playback, media range request 206, embed 200 and a 4-cue VTT matching the speech. mpd-api marked the report watched only after this patient-side playback. The frame after the widening is letterboxed inside 1280x720 ([screenshot](images/2026-10-26-patient-watch-letterboxed.png)) |
+| URL renewal over a long pause (2.5) | Paused at 3.14 s for 377 s, past the 300 s signed URL lifetime. Resumed from 3.14 s on a renewed media URL (206), played on, and a seek to 15 s after the expiry played |
+| Session expiry during upload (3.1) | An injected 401 on SendRec's create made Staff OS renew its SendRec session and create the recording on the retry. SendRec logged one create |
+| Storage outage during upload (3.1) | Uploads to storage failed in the tab. Staff OS showed "Connection lost. Retrying…", tried four times over about 17 s, then marked the take "SendRec could not be reached." and kept it |
+| MPD outage while filing (3.1) | With storage back and mpd-api calls failing in the tab, the browser's `online` event resumed the take. The same upload completed (200) with no second create, SendRec finalized, then filing failed as "MPD could not be reached." and the take was kept |
+| Reauthorize and retry (3.1) | A page reload signed Staff OS out, because its session lives in memory. After signing in again the take was still listed from IndexedDB with "Try again" and "Discard". "Try again" filed it to the patient and it became a report. SendRec logged exactly one create and one finalize for the take |
+| MPD sign-in entry (2.6) | SendRec's sign-in page offers "Sign in with MPD" ([screenshot](images/2026-10-26-sign-in-with-mpd.png)). It went through the staging hosted sign-in page with password and TOTP and returned to SendRec's library with a one-use handoff |
+| Staff preview and unpublished state (2.6) | An unpublished recording opened a private staff preview (preview 201, one-use handoff, the player plays, "This does not mark a patient report watched"). Copy share link, Copy link and Copy embed were all disabled and the link read "Available after publication" ([screenshot](images/2026-10-26-unpublished-recording.png)) |
+| Publication and copy-link states (2.6) | Another staff member's recording refused publication with 403. On the worker's own upload, publishing without a password returned 409, setting a password returned 204, publishing returned 200 and enabled all three copy controls, and Copy link showed "Link copied". Unpublishing returned 200 and disabled them again |
+| MP4 and WebM upload, retranscription (3.1) | Synthetic MP4 and WebM files uploaded through SendRec's own Upload under the MPD session, were normalised and transcribed. "Redo transcript" returned 202 and finished in about 70 s with captions matching the speech |
+
+Findings:
+
+- The second recording's transcript yielded a follow-up task. mpd-api's Zapier call failed within a millisecond, so staging's webhook most likely holds a placeholder and no Asana task was made. mpd-api left the effect `ambiguous` by design, which keeps staging's `SendrecAttentionAlarm` raised until someone reconciles it with the recovery command.
+- Staff OS sessions dropped twice without the worker signing out. All workers share this browser profile and the synthetic Doctor account, so another worker's sign-out is the likely cause.
+- The last caption cue of the first take was misheard at the cut ("Stay safe." for "staging check").
+
+Not covered here: long pauses on the embed, playlists and the library or detail player, download resume, delayed sequential uploads and denied renewal (2.5); the operator identity-linking procedure and the rule that a matching email alone cannot move evaluation-owner media (2.6); capacity-limit behaviour and SendRec's own native recorder (3.1); and real cameras and Safari, which need a person.
+
 ## Automated check results
 
 - `go test ./... -count=1 -timeout=20m`, with PostgreSQL 18 and ffmpeg: 1,787 checks passed. The optional cross-service harness skipped in that command; its dedicated consumer run passed separately.
