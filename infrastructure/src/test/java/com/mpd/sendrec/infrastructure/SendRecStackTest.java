@@ -9,17 +9,21 @@ import software.amazon.awscdk.assertions.*;
 import software.amazon.awscdk.services.ec2.*;
 
 class SendRecStackTest {
+  private static final String PRODUCTION_TOPIC = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";
   private final StackProps props = StackProps.builder().env(Environment.builder()
       .account(StagingConfig.ACCOUNT).region(StagingConfig.REGION).build()).build();
 
   private SendRecStack stack(Map<String, Object> context) {
     App app = new App(AppProps.builder().context(context).build());
-    Stack network = new Stack(app, "SyntheticNetwork", props);
-    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
+    return new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE, syntheticVpc(app, "SyntheticNetwork"));
+  }
+
+  private IVpc syntheticVpc(App app, String networkName) {
+    Stack network = new Stack(app, networkName, props);
+    return Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
         SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
         SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
         SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
-    return new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE, vpc);
   }
 
   @Test void normalDeploymentHasPrivateOriginsAndStorage() {
@@ -83,19 +87,11 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("bootstrap", "false", "bootstrapCidr", "0.0.0.0/0")));
   }
   @Test void productionIsIsolatedImmutableAndUnactivated() {
-    App app = new App(AppProps.builder().outdir("build/synthetic-production").build());
-    Stack network = new Stack(app, "ProductionSyntheticNetwork", props);
-    IVpc vpc = Vpc.Builder.create(network, "Vpc").maxAzs(2).subnetConfiguration(List.of(
-        SubnetConfiguration.builder().name("public").subnetType(SubnetType.PUBLIC).build(),
-        SubnetConfiguration.builder().name("service").subnetType(SubnetType.PRIVATE_WITH_EGRESS).build(),
-        SubnetConfiguration.builder().name("data").subnetType(SubnetType.PRIVATE_ISOLATED).build())).build();
-    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
-    var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production", image,
-        "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations");
-    Template template = Template.fromStack(new SendRecStack(app, "Production", props, config, vpc));
+    SendRecStack stack = production(Map.of());
+    Template template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
-    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("MultiAZ", true, "BackupRetentionPeriod", 35,
+    template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
     // Versioning on and nothing expires; only abandoned multipart uploads are cleaned up.
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
@@ -109,7 +105,7 @@ class SendRecStackTest {
     assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
     template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
         "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
-    template.resourceCountIs("AWS::CloudWatch::Alarm", 9);
+    template.resourceCountIs("AWS::CloudWatch::Alarm", 11);
     template.resourceCountIs("AWS::Events::Rule", 1);
     for (var task : template.findResources("AWS::ECS::TaskDefinition").values()) {
       String definition = task.toString();
@@ -119,9 +115,14 @@ class SendRecStackTest {
     }
     for (var alarm : template.findResources("AWS::CloudWatch::Alarm").values()) {
       String definition = alarm.toString();
-      assertTrue(definition.contains(config.alertTopicArn()));
+      assertTrue(definition.contains("AlarmActions=[" + PRODUCTION_TOPIC + "]"));
+      assertTrue(definition.contains("OKActions=[" + PRODUCTION_TOPIC + "]"));
       assertTrue(definition.contains("TreatMissingData=breaching") || definition.contains("TreatMissingData=notBreaching"));
     }
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeStorageSpace",
+        "Threshold", 4.0 * 1024 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory",
+        "Threshold", 128.0 * 1024 * 1024, "ComparisonOperator", "LessThanThreshold", "TreatMissingData", "breaching"));
     // Desired count comes from the independent probe, not this dormant template.
     template.hasResourceProperties("AWS::Lambda::Function", Map.of("Environment", Match.objectLike(Map.of(
         "Variables", Match.objectLike(Map.of("SERVICE_ARN", Match.anyValue(), "CLUSTER_ARN", Match.anyValue()))))));
@@ -130,7 +131,7 @@ class SendRecStackTest {
     int gated = 0;
     for (var alarm : template.findResources("AWS::CloudWatch::Alarm").entrySet()) {
       String definition = alarm.getValue().toString();
-      if (alarm.getKey().startsWith("DatabaseCPU") || alarm.getKey().startsWith("BackupAgeSeconds")) {
+      if (alarm.getKey().startsWith("Database") || alarm.getKey().startsWith("BackupAgeSeconds")) {
         assertFalse(definition.contains("Expression="));
       } else {
         gated++;
@@ -141,7 +142,7 @@ class SendRecStackTest {
       }
     }
     assertEquals(7, gated);
-    app.synth();
+    Stage.of(stack).synth();
   }
 
   @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
@@ -205,6 +206,24 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic));
     assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, ""));
     assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App()));
+  }
+
+  @Test void productionDatabaseSizeIsMicroOrSmallAndStagingStaysMicro() {
+    Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
+    Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
+        .hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.micro"));
+    Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
+        .hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory", "Threshold", 64.0 * 1024 * 1024));
+    assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
+  }
+
+  private SendRecStack production(Map<String, Object> context) {
+    App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
+    IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
+    var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
+        "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
+        PRODUCTION_TOPIC);
+    return new SendRecStack(app, "Production", props, config, vpc);
   }
 
 }

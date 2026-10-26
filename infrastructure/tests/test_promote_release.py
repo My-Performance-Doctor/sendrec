@@ -68,6 +68,15 @@ class PromotionTest(unittest.TestCase):
             promote.promote(self.manifest, 'staging', probe=lambda _: True)
         self.assertFalse(any(c[1]=='update-service' for c in self.calls))
 
+    def test_slow_migration_leaves_service_untouched(self):
+        def aws(*args):
+            if args[1] == 'wait' and args[2] == 'tasks-stopped':
+                raise promote.subprocess.CalledProcessError(255, ['aws'])
+            return self.aws(*args)
+        with patch.object(promote, 'aws', aws), self.assertRaisesRegex(promote.ReleaseFailure, 'not confirmed finished'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: True)
+        self.assertFalse(any(c[1]=='update-service' for c in self.calls))
+
     def test_bad_readiness_restores_previous_image_without_database_reversal(self):
         probes = iter([False, True])
         with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(RuntimeError, 'prior application restored'):
@@ -75,6 +84,28 @@ class PromotionTest(unittest.TestCase):
         self.assertEqual('old-app:1', self.current)
         self.assertEqual(1, self.count)
         self.assertEqual(1, len([c for c in self.calls if c[1]=='run-task']))
+
+    def test_failed_rollback_call_asks_for_operator_recovery(self):
+        def aws(*args):
+            if args[1] == 'wait' and args[2] == 'services-stable' and self.current == 'old-app:1':
+                raise promote.subprocess.CalledProcessError(255, 'aws')
+            return self.aws(*args)
+        with patch.object(promote, 'aws', aws), self.assertRaisesRegex(promote.ReleaseFailure, 'operator recovery'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: False)
+
+    def test_unready_rollback_asks_for_operator_recovery(self):
+        with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(promote.ReleaseFailure, 'operator recovery'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: False)
+        self.assertEqual('old-app:1', self.current)
+
+    def test_exit_message_says_whether_the_prior_application_is_back(self):
+        failure = promote.ReleaseFailure('Release failed; prior application restored; migration and media retained')
+        with patch.object(promote, 'main', side_effect=failure), self.assertRaises(SystemExit) as stopped:
+            promote.run()
+        self.assertIn('prior application restored', str(stopped.exception))
+        with patch.object(promote, 'main', side_effect=RuntimeError('arn:aws:ecs:synthetic diagnostics')), self.assertRaises(SystemExit) as stopped:
+            promote.run()
+        self.assertNotIn('arn:', str(stopped.exception))
 
     def test_production_requires_matching_staging_and_distinct_resources(self):
         with self.assertRaises(ValueError):

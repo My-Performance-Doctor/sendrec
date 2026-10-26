@@ -50,7 +50,7 @@ Before dispatch, configure the production environment with named reviewers and p
 
 `infrastructure/promote-release.py` checks registered task images and migration modes before starting exactly one migration task. The migration definition gets database secrets only. Application tasks use `MIGRATIONS_MODE=skip`. After a successful migration, ECS deploys the candidate and the script checks the selected task definition, task count and dependency readiness. A failed candidate restores the previous application definition and count, checks the rollback, and retains the forward migration, recordings and events. A failed migration leaves the service untouched. The release workflow concurrency group prevents overlapping promotions through this workflow; operators must not start a competing release manually.
 
-Infrastructure provisioning remains a separate reviewed operation. Synthesize production with `targetEnvironment=production` plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionImage` and `productionAlertTopicArn`. To rehearse the controlled migration path on staging, pass the same digest as `releaseImage`. The task-definition outputs supply the manifest references. Do not deploy this preparation stack or dispatch production without separate rollout approval.
+Infrastructure provisioning remains a separate reviewed operation. Synthesize production with `targetEnvironment=production` plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionImage` and `productionAlertTopicArn`. `productionDatabaseSize` is `micro` or `small` and defaults to `small`; staging stays on micro. To rehearse the controlled migration path on staging, pass the same digest as `releaseImage`. The task-definition outputs supply the manifest references. Do not deploy this preparation stack or dispatch production without separate rollout approval.
 
 ## Integration configuration
 
@@ -82,7 +82,7 @@ Verify these controls with synthetic overlapping workers before scaling to two t
 
 `/api/ready` checks the database, storage and worker monitoring with a three-second deadline. It returns only check names and booleans. The monitor emits numeric aggregates each minute: failed transcript records updated within the last 15 minutes, abandoned uploads older than an hour, processing work older than 32 minutes plus twice its recording's length, with that extra capped at 110 minutes, transcription work older than 32 minutes, the oldest retained pending event, and dead or blocked events. `UploadFailures` counts abandoned upload records rather than individual HTTP rejections. Backlog and failure counts trigger alarms without removing healthy API targets from the load balancer. Readiness fails when the monitoring query fails or its last successful sample becomes stale. An idle queue cannot prove a processing loop is alive, so this does not replace worker supervision or recovery tests.
 
-Production alarms cover unhealthy targets, target 5xx, database CPU, abandoned uploads, failed transcripts, old processing, outbox age/dead events and RDS recovery lag. A five-minute probe checks 35-day retention, `LatestRestorableTime` and the ECS service desired count. Application alarms stay quiet while the desired count is zero. When tasks are desired, missing application probes breach; idle target 5xx data does not. Database and backup alarms remain active independently. Unknown service activity is treated as active, and missing backup-probe data triggers its alarm. Every alarm uses the explicitly supplied SNS topic. No alert delivery has been exercised. The activation check must inject a synthetic fault, verify actual receipt and then verify recovery at that destination.
+Production alarms cover unhealthy targets, target 5xx, database CPU, free storage below 4 GiB, freeable memory below 64 MiB on micro or 128 MiB on small, abandoned uploads, failed transcripts, old processing, outbox age/dead events and RDS recovery lag. A five-minute probe checks 35-day retention, `LatestRestorableTime` and the ECS service desired count. Application alarms stay quiet while the desired count is zero. When tasks are desired, missing application probes breach; idle target 5xx data does not. Database and backup alarms remain active independently. Unknown service activity is treated as active, and missing backup-probe data triggers its alarm. Every alarm notifies the explicitly supplied SNS topic when it fires and again when it clears. Expect one OK notice from each alarm when it is first created, as it leaves its initial no-data state. On 2026-10-26 a staging drill delivered both through SNS to a test subscriber; email receipt has not been exercised. The activation check must inject a synthetic fault, verify actual receipt and then verify recovery at the production destination.
 
 ## Recovery evidence
 
@@ -102,7 +102,22 @@ The 2026-10-08 cross-service drill passed in 67.45 seconds. It exercised the rea
 
 The receiver intentionally lost the response after its first durable commit. Seven delivery attempts across the recording lifecycle retained one report, one timeline item and one task intent. Staff preview produced no watched mark. Anonymous playback and its duplicate produced one watched result, a second transcript revision updated the existing report, and deletion removed URLs while preserving the clinical timeline. Media bytes and transcript enrichment were synthetic. No external task delivery occurred.
 
-The readiness checks also passed 15 Python tests, six Java infrastructure tests and the bootstrap access positive/negative controls. The actual synthesized production template contains zero application tasks, Multi-AZ RDS, 35-day backups and nine alarms. These results verify local implementation. They do not close the deployment, browser or alert-receipt tasks in [the readiness checklist](../../openspec/changes/prepare-production-video-service/tasks.md).
+The readiness checks also passed 15 Python tests, six Java infrastructure tests and the bootstrap access positive/negative controls. The synthesized production template then contained zero application tasks, Multi-AZ RDS, 35-day backups and nine alarms; it now has eleven. These results verify local implementation. They do not close the deployment, browser or alert-receipt tasks in [the readiness checklist](../../openspec/changes/prepare-production-video-service/tasks.md).
+
+## Browser checklist
+
+This host has no camera and no supported Safari, so a person runs this on staging with a synthetic patient after signing in to Staff OS. Record each browser, its version and the operating system, with the actual result, in `infrastructure/DEPLOYMENT.md`. A check not run stays unchecked.
+
+For each of Chrome, Firefox and Safari:
+
+1. Record screen plus camera for about a minute, going full screen part way through. The saved video keeps one frame size, with the full-screen part letterboxed.
+2. Record camera only.
+3. Upload an MP4 and a WebM file.
+4. Deny camera and microphone access when asked. The recorder explains what is missing and records nothing.
+5. Turn the network off during an upload, then back on. The take is kept and the upload resumes or retries without a duplicate.
+6. Open the patient link without the password, with a wrong one and with the right one. Only the right one plays. Do the same with the embed.
+7. Play to the end, pausing for over five minutes part way. Playback resumes where it stopped.
+8. Captions show and follow the speech. Retranscribe once and check the new captions.
 
 ## Unverified checks
 
@@ -113,9 +128,10 @@ The readiness checks also passed 15 Python tests, six Java infrastructure tests 
 | Firefox equivalent recording and protected watch/embed checks | No browser run for this implementation |
 | Signed direct upload, captions and retranscription | Local tests only until staged integration runs |
 | Fresh staff offboarding within 60 seconds | Cross-service staging check pending mpd-api merge |
-| Production alert receipt | SNS destination and synthetic receipt check pending |
-| AWS RDS/S3 restoration and measured recovery objectives | Local rehearsal only |
-| Actual ECS candidate failure and rollback | Controlled script tests only |
+| Production alert receipt | Staging SNS drill passed on 2026-10-26: ALARM after 89 seconds, OK 104 seconds after clearing. Production topic, email address and receipt pending |
+| AWS RDS/S3 restoration and measured recovery objectives | Staging RDS point-in-time restore on 2026-10-26: 31 minutes to a verified, matching database. Application checks against a restored database and S3 version restore pending |
+| Actual ECS candidate failure and rollback | Staging rehearsal on 2026-10-26: failed candidate rolled back, migration retained. Production reviewer gate and release roles not configured |
+| Two tasks | Staging failover on 2026-10-26 with no 5xx. Overlapping media work pending |
 | Production account/VPC inputs, cost estimate and pilot approval | Reviewed in [operator-decisions.md](operator-decisions.md); database class, alert topic, production Cognito pool and client IDs, recovery objective approval and pilot approval pending |
 | Prior staging change closure | Existing missing final review and incomplete browser/automatic recovery evidence remain open |
 
