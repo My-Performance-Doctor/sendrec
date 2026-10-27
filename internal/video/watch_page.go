@@ -897,7 +897,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
 ` + startAtJS + `
                 // Space on a transcript or chapter time presses that button instead of toggling play.
                 onPlayerKeyOverride = function(e) {
-                    return e.key === ' ' && !!e.target.closest && !!e.target.closest('.transcript-timestamp, .chapter-timestamp');
+                    return e.key === ' ' && !!e.target.closest('.transcript-timestamp, .chapter-timestamp');
                 };
             })();
         </script>

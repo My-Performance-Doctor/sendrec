@@ -810,7 +810,7 @@ const startAtJS = `
                 var m;
                 if (!value) return null;
                 if (/^\d+(\.\d+)?$/.test(value)) return parseFloat(value);
-                m = /^(?:(\d+):)?(\d{1,2}):([0-5]\d)$/.exec(value);
+                m = /^(?:(\d+):(?=[0-5]\d:))?(\d{1,2}):([0-5]\d)$/.exec(value);
                 if (m) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
                 m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value);
                 if (m && (m[1] || m[2] || m[3])) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2] || '0', 10) * 60 + parseInt(m[3] || '0', 10);
