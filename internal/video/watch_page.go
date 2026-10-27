@@ -913,20 +913,20 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 {{if .Chapters}}
                 <div class="chapter-list">
                     <h3 class="chapter-list-title">Chapters</h3>
-                    {{range .Chapters}}
+                    {{range $i, $c := .Chapters}}
                     <div class="chapter-item" data-start="{{.Start}}">
-                        <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
-                        <span class="chapter-title">{{.Title}}</span>
+                        <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="chapter-title-{{$i}}">{{formatTimestamp .Start}}</button>
+                        <span class="chapter-title" id="chapter-title-{{$i}}">{{.Title}}</span>
                     </div>
                     {{end}}
                 </div>
                 {{end}}
             </div>
             <div class="panel-content hidden" id="transcript-panel">
-                {{range .Segments}}
+                {{range $i, $s := .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
-                    <span class="transcript-text">{{.Text}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="transcript-text-{{$i}}">{{formatTimestamp .Start}}</button>
+                    <span class="transcript-text" id="transcript-text-{{$i}}">{{.Text}}</span>
                 </div>
                 {{end}}
             </div>
@@ -938,10 +938,10 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             <p class="transcript-processing">Transcription in progress...</p>
             {{else if eq .TranscriptStatus "ready"}}
             <div id="transcript-panel">
-                {{range .Segments}}
+                {{range $i, $s := .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
-                    <span class="transcript-text">{{.Text}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="transcript-text-{{$i}}">{{formatTimestamp .Start}}</button>
+                    <span class="transcript-text" id="transcript-text-{{$i}}">{{.Text}}</span>
                 </div>
                 {{end}}
             </div>
