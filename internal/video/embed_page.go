@@ -243,6 +243,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
             player.muted = true;
             player.play().catch(function() {});
 ` + playerJS + `
+` + startAtJS + `
         })();
         {{if and .CtaText .CtaUrl}}
         (function() {

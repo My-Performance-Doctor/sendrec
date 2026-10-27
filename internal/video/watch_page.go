@@ -648,6 +648,20 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
         .chapter-item.active {
             background: rgba(0, 182, 122, 0.1);
         }
+        /* Timestamps are buttons, so each moment can be reached and played from the keyboard. */
+        .transcript-timestamp, .chapter-timestamp {
+            padding: 0;
+            border: 0;
+            background: none;
+            font-family: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+        .transcript-timestamp:focus-visible, .chapter-timestamp:focus-visible {
+            outline: 2px solid var(--brand-accent);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
         .chapter-timestamp {
             color: var(--brand-accent);
             font-size: 13px;
@@ -878,6 +892,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 var shortcutsPanel = document.getElementById('shortcuts-panel');
                 var hideTimer = null;
 ` + playerJS + `
+` + startAtJS + `
             })();
         </script>
         {{if and (ne .TranscriptStatus "no_audio") (ne .TranscriptStatus "none")}}
@@ -894,7 +909,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                     <h3 class="chapter-list-title">Chapters</h3>
                     {{range .Chapters}}
                     <div class="chapter-item" data-start="{{.Start}}">
-                        <span class="chapter-timestamp">{{formatTimestamp .Start}}</span>
+                        <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
                         <span class="chapter-title">{{.Title}}</span>
                     </div>
                     {{end}}
@@ -904,7 +919,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             <div class="panel-content hidden" id="transcript-panel">
                 {{range .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <span class="transcript-timestamp">{{formatTimestamp .Start}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
                     <span class="transcript-text">{{.Text}}</span>
                 </div>
                 {{end}}
@@ -919,7 +934,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             <div id="transcript-panel">
                 {{range .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <span class="transcript-timestamp">{{formatTimestamp .Start}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}">{{formatTimestamp .Start}}</button>
                     <span class="transcript-text">{{.Text}}</span>
                 </div>
                 {{end}}
