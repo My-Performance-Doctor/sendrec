@@ -661,6 +661,10 @@ func TestWatchPage_TranscriptReady_RendersSegments(t *testing.T) {
 	if !strings.Contains(body, `<button type="button" class="transcript-timestamp" aria-label="Play from 0:05">0:05</button>`) {
 		t.Error("expected transcript timestamps as buttons")
 	}
+	// Space on a time presses the button rather than the player's play/pause shortcut.
+	if !strings.Contains(body, "closest('.transcript-timestamp, .chapter-timestamp')") {
+		t.Error("expected Space on a timestamp to bypass the play/pause shortcut")
+	}
 	// A link can open the video at a moment.
 	if !strings.Contains(body, "function startAtSeconds(") {
 		t.Error("expected the start-at script")

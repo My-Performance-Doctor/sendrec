@@ -707,6 +707,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             background: rgba(0, 182, 122, 0.1);
         }
         .transcript-timestamp {
+            align-self: flex-start;
+            line-height: inherit;
             color: var(--brand-accent);
             font-size: 0.8125rem;
             font-weight: 600;
@@ -893,6 +895,10 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 var hideTimer = null;
 ` + playerJS + `
 ` + startAtJS + `
+                // Space on a transcript or chapter time presses that button instead of toggling play.
+                onPlayerKeyOverride = function(e) {
+                    return e.key === ' ' && !!e.target.closest && !!e.target.closest('.transcript-timestamp, .chapter-timestamp');
+                };
             })();
         </script>
         {{if and (ne .TranscriptStatus "no_audio") (ne .TranscriptStatus "none")}}
@@ -1456,6 +1462,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 panel.addEventListener('click', function(e) {
                     var seg = e.target.closest('.transcript-segment');
                     if (!seg) return;
+                    // A mouse click leaves the time focused; drop that focus so Space still pauses.
+                    if (e.detail) e.target.blur();
                     var start = parseFloat(seg.getAttribute('data-start'));
                     player.currentTime = start;
                     player.play().catch(function() {});
@@ -1517,7 +1525,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             var chapters = document.querySelectorAll('.chapter-item');
             var player = document.getElementById('player');
             chapters.forEach(function(ch) {
-                ch.addEventListener('click', function() {
+                ch.addEventListener('click', function(e) {
+                    if (e.detail) e.target.blur();
                     var start = parseFloat(ch.getAttribute('data-start'));
                     player.currentTime = start;
                     player.play().catch(function() {});

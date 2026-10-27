@@ -810,15 +810,14 @@ const startAtJS = `
                 var m;
                 if (!value) return null;
                 if (/^\d+(\.\d+)?$/.test(value)) return parseFloat(value);
-                m = /^(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(value);
+                m = /^(?:(\d+):)?(\d{1,2}):([0-5]\d)$/.exec(value);
                 if (m) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
                 m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value);
                 if (m && (m[1] || m[2] || m[3])) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2] || '0', 10) * 60 + parseInt(m[3] || '0', 10);
                 return null;
             }
-            var start;
-            try { start = startAtSeconds(new URLSearchParams(location.search).get('t')); } catch (e) { return; }
-            if (!start || start <= 0) return;
+            var start = startAtSeconds(new URLSearchParams(location.search).get('t'));
+            if (!start) return;
             function seek() {
                 if (isFinite(player.duration) && start >= player.duration) return;
                 player.currentTime = start;

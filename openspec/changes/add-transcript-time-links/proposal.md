@@ -23,4 +23,4 @@ None.
 
 ## Approval and delivery
 
-MPD HQ assigned MPD-258 on 2026-10-27. This proposal needs Sami's review before merge, as `CLAUDE.md` requires.
+MPD HQ assigned MPD-258 on 2026-10-27, and the change was applied with this proposal so it could be checked in a browser. `CLAUDE.md` asks for Sami's review before apply, so the pull request stays unmerged until Sami has reviewed this proposal, and a human merges it.
