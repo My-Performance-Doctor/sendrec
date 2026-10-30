@@ -1,6 +1,8 @@
 # Production preparation
 
-Production is not activated. Jeff is reviewing mpd-api PR 211, and the matching integration has not run on staging. The production stack creates zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days.
+Production is not activated. The matching MPD integration has run on staging, with protected playback, captions and staff sign-in recorded in [the verification evidence](../mpd/verification.md). HQ marked the staging browser gate, MPD-210, Done after Sami's real-camera and Safari pass on 30 October 2026. This operator report does not establish a complete Chrome/Safari/Firefox matrix. See [the readiness record](readiness-2026-10-30.md) for the remaining checks.
+
+The production template starts with zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days. Window A waits for Josh's go and a production maintenance grant.
 
 Operator decisions on the production account, network, alerts, hostname, image, sign-in order, recovery objectives and cost are in [operator-decisions.md](operator-decisions.md). They are decisions for production, not a deployment.
 

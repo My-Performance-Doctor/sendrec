@@ -13,9 +13,9 @@ This repository is public. Account numbers, network and identity resource IDs, a
 | 3 | Launch on the default CloudFront hostname | Approved |
 | 4 | Promote the exact image digest that staging tested | Approved |
 | 5 | mpd-api production changes for staff sign-in | Approved. Follows the empty stack deploy |
-| 6 | Database class | Deferred to the move to production. Default in code is now db.t4g.small |
+| 6 | Database class | db.t4g.small Multi-AZ approved on 26 October 2026 |
 | 7 | S3 gateway endpoint, and NAT redundancy review | Approved |
-| 8 | Recovery objectives | Proposed. Staging restore measured on 2026-10-26 |
+| 8 | Recovery objectives | Fifteen-minute database RPO and four-hour RTO approved on 26 October 2026. Full recovery remains unmeasured |
 | 9 | Two 2 vCPU, 4 GB Fargate tasks, about $278 a month at launch | Approved |
 
 ## 1. Account and network
@@ -63,7 +63,7 @@ Staging used mpd-api's existing staff EHR client as a stopgap until PR 219 deplo
 
 ## 6. Database class
 
-Decided at the move to production. The stack reads `productionDatabaseSize`, `micro` or `small`, and has defaulted to small since 2026-10-26. db.t4g.micro Multi-AZ has 1 GiB of memory and costs about $37 a month. The recommended db.t4g.small Multi-AZ has 2 GiB and costs about $74. On staging, with one task and test traffic only, freeable memory fell to 74 MB. Production runs two tasks.
+Sami approved db.t4g.small Multi-AZ on 26 October 2026, as recorded in the private grant-window sheet. The stack reads `productionDatabaseSize`, `micro` or `small`, and has defaulted to small since that date. The earlier cost estimate was about $37 a month for micro and $74 for small. These are planning estimates, not a fresh price check. Micro has 1 GiB of memory and small has 2 GiB. On staging, with one task and test traffic only, freeable memory fell to 74 MB. Production runs two tasks.
 
 ## 7. Network resilience
 
@@ -72,7 +72,7 @@ Decided at the move to production. The stack reads `productionDatabaseSize`, `mi
 
 ## 8. Recovery objectives
 
-Proposed. In plain terms, these are the worst case MPD accepts.
+Sami approved at most 15 minutes of database data loss and four hours to recover on 26 October 2026, as recorded in the private grant-window sheet. These are targets. The staging restore measured database restoration only, not a full recovery to working playback.
 
 | Objective | Proposal | Meaning |
 |---|---|---|
@@ -110,13 +110,13 @@ Estimated monthly cost, at USD on-demand list prices before tax:
 
 Choosing db.t4g.small adds $37.23 a month. A one-year Compute Savings Plan would lower the Fargate line, but none is assumed. The volume line rests on an assumption: replace it with real Vimeo upload and playback figures when they are available.
 
-## Open inputs, 2026-10-26
+## Approved inputs and remaining resources, updated 2026-10-30
 
-Four inputs remain before the production deploy window. Each has a recommended default; the window can run on the defaults once Sami approves them.
+The alert destination, db.t4g.small Multi-AZ and recovery targets were approved on 26 October. The production topic, confirmed subscription and Cognito client still need creation in their grant windows. The production client needs the CloudFront callback from the empty stack. Window A remains subject to Josh's go and Sami's production maintenance grant.
 
 | Input | Recommended default | Why |
 |---|---|---|
 | SendRec's production Cognito client | A new confidential `mpd-staff-sendrec` client in the production staff pool, added by an mpd-api production change like PR 219: authorization code with PKCE, `openid email profile`, callback and sign-out on SendRec's production CloudFront host at `/api/auth/mpd/callback`, and a hosted sign-in domain on the staff pool. Its secret goes into `sendrec-production/mpd-integration` through the secret workflow. `MPD_ALLOWED_CLIENT_IDS` lists it and Staff OS's production client; `MPD_ALLOWED_ORIGINS` lists Staff OS's production origin only | The callback host exists only after the empty stack deploys, so the client follows it, as section 5 orders. Production does not reuse the EHR client |
 | Alert email | One email subscription on `sendrec-production-alerts` for MPD's operations automation mailbox, chosen on 2026-10-12. The address stays in the private record. The mailbox owner confirms AWS's subscription email in the window | Every alarm now sends both the fault and the recovery, so the mailbox shows when to act and when it cleared |
 | Database size | db.t4g.small Multi-AZ, $37.23 a month more than micro | Staging micro fell to 74 MB freeable memory with one task and test traffic; production runs two tasks. On micro, the free-memory alarm's 64 MiB floor would sit close to normal use; on small it fires below 128 MiB |
-| Recovery objectives | Approve at most 15 minutes of database data loss and four hours from alarm to patients watching again | The backup alarm fires when the restorable point is 15 minutes old. The staging restore took 31 minutes, which leaves the rest of the four hours for detection, the decision, the cutover and checks |
+| Recovery objectives | Approved: at most 15 minutes of database data loss and four hours from alarm to patients watching again | The backup alarm fires when the restorable point is 15 minutes old. The staging restore took 31 minutes. Full application recovery still needs a drill |
