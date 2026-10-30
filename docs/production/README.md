@@ -1,6 +1,8 @@
 # Production preparation
 
-Production is not activated. Jeff is reviewing mpd-api PR 211, and the matching integration has not run on staging. The production stack creates zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days.
+Production is not activated. The matching MPD integration has run on staging, with protected playback, captions and staff sign-in recorded in [the verification evidence](../mpd/verification.md). HQ marked the staging browser gate, MPD-210, Done after Sami's real-camera and Safari pass on 30 October 2026. This operator report does not establish a complete Chrome/Safari/Firefox matrix. See [the readiness record](readiness-2026-10-30.md) for the remaining checks.
+
+The production template starts with zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days. Window A waits for Josh's go and a production maintenance grant.
 
 Operator decisions on the production account, network, alerts, hostname, image, sign-in order, recovery objectives and cost are in [operator-decisions.md](operator-decisions.md). They are decisions for production, not a deployment.
 
@@ -124,16 +126,16 @@ For each of Chrome, Firefox and Safari:
 
 | Check | Current evidence |
 |---|---|
-| Chrome screen/camera, camera-only, MP4/WebM, denied devices and interrupted network | No browser run for this implementation |
-| Safari equivalent recording and protected watch/embed checks | No supported Safari host exercised |
+| Chrome screen/camera, camera-only, MP4/WebM, denied devices and interrupted network | Synthetic server-browser checks ran on 26 October. The full versioned real-device matrix remains incomplete |
+| Safari equivalent recording and protected watch/embed checks | HQ reported Sami's successful seven-step real-camera/Safari pass on 30 October. This worker has no versioned per-case record |
 | Firefox equivalent recording and protected watch/embed checks | No browser run for this implementation |
-| Signed direct upload, captions and retranscription | Local tests only until staged integration runs |
-| Fresh staff offboarding within 60 seconds | Cross-service staging check pending mpd-api merge |
+| Signed direct upload, captions and retranscription | Synthetic staged checks ran on 26 October, recorded in [verification.md](../mpd/verification.md) |
+| Fresh staff offboarding within 60 seconds | An earlier staging check denied access after 28 seconds. A fresh check with the current deployed services and service-token rotation remains open |
 | Production alert receipt | Staging SNS drill passed on 2026-10-26: ALARM after 89 seconds, OK 104 seconds after clearing. Production topic, email address and receipt pending |
 | AWS RDS/S3 restoration and measured recovery objectives | Staging RDS point-in-time restore on 2026-10-26: 31 minutes to a verified, matching database. Application checks against a restored database and S3 version restore pending |
 | Actual ECS candidate failure and rollback | Staging rehearsal on 2026-10-26: failed candidate rolled back, migration retained. Production reviewer gate and release roles not configured |
 | Two tasks | Staging failover on 2026-10-26 with no 5xx. Overlapping media work pending |
-| Production account/VPC inputs, cost estimate and pilot approval | Reviewed in [operator-decisions.md](operator-decisions.md); database class, alert topic, production Cognito pool and client IDs, recovery objective approval and pilot approval pending |
-| Prior staging change closure | Existing missing final review and incomplete browser/automatic recovery evidence remain open |
+| Production account/VPC inputs, cost estimate and pilot approval | Database class, alert destination and recovery targets were approved on 26 October. Production alert resources and the Cognito client still need creation. Josh's go, a production grant and rollout approval remain required |
+| Prior staging change closure | All fourteen staging tasks are checked. The original human merge closed that review; archive remains separate work |
 
-Keep the OpenSpec tasks and prior staging change open until the corresponding evidence exists. No retained resources or Vimeo content move as part of this change.
+Keep incomplete acceptance tasks open. The [dated readiness record](readiness-2026-10-30.md) names each remaining check and the concurrency prerequisite before starting two production tasks. No retained resources or Vimeo content move as part of this change.
