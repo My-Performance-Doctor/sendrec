@@ -175,6 +175,7 @@ func TestEmbedPage_Success_RendersVideoPlayer(t *testing.T) {
 		"watch on text":   "Watch on",
 		"caption overlay": `id="caption-overlay"`,
 		"caption render":  "function bindCaptions()",
+		"start-at link":   "function startAtSeconds(",
 	}
 	for name, want := range checks {
 		if !strings.Contains(body, want) {

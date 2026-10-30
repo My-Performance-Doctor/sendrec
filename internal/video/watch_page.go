@@ -648,6 +648,20 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
         .chapter-item.active {
             background: rgba(0, 182, 122, 0.1);
         }
+        /* Timestamps are buttons, so each moment can be reached and played from the keyboard. */
+        .transcript-timestamp, .chapter-timestamp {
+            padding: 0;
+            border: 0;
+            background: none;
+            font-family: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+        .transcript-timestamp:focus-visible, .chapter-timestamp:focus-visible {
+            outline: 2px solid var(--brand-accent);
+            outline-offset: 2px;
+            border-radius: 4px;
+        }
         .chapter-timestamp {
             color: var(--brand-accent);
             font-size: 13px;
@@ -693,6 +707,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             background: rgba(0, 182, 122, 0.1);
         }
         .transcript-timestamp {
+            align-self: flex-start;
+            line-height: inherit;
             color: var(--brand-accent);
             font-size: 0.8125rem;
             font-weight: 600;
@@ -878,6 +894,11 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 var shortcutsPanel = document.getElementById('shortcuts-panel');
                 var hideTimer = null;
 ` + playerJS + `
+` + startAtJS + `
+                // Space on a transcript or chapter time presses that button instead of toggling play.
+                onPlayerKeyOverride = function(e) {
+                    return e.key === ' ' && !!e.target.closest('.transcript-timestamp, .chapter-timestamp');
+                };
             })();
         </script>
         {{if and (ne .TranscriptStatus "no_audio") (ne .TranscriptStatus "none")}}
@@ -892,20 +913,20 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 {{if .Chapters}}
                 <div class="chapter-list">
                     <h3 class="chapter-list-title">Chapters</h3>
-                    {{range .Chapters}}
+                    {{range $i, $c := .Chapters}}
                     <div class="chapter-item" data-start="{{.Start}}">
-                        <span class="chapter-timestamp">{{formatTimestamp .Start}}</span>
-                        <span class="chapter-title">{{.Title}}</span>
+                        <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="chapter-title-{{$i}}">{{formatTimestamp .Start}}</button>
+                        <span class="chapter-title" id="chapter-title-{{$i}}">{{.Title}}</span>
                     </div>
                     {{end}}
                 </div>
                 {{end}}
             </div>
             <div class="panel-content hidden" id="transcript-panel">
-                {{range .Segments}}
+                {{range $i, $s := .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <span class="transcript-timestamp">{{formatTimestamp .Start}}</span>
-                    <span class="transcript-text">{{.Text}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="transcript-text-{{$i}}">{{formatTimestamp .Start}}</button>
+                    <span class="transcript-text" id="transcript-text-{{$i}}">{{.Text}}</span>
                 </div>
                 {{end}}
             </div>
@@ -917,10 +938,10 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             <p class="transcript-processing">Transcription in progress...</p>
             {{else if eq .TranscriptStatus "ready"}}
             <div id="transcript-panel">
-                {{range .Segments}}
+                {{range $i, $s := .Segments}}
                 <div class="transcript-segment" data-start="{{.Start}}" data-end="{{.End}}">
-                    <span class="transcript-timestamp">{{formatTimestamp .Start}}</span>
-                    <span class="transcript-text">{{.Text}}</span>
+                    <button type="button" class="transcript-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="transcript-text-{{$i}}">{{formatTimestamp .Start}}</button>
+                    <span class="transcript-text" id="transcript-text-{{$i}}">{{.Text}}</span>
                 </div>
                 {{end}}
             </div>
@@ -1441,6 +1462,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 panel.addEventListener('click', function(e) {
                     var seg = e.target.closest('.transcript-segment');
                     if (!seg) return;
+                    // A mouse click leaves the time focused; drop that focus so Space still pauses.
+                    if (e.detail) e.target.blur();
                     var start = parseFloat(seg.getAttribute('data-start'));
                     player.currentTime = start;
                     player.play().catch(function() {});
@@ -1502,7 +1525,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
             var chapters = document.querySelectorAll('.chapter-item');
             var player = document.getElementById('player');
             chapters.forEach(function(ch) {
-                ch.addEventListener('click', function() {
+                ch.addEventListener('click', function(e) {
+                    if (e.detail) e.target.blur();
                     var start = parseFloat(ch.getAttribute('data-start'));
                     player.currentTime = start;
                     player.play().catch(function() {});

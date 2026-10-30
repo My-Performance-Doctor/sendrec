@@ -657,8 +657,20 @@ func TestWatchPage_TranscriptReady_RendersSegments(t *testing.T) {
 	if !strings.Contains(body, "transcript-segment") {
 		t.Error("expected transcript-segment elements")
 	}
-	if !strings.Contains(body, "transcript-timestamp") {
-		t.Error("expected transcript-timestamp elements")
+	// Each timestamp is a button, so the moment can be played from the keyboard.
+	if !strings.Contains(body, `<button type="button" class="transcript-timestamp" aria-label="Play from 0:05" aria-describedby="transcript-text-1">0:05</button>`) {
+		t.Error("expected transcript timestamps as buttons")
+	}
+	if !strings.Contains(body, `<span class="transcript-text" id="transcript-text-1">This is a test</span>`) {
+		t.Error("expected each transcript time to be described by its line")
+	}
+	// Space on a time presses the button rather than the player's play/pause shortcut.
+	if !strings.Contains(body, "closest('.transcript-timestamp, .chapter-timestamp')") {
+		t.Error("expected Space on a timestamp to bypass the play/pause shortcut")
+	}
+	// A link can open the video at a moment.
+	if !strings.Contains(body, "function startAtSeconds(") {
+		t.Error("expected the start-at script")
 	}
 	// Verify VTT track element is rendered
 	if !strings.Contains(body, `<track kind="subtitles"`) {
@@ -2258,6 +2270,9 @@ func TestWatchPage_SummaryTab(t *testing.T) {
 	}
 	if !strings.Contains(body, "chapter-item") {
 		t.Error("expected chapter-item elements")
+	}
+	if !strings.Contains(body, `<button type="button" class="chapter-timestamp" aria-label="Play from 0:30" aria-describedby="chapter-title-1">0:30</button>`) {
+		t.Error("expected chapter timestamps as buttons")
 	}
 	if !strings.Contains(body, "summary-panel") {
 		t.Error("expected summary-panel element")

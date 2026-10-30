@@ -802,6 +802,31 @@ const playerJS = `
         }
 `
 
+// startAtJS opens the player at the moment a link names: ?t=83, ?t=1:23 or ?t=1m23s. A time past the end, or one
+// that does not parse, is ignored and the video starts at the beginning. It expects player to be declared.
+const startAtJS = `
+        (function() {
+            function startAtSeconds(value) {
+                var m;
+                if (!value) return null;
+                if (/^\d+(\.\d+)?$/.test(value)) return parseFloat(value);
+                m = /^(?:(\d+):(?=[0-5]\d:))?(\d{1,2}):([0-5]\d)$/.exec(value);
+                if (m) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+                m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value);
+                if (m && (m[1] || m[2] || m[3])) return parseInt(m[1] || '0', 10) * 3600 + parseInt(m[2] || '0', 10) * 60 + parseInt(m[3] || '0', 10);
+                return null;
+            }
+            var start = startAtSeconds(new URLSearchParams(location.search).get('t'));
+            if (!start) return;
+            function seek() {
+                if (isFinite(player.duration) && start >= player.duration) return;
+                player.currentTime = start;
+            }
+            if (player.readyState >= 1) seek();
+            else player.addEventListener('loadedmetadata', seek, { once: true });
+        })();
+`
+
 // safariWarningCSS contains the shared CSS for the Safari WebM warning banner.
 const safariWarningCSS = `
         .browser-warning {
