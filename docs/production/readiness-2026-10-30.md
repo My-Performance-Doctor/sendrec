@@ -26,7 +26,7 @@ The detailed drill timings and limits are in [DEPLOYMENT.md](../../infrastructur
 
 ## Work requiring a production window
 
-Window A may prepare the alert topic and confirmed email subscription, the immutable image copy and the empty production stack after Josh's go and the maintenance grant. Starting two application tasks also requires passing the outstanding simultaneous-media and interrupted-leader drill on staging, as design decision 2 and task 2.3 require. The earlier HTTP failover probe does not meet that prerequisite. Keep the production service at zero tasks until those results and the rollout approval are recorded.
+Window A may prepare the alert topic and confirmed email subscription, the immutable image copy and the empty production stack after Josh's go and the maintenance grant. Starting two application tasks also requires passing the outstanding simultaneous-media and interrupted-leader drill on staging, as design decision 1 and task 2.3 require. The earlier HTTP failover probe does not meet that prerequisite. Keep the production service at zero tasks until those results and the rollout approval are recorded.
 
 After that prerequisite passes, run the migration and promote the exact staging-verified digest to two tasks with staff integration disabled. Check the diff before deployment, verify dependency readiness, task replacement, backups and both fault and recovery email receipt. The private grant-window sheet holds account references, exact commands and the requested three-hour window; its two-task step has the same prerequisite.
 

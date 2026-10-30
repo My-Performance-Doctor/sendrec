@@ -109,3 +109,18 @@ The restore did not run the application against the restored database, so protec
 ## Exact remaining action
 
 A human merged PR #2 on 2026-10-07, so its review loop can no longer run; the merge settles the final review. Task 4.4 is complete. Archive `add-aws-staging-deployment` with `openspec archive add-aws-staging-deployment` in its own change of work. No production rollout, patient integration, real recordings or Vimeo migration was performed.
+
+## Update, 2026-10-30: transcript time links
+
+Sami merged PR #20 as `3d79c3c8e40445e748bbfb2b6d6583f3c7a88fe7`. Main CI passed. The worker built that revision, tagged the immutable staging ECR image with the full revision and pushed digest `sha256:d2d7a7d2f444c7662d1911bd6e90567cdfec5e19d71fcff547128b522a4d8756`.
+
+The CDK diff changed only the application and migration image references plus the service's task definition. It preserved the live integration settings. The deployment selected `sendrec-staging:15` and `sendrec-staging-migration:3`. The controlled `promote-release.py --target staging` run completed its single migration and verified readiness at 06:47 UTC. The template-pair digest was `674a809b90fe0fea3de17ec6fc8a01d5f3f15ef37e36e0057b2d502326b60c81`; the production half was synthesis only. Health reports version `3d79c3c8`, and dependency readiness reports database, storage and workers true. No production resource changed.
+
+Using an existing synthetic recording from the synthetic patient's record, the worker opened the real staging watch page with `?t=7`. The password gate appeared before playback. After authorized password submission, the video loaded paused at exactly 7 seconds with readyState 4 and duration 12.096333 seconds.
+
+| Keyboard action | Observed media events |
+| --- | --- |
+| Focus `Play from 0:00`, press Enter | Seeking and play at 0 seconds, seeked at 0.000371 and playing at 0.000683 |
+| Focus `Play from 0:07`, press Enter | Seeking, play, seeked and playing at 7.76 seconds, matching the second caption cue's start |
+
+The check verified actual playback from both keyboard actions. It created no recording or upload and invoked no external send. MPD-258 was moved to Done in Plane. The browser tabs and private sign-in relay were closed afterward. This check used Chrome in the server browser; it does not add real-device or Safari evidence.
