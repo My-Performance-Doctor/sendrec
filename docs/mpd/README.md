@@ -46,6 +46,10 @@ Persisted media policy remains active when the integration switches or deploymen
 
 Share password checks are limited per address and per video. After 10 wrong passwords for one video within 15 minutes of the first, `/verify` answers 429 for the rest of that 15-minute window without checking the password, whatever address the request comes from. Viewers who already passed the form keep watching. Anyone holding the link can trigger this lock, so a viewer may have to wait up to 15 minutes.
 
+### Patient pages
+
+A managed recording's link is opened by a patient, usually on a phone, so `internal/video/mpd_pages.go` gives it MPD's pages. The password page asks for a video code. It accepts any case, spacing or missing hyphens, finds a code in a whole pasted message and opens the video once the code is complete. Anything else stays as entered. An unpublished, deleted or expired managed link, or an unknown link, shows one page that does not say which it was. The watch page takes MPD's look through the custom CSS slot. Unmanaged shares keep SendRec's pages, and `MPD_SERVICE_ENABLED` decides the page for an unknown link. TT Neoris stays out of this public repository, so headings use Geist.
+
 Playback/download GET links expire within five minutes. Watch, embed and playlist players renew them and preserve position and paused state. Denied renewal stops playback. Managed library/detail uses the private preview player; download clicks request a fresh authorized link.
 
 ## Backend service API

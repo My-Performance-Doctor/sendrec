@@ -312,6 +312,7 @@ public class SendRecStack extends Stack {
     environment.put("EMAIL_FROM_ADDRESS", "noreply@myperformancedoctor.com");
     environment.put("EMAIL_FROM_NAME", "My Performance Doctor");
     environment.put("BRANDING_DEFAULT_NAME", "My Performance Doctor");
+    environment.put("BRANDING_DEFAULT_LOGO_URL", "/images/mpd-orb.svg");
 
     Map<String, Secret> secrets = new HashMap<>();
     secrets.put("DB_HOST", Secret.fromSecretsManager(database.getSecret(), "host"));

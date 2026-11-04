@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="220" viewBox="0 0 700 220" color="#000000" role="img" aria-labelledby="title description">
+  <title id="title">MPD OS</title>
+  <desc id="description">Compact MPD OS wordmark. A blue and teal Terra orb replaces O. The bottom stroke of S ends behind the orb without protruding on its left.</desc>
+  <defs>
+    <linearGradient id="terra" x1="0" y1="28" x2="0" y2="192" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#042A4A"/>
+      <stop offset=".08" stop-color="#002D53"/>
+      <stop offset=".18" stop-color="#01365E"/>
+      <stop offset=".27" stop-color="#014C77"/>
+      <stop offset=".39" stop-color="#016495"/>
+      <stop offset=".5" stop-color="#017B9B"/>
+      <stop offset=".62" stop-color="#0197A2"/>
+      <stop offset=".75" stop-color="#01ADA1"/>
+      <stop offset=".87" stop-color="#00C09E"/>
+      <stop offset="1" stop-color="#00CDA0"/>
+    </linearGradient>
+    <radialGradient id="terra-depth" cx="44%" cy="45%" r="67%">
+      <stop offset=".38" stop-color="#003354" stop-opacity="0"/>
+      <stop offset="1" stop-color="#003354" stop-opacity=".12"/>
+    </radialGradient>
+  </defs>
+  <g fill="currentColor">
+    <path id="mp" d="M24 174V54L93 108L156 53Q162 48 173 48H247C271 48 290 66 290 90C290 114 272 133 247 133H169V174H144V111Q144 107 148 107H247C258 107 265 100 265 90C265 80 258 74 247 74H174L93 144L49 109V174Z"/>
+    <path id="d" d="M278 48H353C388 48 416 76 416 111C416 146 388 174 353 174H282V148H353C374 148 390 132 390 111C390 90 374 74 353 74H299C295 63 287 54 278 48Z"/>
+    <path id="s" d="M663 50H584C563 50 547 67 547 87C547 108 563 125 584 125H628C636 125 642 130 642 137C642 144 636 148 628 148H480V174H628C651 174 667 158 667 137C667 115 651 99 628 99H584C577 99 572 94 572 87C572 80 577 74 584 74H663Z"/>
+  </g>
+  <g id="orb">
+    <circle cx="480" cy="110" r="82" fill="url(#terra)"/>
+    <circle cx="480" cy="110" r="82" fill="url(#terra-depth)"/>
+  </g>
+</svg>
