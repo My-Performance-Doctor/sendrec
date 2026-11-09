@@ -2,7 +2,7 @@
 
 The MPD workflows can't run: there are no repo variables or roles. This path took about 15 minutes on 2026-11-09.
 
-1. `aws sso login --sso-session mpd` (the user approves in the browser). `mpd-staging` (DeveloperWorkloadAccess) can push to ECR, deploy CDK, run the migration task and update the service.
+1. `aws sso login --sso-session mpd` (the user approves in the browser), then `export AWS_PROFILE=mpd-staging`: every later AWS, CDK and script step uses the shell's profile. `mpd-staging` (DeveloperWorkloadAccess) can push to ECR, deploy CDK, run the migration task and update the service.
 2. CI must pass on the merge commit. `govulncheck` can fail on a new advisory with no fix (GO-2026-6909, `crewjam/saml`); check whether the running image already has it before treating it as a release blocker.
 3. Build and push. The image is tagged with the full revision; ECR is immutable.
    ```bash
