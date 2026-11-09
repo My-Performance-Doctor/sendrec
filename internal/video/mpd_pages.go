@@ -87,6 +87,7 @@ var mpdGatePageTemplate = template.Must(template.New("mpd-gate").Parse(mpdHeadSt
             var error = document.getElementById('error');
             var code = /[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}/;
             var busy = false;
+            var refused = '';
 
             function show(message) {
                 error.textContent = message;
@@ -105,10 +106,10 @@ var mpdGatePageTemplate = template.Must(template.New("mpd-gate").Parse(mpdHeadSt
                 return /^[A-HJ-NP-Z2-9]{16}$/.test(typed) ? typed.match(/.{4}/g).join('-') : value.trim();
             }
 
-            function lock() {
-                input.disabled = true;
-                paste.disabled = true;
-                watch.disabled = true;
+            function lock(locked) {
+                input.disabled = locked;
+                paste.disabled = locked;
+                watch.disabled = locked || !input.value;
             }
 
             function submit() {
@@ -116,17 +117,27 @@ var mpdGatePageTemplate = template.Must(template.New("mpd-gate").Parse(mpdHeadSt
                 busy = true;
                 watch.disabled = true;
                 show('');
+                var sent = tidy(input.value);
                 fetch('/api/watch/{{.ShareToken}}/verify', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: tidy(input.value) })
+                    body: JSON.stringify({ password: sent })
                 }).then(function (response) {
                     if (response.ok) { window.location.reload(); return; }
                     busy = false;
                     watch.disabled = false;
-                    if (response.status === 429) { show('Too many tries. Try again in 15 minutes.'); lock(); }
-                    else if (response.status === 403) show("That code didn't match. Check your message and try again.");
-                    else show('Something went wrong. Try again.');
+                    if (response.status === 429) {
+                        // Too many tries from one address waits seconds; too many wrong codes for the video waits 15 minutes.
+                        var wait = Number(response.headers.get('Retry-After'));
+                        lock(true);
+                        if (wait > 0 && wait < 60) {
+                            show('Too many tries. Wait a few seconds and try again.');
+                            setTimeout(function () { lock(false); show(''); }, wait * 1000);
+                        } else show('Too many tries. Try again in 15 minutes.');
+                    } else if (response.status === 403) {
+                        refused = sent;
+                        show("That code didn't match. Check your message and try again.");
+                    } else show('Something went wrong. Try again.');
                 }).catch(function () {
                     busy = false;
                     watch.disabled = false;
@@ -138,7 +149,8 @@ var mpdGatePageTemplate = template.Must(template.New("mpd-gate").Parse(mpdHeadSt
                 show('');
                 watch.disabled = !input.value;
                 var tidied = tidy(input.value);
-                if (code.test(tidied)) {
+                // A refused code is only sent again from the Watch button, so edits around it don't use up tries.
+                if (code.test(tidied) && tidied !== refused) {
                     input.value = tidied;
                     submit();
                 }

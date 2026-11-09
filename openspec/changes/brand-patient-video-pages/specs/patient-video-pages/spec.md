@@ -26,12 +26,20 @@ The page SHALL send a code in its issued form whatever its case, spacing or hyph
 - **WHEN** a viewer enters a value that cannot be a complete code
 - **THEN** it stays as entered, and only surrounding spaces are removed when it is submitted
 
+#### Scenario: Editing around a refused code
+- **WHEN** verification has refused a code and the viewer edits the field so that it still holds that code
+- **THEN** the page does not send it again until the viewer presses Watch video
+
 ### Requirement: Refusals say what happened
 The page SHALL distinguish a wrong code, a video locked after too many tries and a failed request.
 
 #### Scenario: Locked after too many tries
-- **WHEN** verification answers 429, even for the right code
+- **WHEN** verification answers 429 with a wait of a minute or more, or none, even for the right code
 - **THEN** the page says there have been too many tries and disables entry
+
+#### Scenario: Too many tries from one address
+- **WHEN** verification answers 429 with a wait under a minute
+- **THEN** the page asks the viewer to wait and disables entry until that wait has passed
 
 ### Requirement: Unavailable links show one page
 An unpublished, deleted or expired managed link, or an unknown link, SHALL show one MPD page when opened, which SHALL NOT say which of these it is or link to SendRec. Other paths on the same token SHALL keep their existing answers.
