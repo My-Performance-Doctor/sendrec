@@ -250,7 +250,7 @@ describe("Managed recording access", () => {
   fireEvent.click(screen.getByText("Publish recording"));
   await waitFor(() => expect(screen.getByText("Copy share link")).not.toBeDisabled());
   expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/v1/publication",expect.objectContaining({body:JSON.stringify({mediaVersion:3,published:true})}));
-  const expected = `${window.location.origin}/watch/abc123`;
+  const expected = `${window.location.origin}/abc123`;
   expect(screen.getByLabelText("Share link")).toHaveValue(expected);
   fireEvent.click(screen.getByText("Copy link"));
   await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expected));

@@ -77,7 +77,7 @@ func (a *MPDAdapter) metadata(ctx context.Context, db database.DBTX, id string) 
  WHERE s.video_id=$1 AND s.tenant_id=$2 AND EXISTS(SELECT 1 FROM mpd_managed_workspaces w WHERE w.organization_id=$3 AND w.tenant_id=s.tenant_id) AND (v.organization_id=$3 OR s.deleted_at IS NOT NULL)`, id, a.cfg.TenantID, a.cfg.WorkspaceID).
 		Scan(&m.VideoID, &m.OwnerStaffID, &m.TenantID, &m.MediaVersion, &m.Status, &m.Published, &m.PublishedAt, &m.PasswordProtected, &share)
 	if err == nil && m.Published && m.Status != "deleted" {
-		watch := a.h.baseURL + "/watch/" + share
+		watch := watchLink(a.h.baseURL, share)
 		embed := a.h.baseURL + "/embed/" + share
 		m.WatchURL = &watch
 		m.EmbedURL = &embed

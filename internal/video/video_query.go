@@ -3,7 +3,6 @@ package video
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -93,12 +92,29 @@ type watchResponse struct {
 	DocumentStatus   string              `json:"documentStatus"`
 }
 
+const shareTokenAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+// generateShareToken returns 16 uniform lowercase letters and digits, about 83 bits.
+// Bytes of 252 and above are redrawn so every character is equally likely.
 func generateShareToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate random bytes: %w", err)
+	token := make([]byte, 0, 16)
+	b := make([]byte, 32)
+	for len(token) < cap(token) {
+		if _, err := rand.Read(b); err != nil {
+			return "", fmt.Errorf("generate random bytes: %w", err)
+		}
+		for _, v := range b {
+			if v < 252 && len(token) < cap(token) {
+				token = append(token, shareTokenAlphabet[int(v)%len(shareTokenAlphabet)])
+			}
+		}
 	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
+	return string(token), nil
+}
+
+// watchLink is a video's public link. /watch/{token} still serves the same page.
+func watchLink(baseURL, shareToken string) string {
+	return baseURL + "/" + shareToken
 }
 
 type limitsResponse struct {
@@ -345,7 +361,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			formatted := shareExpiresAt.Format(time.RFC3339)
 			item.ShareExpiresAt = &formatted
 		}
-		item.ShareURL = h.baseURL + "/watch/" + item.ShareToken
+		item.ShareURL = watchLink(h.baseURL, item.ShareToken)
 		item.HasPassword = sharePassword != nil
 		if managedRequest {
 			if published == nil || mediaVersion == nil {

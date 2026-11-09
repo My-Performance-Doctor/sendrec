@@ -389,7 +389,7 @@ func TestGetPlaylist_Success(t *testing.T) {
 	if resp.Videos[0].ThumbnailURL == nil {
 		t.Errorf("expected first video thumbnailUrl to be set")
 	}
-	expectedShareURL := testBaseURL + "/watch/vtoken1"
+	expectedShareURL := testBaseURL + "/vtoken1"
 	if resp.Videos[0].ShareURL != expectedShareURL {
 		t.Errorf("expected first video shareUrl %q, got %q", expectedShareURL, resp.Videos[0].ShareURL)
 	}

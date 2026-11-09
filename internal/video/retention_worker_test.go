@@ -59,7 +59,7 @@ func TestProcessRetentionWarnings_SendsForExpiring(t *testing.T) {
 	if sender.calls[0].videos[0].Title != "My Video" {
 		t.Errorf("expected first video title 'My Video', got %q", sender.calls[0].videos[0].Title)
 	}
-	if sender.calls[0].videos[0].WatchURL != "https://app.sendrec.eu/watch/abc123" {
+	if sender.calls[0].videos[0].WatchURL != "https://app.sendrec.eu/abc123" {
 		t.Errorf("expected watchURL with share_token, got %q", sender.calls[0].videos[0].WatchURL)
 	}
 

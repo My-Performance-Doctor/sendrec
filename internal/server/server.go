@@ -612,6 +612,9 @@ func (s *Server) routes() {
 		// the rest of the surface a stranger can reach.
 		s.router.With(watchLimiter.Middleware).Get("/branding/preview/{id}", s.videoHandler.BrandingPreviewPage)
 		s.router.With(publicGuard).Get("/watch/{shareToken}", s.videoHandler.WatchPage)
+		// The short link. It matches only share token shapes (new 16-character tokens and
+		// older 22-character ones), so app paths such as /login still reach the SPA.
+		s.router.With(publicGuard).Get("/{shareToken:(?:[a-z0-9]{16}|[A-Za-z0-9_-]{22})}", s.videoHandler.WatchPage)
 		s.router.With(publicGuard).Get("/embed/{shareToken}", s.videoHandler.EmbedPage)
 
 		s.router.With(publicGuard).Get("/watch/playlist/{shareToken}", s.videoHandler.PlaylistWatchPage)

@@ -225,7 +225,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoURL := h.baseURL + "/watch/" + shareToken
+	videoURL := h.baseURL + "/" + shareToken
 	description := extractTranscriptText(transcriptJSON, 500)
 
 	resp, err := creator.CreateIssue(r.Context(), CreateIssueRequest{

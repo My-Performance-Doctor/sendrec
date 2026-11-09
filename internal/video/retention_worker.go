@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -72,7 +71,7 @@ func processRetentionWarnings(ctx context.Context, db database.DBTX, sender Rete
 		for i, e := range entries {
 			videos[i] = email.RetentionVideoSummary{
 				Title:    e.title,
-				WatchURL: fmt.Sprintf("%s/watch/%s", baseURL, e.shareToken),
+				WatchURL: watchLink(baseURL, e.shareToken),
 			}
 			videoIDs = append(videoIDs, e.id)
 		}

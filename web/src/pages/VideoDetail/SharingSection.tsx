@@ -48,7 +48,7 @@ export function SharingSection({
         ...prev,
         published: result.published,
         mediaVersion: result.mediaVersion,
-        shareUrl: result.published ? `${window.location.origin}/watch/${encodeURIComponent(prev.shareToken)}` : "",
+        shareUrl: result.published ? `${window.location.origin}/${encodeURIComponent(prev.shareToken)}` : "",
       } : prev);
     } catch (err) { setPublicationError(err instanceof Error ? err.message : "Publication unavailable"); }
     finally { setPublishing(false); }

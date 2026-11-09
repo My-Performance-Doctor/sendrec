@@ -413,7 +413,7 @@ func (h *Handler) resolveAndNotify(ctx context.Context, videoID, ownerID, ownerE
 		return
 	}
 
-	watchURL := h.baseURL + "/watch/" + shareToken
+	watchURL := watchLink(h.baseURL, shareToken)
 
 	// A video carrying its own Notifications setting decides for every channel: the
 	// select that writes it is labelled "Notifications", not "email notifications".

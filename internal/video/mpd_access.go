@@ -77,7 +77,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 					return
 				}
 				// HTML pages render the existing password form; verification sets its cookie.
-				page := strings.HasPrefix(r.URL.Path, "/watch/") || strings.HasPrefix(r.URL.Path, "/embed/")
+				page := strings.HasPrefix(r.URL.Path, "/watch/") || strings.HasPrefix(r.URL.Path, "/embed/") || r.URL.Path == "/"+token
 				verify := strings.HasSuffix(r.URL.Path, "/verify")
 				identify := strings.HasSuffix(r.URL.Path, "/identify")
 				if !page && !verify && !h.enforceWatchAccess(w, r, token, password, email && !identify) {

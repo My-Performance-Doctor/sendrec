@@ -221,7 +221,7 @@ export function Upload() {
         setProgress(100);
         uploadResults.push({
           fileName: entry.file.name,
-          shareUrl: result.managed ? "" : `${window.location.origin}/watch/${result.shareToken}`,
+          shareUrl: result.managed ? "" : `${window.location.origin}/${result.shareToken}`,
           managed:result.managed,videoId:result.id,
         });
       } catch (err) {

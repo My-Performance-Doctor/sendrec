@@ -136,7 +136,7 @@ export function Record() {
       });
 
       setRecordedVideoId(result.id);
-      setShareUrl(result.managed ? null : `${window.location.origin}/watch/${result.shareToken}`);
+      setShareUrl(result.managed ? null : `${window.location.origin}/${result.shareToken}`);
       setFailedTake(null);
     } catch (err) {
       if (pending && !pending.managed) {

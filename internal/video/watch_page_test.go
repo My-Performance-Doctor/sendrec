@@ -2645,7 +2645,7 @@ func TestWatchPage_OGUrl(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	expectedURL := testBaseURL + "/watch/" + shareToken
+	expectedURL := `content="` + testBaseURL + "/" + shareToken + `"`
 	if !strings.Contains(body, `og:url`) {
 		t.Error("expected og:url meta tag in response")
 	}
@@ -2989,7 +2989,7 @@ func TestWatchPage_CanonicalURL(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	expectedCanonical := `<link rel="canonical" href="` + testBaseURL + `/watch/` + shareToken + `">`
+	expectedCanonical := `<link rel="canonical" href="` + testBaseURL + `/` + shareToken + `">`
 	if !strings.Contains(body, expectedCanonical) {
 		t.Errorf("expected canonical URL %q in response", expectedCanonical)
 	}

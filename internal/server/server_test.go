@@ -543,6 +543,43 @@ func TestWatchPageRouteRegisteredWithDB(t *testing.T) {
 	}
 }
 
+func TestShortWatchPathServesTokensAndLeavesAppPaths(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("failed to create pgxmock pool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	srv := server.New(server.Config{
+		DB:        unmanagedDB{mock},
+		Pinger:    &mockPinger{err: nil},
+		Storage:   &mockStorage{},
+		JWTSecret: "test-secret",
+		BaseURL:   "https://localhost:8080",
+		WebFS:     testWebFS(),
+	})
+
+	for _, token := range []string{"dg82ewfrwhb87cq4", "Xk3_9aBcDeFgHiJkLmNo-q"} {
+		mock.ExpectQuery("SELECT v.id, v.title, v.file_key").
+			WithArgs(token).
+			WillReturnError(errors.New("no rows"))
+		executeRequest(srv, http.MethodGet, "/"+token)
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("/%s did not reach the watch page: %v", token, err)
+		}
+	}
+
+	// App paths, short or wrong-shaped tokens and files fall through to the SPA.
+	for _, path := range []string{"/login", "/library", "/forgot-password", "/dg82ewfrwhb87c", "/DG82EWFRWHB87CQ4", "/assets/app.js"} {
+		rec := executeRequest(srv, http.MethodGet, path)
+		if rec.Code != http.StatusOK || rec.Body.String() == "" {
+			t.Errorf("%s: expected the SPA, got %d", path, rec.Code)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("an app path reached the database: %v", err)
+	}
+}
+
 func TestPasswordRouteRequiresAuth(t *testing.T) {
 	srv, _ := newServerWithDB(t)
 

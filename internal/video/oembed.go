@@ -74,7 +74,7 @@ func (h *Handler) OEmbed(w http.ResponseWriter, r *http.Request) {
 		Duration:     duration,
 		ThumbnailURL: thumbnailURL,
 		AuthorName:   authorName,
-		WatchURL:     h.baseURL + "/watch/" + shareToken,
+		WatchURL:     watchLink(h.baseURL, shareToken),
 		HTML:         iframeHTML,
 		Width:        640,
 		Height:       360,

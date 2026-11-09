@@ -54,7 +54,7 @@ func adapterRequest(a *MPDAdapter, id, op, body, work, key string) *httptest.Res
 	return w
 }
 func TestMPDAdapterWorkFenceAndImmutableReceipt(t *testing.T) {
-	db, _, a, id, _ := seedManagedAdapter(t)
+	db, _, a, id, share := seedManagedAdapter(t)
 	for _, c := range []struct {
 		body, version, key string
 		want               int
@@ -85,6 +85,9 @@ func TestMPDAdapterWorkFenceAndImmutableReceipt(t *testing.T) {
 	var metadata MPDMetadata
 	if json.Unmarshal(w.Body.Bytes(), &metadata) != nil || !metadata.Published || metadata.WatchURL == nil || metadata.PublishedAt == nil {
 		t.Fatal("invalid metadata", w.Body.String())
+	}
+	if want := a.h.baseURL + "/" + share; *metadata.WatchURL != want {
+		t.Fatalf("watchUrl %q, want the short link %q", *metadata.WatchURL, want)
 	}
 	// Current receipt replay must return the original response without publishing again.
 	w = adapterRequest(a, id, "publication", `{"mediaVersion":1,"published":false}`, "32", "unpublish")
@@ -121,7 +124,7 @@ func TestMPDAdapterScopeCredentialAndPublicationPolicy(t *testing.T) {
 }
 func TestMPDPublicPolicyCoversAuxiliaryPathsAndPassword(t *testing.T) {
 	db, h, _, id, share := seedManagedAdapter(t)
-	paths := []string{"/watch/", "/embed/", "/api/watch/"}
+	paths := []string{"/", "/watch/", "/embed/", "/api/watch/"}
 	for _, prefix := range paths {
 		for _, suffix := range []string{"", "/download", "/thumbnail", "/comments", "/milestone", "/segments", "/verify", "/identify", "/cta-click"} {
 			w := httptest.NewRecorder()
@@ -141,6 +144,14 @@ func TestMPDPublicPolicyCoversAuxiliaryPathsAndPassword(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal("password bypass", w.Code)
+	}
+	// Pages render the password form themselves, on the short path as on /watch/.
+	for _, page := range []string{"/" + share, "/watch/" + share} {
+		pw := httptest.NewRecorder()
+		handler.ServeHTTP(pw, withURLParam(httptest.NewRequest("GET", page, nil), "shareToken", share))
+		if pw.Code != 204 {
+			t.Fatalf("protected page %s => %d", page, pw.Code)
+		}
 	}
 	r.AddCookie(&http.Cookie{Name: watchCookieName(share), Value: signWatchCookie(h.hmacSecret, share, hash)})
 	w = httptest.NewRecorder()

@@ -1,8 +1,8 @@
 ## 1. Short links
 
-- [ ] 1.1 Serve `/{shareToken}` for 16-character lowercase and 22-character base64url tokens through the MPD public access guard, count it as a page there, and pass the token to the MPD player in `data-share-token`. Test the route, an app path, a protected MPD short link and the player script on the short path.
-- [ ] 1.2 Generate new share tokens as 16 lowercase letters and digits. Test the shape.
-- [ ] 1.3 Build every video watch link as `{BASE_URL}/{shareToken}`: API share URLs, MPD metadata, emails, oEmbed, canonical and Open Graph URLs, and the app's copied links. Update tests.
+- [x] 1.1 Serve `/{shareToken}` for 16-character lowercase and 22-character base64url tokens through the MPD public access guard, count it as a page there, and pass the token to the MPD player in `data-share-token`. Test the route, an app path, a protected MPD short link and the player script on the short path.
+- [x] 1.2 Generate new share tokens as 16 lowercase letters and digits. Test the shape.
+- [x] 1.3 Build every video watch link as `{BASE_URL}/{shareToken}`: API share URLs, MPD metadata, emails, oEmbed, canonical and Open Graph URLs, and the app's copied links. Update tests.
 
 ## 2. Custom hostname
 

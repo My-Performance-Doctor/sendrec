@@ -178,7 +178,7 @@ describe("Upload", () => {
     });
 
     const link = screen.getByRole("link", { name: /abc123defghi/ });
-    expect(link).toHaveAttribute("href", expect.stringMatching(/\/watch\/abc123defghi$/));
+    expect(link).toHaveAttribute("href", `${window.location.origin}/abc123defghi`);
     expect(link).toHaveAttribute("target", "_blank");
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/limits");

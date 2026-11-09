@@ -337,7 +337,7 @@ describe("Record", () => {
     });
 
     // Share URL should be displayed in readonly input
-    const shareInput = screen.getByDisplayValue(/\/watch\/share-abc/);
+    const shareInput = screen.getByDisplayValue(`${window.location.origin}/share-abc`);
     expect(shareInput).toBeInTheDocument();
   });
 
@@ -412,7 +412,7 @@ describe("Record", () => {
       expect(watchLink).toBeInTheDocument();
       expect(watchLink.closest("a")).toHaveAttribute(
         "href",
-        expect.stringContaining("/watch/token-watch")
+        `${window.location.origin}/token-watch`
       );
       expect(watchLink.closest("a")).toHaveAttribute("target", "_blank");
     });
@@ -804,7 +804,7 @@ describe("Record", () => {
     });
 
     expect(writeTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("/watch/token-copy")
+      `${window.location.origin}/token-copy`
     );
 
     vi.useRealTimers();
@@ -1221,7 +1221,7 @@ describe("Record", () => {
 
       await user.click(screen.getByText("Retry upload"));
 
-      await waitFor(() => expect(screen.getByDisplayValue(/watch\/t1/)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByDisplayValue(`${window.location.origin}/t1`)).toBeInTheDocument());
       expect(sentBodies).toEqual([take, take]);
       expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(2);
       expect(mockApiFetch).not.toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.anything());
@@ -1496,7 +1496,7 @@ describe("Record", () => {
       expect(screen.getByText("Your video is ready!")).toBeInTheDocument();
     });
 
-    const input = screen.getByDisplayValue(/\/watch\/token-input/);
+    const input = screen.getByDisplayValue(`${window.location.origin}/token-input`);
     expect(input).toBeInTheDocument();
     expect(input.tagName).toBe("INPUT");
     expect(input).toHaveAttribute("readOnly");
@@ -1608,7 +1608,7 @@ describe("Record", () => {
     });
 
     expect(writeTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("/watch/token-autocopy")
+      `${window.location.origin}/token-autocopy`
     );
   });
 });
