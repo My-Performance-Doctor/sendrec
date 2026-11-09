@@ -465,6 +465,8 @@ const playerJS = `
 
         playBtn.addEventListener('click', togglePlay);
         overlayBtn.addEventListener('click', togglePlay);
+        // Share links offer no download, so the video's own menu, with "Save video as", stays shut.
+        player.addEventListener('contextmenu', function(e) { e.preventDefault(); });
         overlay.addEventListener('click', function(e) {
             if (e.target === overlay) togglePlay();
         });

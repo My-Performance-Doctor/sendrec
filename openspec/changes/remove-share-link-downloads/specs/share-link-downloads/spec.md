@@ -9,7 +9,7 @@ A recording opened through a share link SHALL NOT offer a download, and no recor
 
 #### Scenario: Share-link download endpoint
 - **WHEN** anyone requests `/api/watch/{shareToken}/download`
-- **THEN** the request is refused with 403 and no file link
+- **THEN** the request is refused without a file link
 
 #### Scenario: Browser context menu
 - **WHEN** a viewer right-clicks the video on a watch, embed or playlist page

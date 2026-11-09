@@ -1784,8 +1784,12 @@ func TestWatchPage_DownloadDisabled_HidesButton(t *testing.T) {
 	if !strings.Contains(body, `controlsList="nodownload"`) {
 		t.Error("expected controlsList=nodownload on video element when download is disabled")
 	}
-	if !strings.Contains(body, `oncontextmenu="return false;"`) {
-		t.Error("expected context menu disabled on video element when download is disabled")
+	// The page's CSP blocks inline handlers, so only the nonced player script can shut the menu.
+	if strings.Contains(body, `oncontextmenu`) {
+		t.Error("expected no inline oncontextmenu handler, which the page's CSP blocks")
+	}
+	if !strings.Contains(body, `player.addEventListener('contextmenu'`) {
+		t.Error("expected the player script to shut the video's context menu")
 	}
 	if strings.Contains(body, `og:video`) {
 		t.Error("expected no og:video meta tag when download is disabled")

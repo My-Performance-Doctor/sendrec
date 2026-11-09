@@ -37,7 +37,8 @@ Persisted media policy remains active when the integration switches or deploymen
 |---|---|
 | `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply, titled "Protected video" instead of the recording title |
 | `/api/watch/{shareToken}` | Publication, password, email and expiry checks |
-| `/api/watch/{shareToken}/download`, `/thumbnail` | Publication and per-video access, plus existing download policy |
+| `/api/watch/{shareToken}/download` | Never returns a link: share links offer no download, and a database check keeps every recording's downloads off |
+| `/api/watch/{shareToken}/thumbnail` | Publication and per-video access |
 | `/api/videos/{shareToken}/oembed` | No unpublished or password-protected metadata disclosure |
 | Watch `/verify`, `/identify`, `/comments`, `/cta-click`, `/milestone`, `/segments` | Publication required; protected operations require per-video access |
 | `/watch/playlist/{shareToken}`, `/embed/playlist/{shareToken}` | Every managed item must pass its own publication/password/email/expiry policy, then playlist policy |
