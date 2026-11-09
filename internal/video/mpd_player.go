@@ -1,7 +1,10 @@
 package video
 
 import (
+	"html"
 	"net/http"
+
+	"github.com/sendrec/sendrec/internal/httputil"
 )
 
 func (h *Handler) MPDPlayerScript(w http.ResponseWriter, r *http.Request) {
@@ -13,8 +16,17 @@ func (h *Handler) MPDPreviewPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><body><h1>Staff preview</h1><p id="mpd-status">Checking access...</p><video id="player" controls playsinline crossorigin="anonymous" style="width:100%;max-height:80vh"></video><script src="/api/mpd/player.js" defer></script></body></html>`))
+	nonce := html.EscapeString(httputil.NonceFromContext(r.Context()))
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><style nonce="` + nonce + `">` + mpdPreviewCSS + `</style><body><h1>Staff preview</h1><p id="mpd-status">Checking access...</p><video id="player" controls playsinline crossorigin="anonymous"></video><script src="/api/mpd/player.js" defer></script></body></html>`))
 }
+
+// The preview fills its window, framed by Staff OS or opened in a tab, and letterboxes the recording. The status shows
+// on its own while access is checked or once it ends, and stays with screen readers while media is loaded.
+// The page's CSP blocks inline style attributes, so the styles carry the request's nonce.
+const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff;font:14px/1.4 system-ui,sans-serif}` +
+	`#mpd-status{position:absolute;top:50%;right:16px;left:16px;margin:0;text-align:center;transform:translateY(-50%)}` +
+	`h1,body:has(video[src]) #mpd-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}` +
+	`video{display:block;width:100%;height:100%;object-fit:contain}video:not([src]){visibility:hidden}`
 
 const mpdPlayerJS = `(function(){
 'use strict';
