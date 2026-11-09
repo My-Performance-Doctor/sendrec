@@ -198,6 +198,41 @@ class SendRecStackTest {
     }
   }
 
+  private static final String DOMAIN_CERTIFICATE =
+      "arn:aws:acm:us-east-1:" + StagingConfig.ACCOUNT + ":certificate/00000000-0000-4000-8000-000000000003";
+
+  @Test void customHostnameServesTheAppAndKeepsTheCloudFrontOrigin() {
+    Template template = Template.fromStack(stack(Map.of(
+        "domainName", "results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE)));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", List.of("results-staging.example.test"),
+        "ViewerCertificate", Map.of("AcmCertificateArn", DOMAIN_CERTIFICATE, "SslSupportMethod", "sni-only",
+            "MinimumProtocolVersion", "TLSv1.2_2021")))));
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+        "Environment", Match.arrayWith(List.of(Map.of("Name", "BASE_URL", "Value", "https://results-staging.example.test")))))))));
+    template.hasOutput("BaseUrl", Map.of("Value", "https://results-staging.example.test"));
+    // The custom origin first, then the CloudFront origin that links sent earlier still open on.
+    Map<String, Object> cloudFrontOrigin = Map.of("Fn::Join", List.of("", List.of("https://",
+        Map.of("Fn::GetAtt", List.of(Match.stringLikeRegexp("Distribution.*"), "DomainName")))));
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("CorsConfiguration", Map.of("CorsRules", List.of(Match.objectLike(Map.of(
+        "AllowedOrigins", List.of("https://results-staging.example.test", cloudFrontOrigin)))))));
+  }
+
+  @Test void customHostnameNeedsBothContextsAUsEast1CertificateAndALowercaseName() {
+    String otherAccount = DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111");
+    String sydney = DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2");
+    for (Map<String, Object> input : List.of(
+        Map.<String, Object>of("domainName", "results-staging.example.test"),
+        Map.<String, Object>of("domainCertificateArn", DOMAIN_CERTIFICATE),
+        Map.<String, Object>of("domainName", "Results-Staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE),
+        Map.<String, Object>of("domainName", "https://results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE),
+        Map.<String, Object>of("domainName", "results", "domainCertificateArn", DOMAIN_CERTIFICATE),
+        Map.<String, Object>of("domainName", "results-staging.example.test", "domainCertificateArn", sydney),
+        Map.<String, Object>of("domainName", "results-staging.example.test", "domainCertificateArn", otherAccount))) {
+      assertThrows(IllegalArgumentException.class, () -> stack(input), input.toString());
+    }
+  }
+
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";

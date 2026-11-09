@@ -6,7 +6,7 @@
 
 ## 2. Custom hostname
 
-- [ ] 2.1 Accept `domainName` and `domainCertificateArn` contexts, both or neither, add the alias and certificate to the distribution, set `BASE_URL`, and keep the CloudFront origin in the recordings CORS rule. Test both cases and each invalid input.
+- [x] 2.1 Accept `domainName` and `domainCertificateArn` contexts, both or neither, add the alias and certificate to the distribution, set `BASE_URL`, and keep the CloudFront origin in the recordings CORS rule. Test both cases and each invalid input.
 - [ ] 2.2 Document the certificate, GoDaddy DNS, deploy contexts and the mpd-api and Cognito changes in the infrastructure README, and the short path in the MPD docs.
 
 ## 3. Staging
