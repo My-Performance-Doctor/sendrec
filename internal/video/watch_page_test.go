@@ -196,6 +196,8 @@ func TestWatchPage_Success_RendersVideoPlayer(t *testing.T) {
 		"hidden track":    "subTrack.mode = 'hidden'",
 		"object-fit":      "object-fit: contain",
 		"cue tag strip":   "function cueParts(",
+		// The MPD player reads the token here; the short path has no /watch/ segment.
+		"share token": `data-share-token="` + shareToken + `"`,
 	}
 	for name, want := range checks {
 		if !strings.Contains(body, want) {

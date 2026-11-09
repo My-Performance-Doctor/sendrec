@@ -448,7 +448,7 @@ export function VideoDetail() {
           &larr; Library
         </Link>
         {(!video.managed || video.published) && <a
-          href={`/watch/${video.shareToken}`}
+          href={`/${video.shareToken}`}
           target="_blank"
           rel="noopener noreferrer"
           style={{

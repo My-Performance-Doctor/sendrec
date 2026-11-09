@@ -338,7 +338,7 @@ describe("VideoDetail", () => {
     expect(libraryLink).toHaveAttribute("href", "/library");
   });
 
-  it("shows view as viewer link pointing to /watch/{shareToken}", async () => {
+  it("shows view as viewer link pointing to the short /{shareToken} path", async () => {
     const video = makeVideo({ shareToken: "tok456" });
     setupDefaultMocks({ video });
 
@@ -349,7 +349,7 @@ describe("VideoDetail", () => {
     });
 
     const viewerLink = screen.getByRole("link", { name: /View as viewer/ });
-    expect(viewerLink).toHaveAttribute("href", "/watch/tok456");
+    expect(viewerLink).toHaveAttribute("href", "/tok456");
     expect(viewerLink).toHaveAttribute("target", "_blank");
   });
 
