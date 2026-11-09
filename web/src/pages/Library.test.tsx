@@ -37,7 +37,7 @@ function makeVideo(overrides: Record<string, unknown> = {}) {
     commentCount: 0,
     transcriptStatus: "none",
     viewNotification: null,
-    downloadEnabled: true,
+    downloadEnabled: false,
     emailGateEnabled: false,
     ctaText: null,
     ctaUrl: null,

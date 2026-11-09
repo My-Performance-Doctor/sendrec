@@ -998,13 +998,6 @@ components:
             type: string
           maxItems: 10
 
-    SetDownloadEnabledRequest:
-      type: object
-      required: [downloadEnabled]
-      properties:
-        downloadEnabled:
-          type: boolean
-
     SetLinkExpiryRequest:
       type: object
       properties:
@@ -3387,6 +3380,7 @@ paths:
     get:
       tags: [Watch]
       summary: Get public download URL
+      description: Share-link downloads are off for every recording, so this answers 403.
       operationId: watchDownload
       parameters:
         - name: shareToken
@@ -3402,7 +3396,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DownloadResponse"
         "403":
-          description: Password required
+          description: Downloads are off
           content:
             application/json:
               schema:
@@ -3916,48 +3910,6 @@ paths:
           description: Video tags updated
         "400":
           description: Validation error or maximum of 10 tags exceeded
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Video not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /api/videos/{id}/download-enabled:
-    put:
-      tags: [Videos]
-      summary: Enable or disable download
-      description: Controls whether the download button is shown on the watch page.
-      operationId: setDownloadEnabled
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SetDownloadEnabledRequest"
-      responses:
-        "204":
-          description: Download setting updated
-        "400":
-          description: Validation error
           content:
             application/json:
               schema:
