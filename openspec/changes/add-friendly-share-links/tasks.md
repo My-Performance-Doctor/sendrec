@@ -6,10 +6,10 @@
 
 ## 2. Custom hostname
 
-- [x] 2.1 Accept `domainName` and `domainCertificateArn` contexts, both or neither, add the alias and certificate to the distribution, set `BASE_URL`, and keep the CloudFront origin in the recordings CORS rule. Test both cases and each invalid input.
+- [x] 2.1 Let an environment's committed config name a hostname and its `us-east-1` certificate; add the alias and certificate to the distribution, set `BASE_URL`, and keep the CloudFront origin in the recordings CORS rule. Test both cases, that a context cannot set it, and each invalid input.
 - [x] 2.2 Document the certificate, GoDaddy DNS, deploy contexts and the mpd-api and Cognito changes in the infrastructure README, and the short path in the MPD docs.
 
 ## 3. Staging
 
 - [ ] 3.1 After merge: an administrator requests the `us-east-1` certificate for `results-staging.mpd.health`, and its validation record and a CNAME to the SendRec distribution are added at GoDaddy.
-- [ ] 3.2 Deploy staging with the two contexts, together with mpd-api's `SENDREC_ORIGIN` and `sendrecCallbackUrl`. Send a synthetic recording and confirm the patient link is `https://results-staging.mpd.health/{16 characters}`, opens through its password gate in Chrome, Safari and Firefox, and that an earlier CloudFront `/watch/` link still plays.
+- [ ] 3.2 Commit the hostname and certificate in `StagingConfig` through a reviewed pull request, then deploy staging together with mpd-api's `SENDREC_ORIGIN` and `sendrecCallbackUrl`. Send a synthetic recording and confirm the patient link is `https://results-staging.mpd.health/{16 characters}`, opens through its password gate in Chrome, Safari and Firefox, and that an earlier CloudFront `/watch/` link still plays.

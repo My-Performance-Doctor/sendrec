@@ -20,4 +20,7 @@ public interface EnvironmentConfig {
 
   default String alertTopicArn() { return ""; }
 
+  /** The public hostname for links, or null to keep the CloudFront hostname. */
+  default CustomDomain customDomain() { return null; }
+
 }

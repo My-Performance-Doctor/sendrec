@@ -201,9 +201,24 @@ class SendRecStackTest {
   private static final String DOMAIN_CERTIFICATE =
       "arn:aws:acm:us-east-1:" + StagingConfig.ACCOUNT + ":certificate/00000000-0000-4000-8000-000000000003";
 
+  /** Staging, with a custom hostname as StagingConfig will carry once its certificate exists. */
+  private SendRecStack stackWithDomain(CustomDomain domain) {
+    App app = new App();
+    EnvironmentConfig staging = StagingConfig.INSTANCE;
+    EnvironmentConfig config = new EnvironmentConfig() {
+      public String environmentName() { return staging.environmentName(); }
+      public String vpcId() { return staging.vpcId(); }
+      public String cloudFrontPrefixListId() { return staging.cloudFrontPrefixListId(); }
+      public String recordingsBucketName() { return staging.recordingsBucketName(); }
+      public int taskCpu() { return staging.taskCpu(); }
+      public int taskMemoryMiB() { return staging.taskMemoryMiB(); }
+      public CustomDomain customDomain() { return domain; }
+    };
+    return new SendRecStack(app, "SendRecStaging", props, config, syntheticVpc(app, "SyntheticNetwork"));
+  }
+
   @Test void customHostnameServesTheAppAndKeepsTheCloudFrontOrigin() {
-    Template template = Template.fromStack(stack(Map.of(
-        "domainName", "results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE)));
+    Template template = Template.fromStack(stackWithDomain(new CustomDomain("results-staging.example.test", DOMAIN_CERTIFICATE)));
     template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
         "Aliases", List.of("results-staging.example.test"),
         "ViewerCertificate", Map.of("AcmCertificateArn", DOMAIN_CERTIFICATE, "SslSupportMethod", "sni-only",
@@ -218,19 +233,24 @@ class SendRecStackTest {
         "AllowedOrigins", List.of("https://results-staging.example.test", cloudFrontOrigin)))))));
   }
 
-  @Test void customHostnameNeedsBothContextsAUsEast1CertificateAndALowercaseName() {
-    String otherAccount = DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111");
-    String sydney = DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2");
-    for (Map<String, Object> input : List.of(
-        Map.<String, Object>of("domainName", "results-staging.example.test"),
-        Map.<String, Object>of("domainCertificateArn", DOMAIN_CERTIFICATE),
-        Map.<String, Object>of("domainName", "Results-Staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE),
-        Map.<String, Object>of("domainName", "https://results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE),
-        Map.<String, Object>of("domainName", "results", "domainCertificateArn", DOMAIN_CERTIFICATE),
-        Map.<String, Object>of("domainName", "results-staging.example.test", "domainCertificateArn", sydney),
-        Map.<String, Object>of("domainName", "results-staging.example.test", "domainCertificateArn", otherAccount))) {
-      assertThrows(IllegalArgumentException.class, () -> stack(input), input.toString());
+  @Test void stagingHasNoCustomHostnameUntilItsCertificateIsCommitted() {
+    assertNull(StagingConfig.INSTANCE.customDomain());
+    // A deploy context cannot add or drop the hostname.
+    Template template = Template.fromStack(stack(Map.of(
+        "domainName", "results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE)));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", Match.absent()))));
+  }
+
+  @Test void customHostnameNeedsALowercaseNameAndAUsEast1CertificateInTheStackAccount() {
+    for (String name : List.of("Results-Staging.example.test", "https://results-staging.example.test", "results", "results-.example.test")) {
+      assertThrows(IllegalArgumentException.class, () -> new CustomDomain(name, DOMAIN_CERTIFICATE), name);
     }
+    for (String arn : List.of(DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2"), DOMAIN_CERTIFICATE + "/x", "")) {
+      assertThrows(IllegalArgumentException.class, () -> new CustomDomain("results-staging.example.test", arn), arn);
+    }
+    CustomDomain otherAccount = new CustomDomain("results-staging.example.test", DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111"));
+    assertThrows(IllegalArgumentException.class, () -> stackWithDomain(otherAccount));
   }
 
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {

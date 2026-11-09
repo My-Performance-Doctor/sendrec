@@ -80,14 +80,18 @@ Watch links read `{BASE_URL}/{shareToken}`. Staging moves from the CloudFront ho
 1. Request a DNS-validated ACM certificate for the hostname in `us-east-1`. CloudFront accepts no other region. The developer SSO role is denied ACM in `us-east-1`, so an administrator requests it.
 2. Add its validation CNAME at GoDaddy and wait for the certificate to be issued.
 3. Add a CNAME from the hostname to the distribution's `*.cloudfront.net` name (`d2oopdll9i8yvf.cloudfront.net` for staging). It answers with a certificate error until step 4 deploys.
-4. Deploy with both contexts, alongside the current approved access contexts:
+4. In a reviewed pull request, override `customDomain()` in `StagingConfig`:
 
-```bash
-python3 cdk-with-session.py diff SendRecStaging -c bootstrap=false -c domainName=results-staging.mpd.health -c domainCertificateArn=<us-east-1 certificate ARN> <current MPD contexts>
-python3 cdk-with-session.py deploy SendRecStaging -c bootstrap=false -c domainName=results-staging.mpd.health -c domainCertificateArn=<us-east-1 certificate ARN> <current MPD contexts> --require-approval never
+```java
+@Override
+public CustomDomain customDomain() {
+  return new CustomDomain("results-staging.mpd.health", "arn:aws:acm:us-east-1:537421187871:certificate/<id>");
+}
 ```
 
-The diff should change the distribution's aliases and certificate, `BASE_URL`, and the recordings bucket's CORS origins, and nothing else. Pass both contexts on every later deploy: leaving them out moves `BASE_URL` back to the CloudFront hostname.
+5. After merge, diff and deploy staging with the current approved access contexts. The diff should change the distribution's aliases and certificate, `BASE_URL`, and the recordings bucket's CORS origins, and nothing else.
+
+The hostname is committed config rather than a deploy context on purpose: a deploy that left it out would take the alias off the distribution, and every link already sent on the new hostname would fail. Production's hostname, `results.mpd.health`, is added to `ProductionConfig` with production's own deployment change.
 
 In the same window, deploy mpd-api with `SENDREC_ORIGIN` set to `https://results-staging.mpd.health` and its `sendrecCallbackUrl` set to `https://results-staging.mpd.health/api/auth/mpd/callback`. mpd-api refuses metadata whose `watchUrl` origin differs from `SENDREC_ORIGIN`, so sends fail closed until both are deployed. The Cognito client takes the callback from `sendrecCallbackUrl`; without it, staff sign-in to SendRec's own pages fails. Staff OS needs no change, because SendRec allow-lists its origin rather than comparing it with `BASE_URL`.
 

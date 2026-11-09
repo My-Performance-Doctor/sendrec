@@ -38,16 +38,16 @@ Every video watch link SendRec generates SHALL be `{BASE_URL}/{shareToken}`.
 - **THEN** the video's link is `{BASE_URL}/{shareToken}`
 
 ### Requirement: Configurable public hostname
-The stack SHALL serve SendRec on a custom hostname when a deploy supplies the hostname and its `us-east-1` ACM certificate, and SHALL keep the CloudFront hostname otherwise.
+The stack SHALL serve SendRec on a custom hostname when the environment's committed config names the hostname and its `us-east-1` ACM certificate, and SHALL keep the CloudFront hostname otherwise. No deploy context SHALL add or remove it.
 
-#### Scenario: Hostname supplied
-- **WHEN** a deploy supplies `domainName` and `domainCertificateArn`
-- **THEN** CloudFront serves that hostname with that certificate, `BASE_URL` is `https://{domainName}`, and the recordings bucket allows both that origin and the CloudFront origin
+#### Scenario: Hostname configured
+- **WHEN** the environment config names a hostname and certificate
+- **THEN** CloudFront serves that hostname with that certificate, `BASE_URL` is `https://{hostname}`, and the recordings bucket allows both that origin and the CloudFront origin
 
 #### Scenario: Hostname absent
-- **WHEN** a deploy supplies neither context
-- **THEN** the distribution has no alias and `BASE_URL` is its CloudFront hostname
+- **WHEN** the environment config names no hostname
+- **THEN** the distribution has no alias and `BASE_URL` is its CloudFront hostname, whatever contexts the deploy passes
 
 #### Scenario: Invalid hostname settings
-- **WHEN** a deploy supplies only one context, an invalid hostname, or a certificate outside `us-east-1` or the stack's account
+- **WHEN** the config names an invalid hostname, or a certificate outside `us-east-1` or the stack's account
 - **THEN** synthesis fails before any deploy

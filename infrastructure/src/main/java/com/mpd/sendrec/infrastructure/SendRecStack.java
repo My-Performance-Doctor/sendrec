@@ -160,7 +160,9 @@ public class SendRecStack extends Stack {
             .runtime(FunctionRuntime.JS_2_0)
             .code(FunctionCode.fromInline(options.accessCode()))
             .build();
-    CustomDomain domain = CustomDomain.fromContext(this);
+    CustomDomain domain = config.customDomain();
+    if (domain != null && !domain.account().equals(getAccount()))
+      throw new IllegalArgumentException("The custom domain's certificate must be in the stack's account");
     Distribution.Builder distributionBuilder = Distribution.Builder.create(this, "Distribution")
         .defaultBehavior(BehaviorOptions.builder()
             .origin(VpcOrigin.withApplicationLoadBalancer(alb,
