@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/pashagolub/pgxmock/v5"
+	"github.com/sendrec/sendrec/internal/httputil"
 )
 
 func managedWatchRequest(shareToken string) *http.Request {
@@ -199,12 +200,19 @@ func assertManagedLinkUnavailable(t *testing.T, published bool, deleted, expires
 	}
 	router := chi.NewRouter()
 	router.With(handler.MPDPublicAccess).Get("/watch/{shareToken}", func(http.ResponseWriter, *http.Request) { t.Error("an unavailable link was served") })
+	router.With(handler.MPDPublicAccess).Get("/{shareToken}", func(http.ResponseWriter, *http.Request) { t.Error("an unavailable link was served") })
 	router.With(handler.MPDPublicAccess).Get("/api/watch/{shareToken}", func(http.ResponseWriter, *http.Request) { t.Error("an unavailable link was served") })
 
 	expectState()
 	page := httptest.NewRecorder()
 	router.ServeHTTP(page, watchPageRequest(shareToken))
 	assertMPDUnavailablePage(t, page, http.StatusNotFound)
+
+	expectState()
+	short := httptest.NewRecorder()
+	shortRequest := httptest.NewRequest(http.MethodGet, "/"+shareToken, nil)
+	router.ServeHTTP(short, shortRequest.WithContext(httputil.ContextWithNonce(shortRequest.Context(), "test-nonce")))
+	assertMPDUnavailablePage(t, short, http.StatusNotFound)
 
 	expectState()
 	api := httptest.NewRecorder()

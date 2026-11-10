@@ -73,8 +73,8 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 				managedTokens[token] = true
 				w.Header().Set("Cache-Control", "private, no-store")
 				if !published || deleted != nil || expires != nil && time.Now().After(*expires) {
-					// The link itself is opened by a person, so it gets a page, not JSON.
-					if r.URL.Path == "/watch/"+token {
+					// The link itself, short or long, is opened by a person, so it gets a page, not JSON.
+					if r.URL.Path == "/watch/"+token || r.URL.Path == "/"+token {
 						writeMPDUnavailablePage(w, r, 404)
 						return
 					}
