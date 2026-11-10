@@ -48,6 +48,8 @@ export function App() {
   useTheme();
   return (
     <Routes>
+      {/* A top-level path of exactly 16 lowercase letters and digits, or 22 base64url
+          characters, is a share link the server answers (internal/server/server.go). */}
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />

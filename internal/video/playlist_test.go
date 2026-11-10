@@ -348,7 +348,7 @@ func TestGetPlaylist_Success(t *testing.T) {
 	mock.ExpectQuery(`SELECT v\.id, v\.title, v\.duration, v\.share_token, v\.status, v\.created_at`).
 		WithArgs("playlist-1").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "title", "duration", "share_token", "status", "created_at", "thumbnail_key", "position"}).
-			AddRow("video-1", "First Video", 120, "vtoken1", "ready", now, &thumbKey, 0).
+			AddRow("video-1", "First Video", 120, "dg82ewfrwhb87cq4", "ready", now, &thumbKey, 0).
 			AddRow("video-2", "Second Video", 60, "vtoken2", "ready", now, (*string)(nil), 1))
 
 	r := chi.NewRouter()
@@ -389,7 +389,7 @@ func TestGetPlaylist_Success(t *testing.T) {
 	if resp.Videos[0].ThumbnailURL == nil {
 		t.Errorf("expected first video thumbnailUrl to be set")
 	}
-	expectedShareURL := testBaseURL + "/watch/vtoken1"
+	expectedShareURL := testBaseURL + "/dg82ewfrwhb87cq4"
 	if resp.Videos[0].ShareURL != expectedShareURL {
 		t.Errorf("expected first video shareUrl %q, got %q", expectedShareURL, resp.Videos[0].ShareURL)
 	}

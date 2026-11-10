@@ -86,8 +86,8 @@ function makeVideo(overrides: Record<string, unknown> = {}) {
     title: "My Recording",
     status: "ready",
     duration: 125,
-    shareToken: "abc123",
-    shareUrl: "https://app.sendrec.eu/watch/abc123",
+    shareToken: "abc123defghi0000",
+    shareUrl: "https://app.sendrec.eu/watch/abc123defghi0000",
     createdAt: "2026-02-01T10:00:00Z",
     shareExpiresAt: new Date(Date.now() + 5 * 86400000).toISOString(),
     viewCount: 3,
@@ -250,7 +250,7 @@ describe("Managed recording access", () => {
   fireEvent.click(screen.getByText("Publish recording"));
   await waitFor(() => expect(screen.getByText("Copy share link")).not.toBeDisabled());
   expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/v1/publication",expect.objectContaining({body:JSON.stringify({mediaVersion:3,published:true})}));
-  const expected = `${window.location.origin}/watch/abc123`;
+  const expected = `${window.location.origin}/abc123defghi0000`;
   expect(screen.getByLabelText("Share link")).toHaveValue(expected);
   fireEvent.click(screen.getByText("Copy link"));
   await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expected));
@@ -338,8 +338,8 @@ describe("VideoDetail", () => {
     expect(libraryLink).toHaveAttribute("href", "/library");
   });
 
-  it("shows view as viewer link pointing to /watch/{shareToken}", async () => {
-    const video = makeVideo({ shareToken: "tok456" });
+  it("shows view as viewer link pointing to the short /{shareToken} path", async () => {
+    const video = makeVideo({ shareToken: "tok4560000000000" });
     setupDefaultMocks({ video });
 
     renderVideoDetail("v1");
@@ -349,7 +349,7 @@ describe("VideoDetail", () => {
     });
 
     const viewerLink = screen.getByRole("link", { name: /View as viewer/ });
-    expect(viewerLink).toHaveAttribute("href", "/watch/tok456");
+    expect(viewerLink).toHaveAttribute("href", "/tok4560000000000");
     expect(viewerLink).toHaveAttribute("target", "_blank");
   });
 
@@ -474,7 +474,7 @@ describe("VideoDetail", () => {
 
   it("shows share link input with video URL and copy button", async () => {
     const video = makeVideo({
-      shareUrl: "https://app.sendrec.eu/watch/abc123",
+      shareUrl: "https://app.sendrec.eu/watch/abc123defghi0000",
     });
     setupDefaultMocks();
 
@@ -482,7 +482,7 @@ describe("VideoDetail", () => {
 
     await waitFor(() => {
       const input = screen.getByLabelText("Share link") as HTMLInputElement;
-      expect(input.value).toBe("https://app.sendrec.eu/watch/abc123");
+      expect(input.value).toBe("https://app.sendrec.eu/watch/abc123defghi0000");
       expect(input).toHaveAttribute("readOnly");
     });
 
@@ -491,7 +491,7 @@ describe("VideoDetail", () => {
 
   it("copies share link to clipboard when copy button clicked", async () => {
     const video = makeVideo({
-      shareUrl: "https://app.sendrec.eu/watch/abc123",
+      shareUrl: "https://app.sendrec.eu/watch/abc123defghi0000",
     });
     setupDefaultMocks();
 
@@ -505,7 +505,7 @@ describe("VideoDetail", () => {
 
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "https://app.sendrec.eu/watch/abc123",
+        "https://app.sendrec.eu/watch/abc123defghi0000",
       );
     });
   });
@@ -522,7 +522,7 @@ describe("VideoDetail", () => {
 
     const embedInput = screen.getByLabelText("Embed code") as HTMLInputElement;
     expect(embedInput.value).toContain("<iframe");
-    expect(embedInput.value).toContain("/embed/abc123");
+    expect(embedInput.value).toContain("/embed/abc123defghi0000");
   });
 
   it("shows password controls - set password when none", async () => {

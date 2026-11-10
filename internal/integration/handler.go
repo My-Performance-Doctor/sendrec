@@ -11,6 +11,7 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/httputil"
 	"github.com/sendrec/sendrec/internal/organization"
+	"github.com/sendrec/sendrec/internal/sharelink"
 )
 
 var validProviders = map[string]bool{
@@ -225,7 +226,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	videoURL := h.baseURL + "/watch/" + shareToken
+	videoURL := sharelink.Watch(h.baseURL, shareToken)
 	description := extractTranscriptText(transcriptJSON, 500)
 
 	resp, err := creator.CreateIssue(r.Context(), CreateIssueRequest{

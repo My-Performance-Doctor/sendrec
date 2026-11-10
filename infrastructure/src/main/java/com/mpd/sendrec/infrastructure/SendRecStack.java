@@ -20,6 +20,7 @@ import software.amazon.awscdk.services.ec2.SubnetSelection;
 import software.amazon.awscdk.services.ec2.SubnetType;
 import software.amazon.awscdk.services.ec2.Vpc;
 import software.amazon.awscdk.services.ec2.VpcLookupOptions;
+import software.amazon.awscdk.services.certificatemanager.Certificate;
 import software.amazon.awscdk.services.cloudfront.*;
 import software.amazon.awscdk.services.cloudfront.origins.VpcOrigin;
 import software.amazon.awscdk.services.cloudfront.origins.VpcOriginWithEndpointProps;
@@ -159,7 +160,10 @@ public class SendRecStack extends Stack {
             .runtime(FunctionRuntime.JS_2_0)
             .code(FunctionCode.fromInline(options.accessCode()))
             .build();
-    Distribution distribution = Distribution.Builder.create(this, "Distribution")
+    CustomDomain domain = config.customDomain();
+    if (domain != null && !domain.account().equals(getAccount()))
+      throw new IllegalArgumentException("The custom domain's certificate must be in the stack's account");
+    Distribution.Builder distributionBuilder = Distribution.Builder.create(this, "Distribution")
         .defaultBehavior(BehaviorOptions.builder()
             .origin(VpcOrigin.withApplicationLoadBalancer(alb,
                 VpcOriginWithEndpointProps.builder().protocolPolicy(OriginProtocolPolicy.HTTP_ONLY).build()))
@@ -171,13 +175,20 @@ public class SendRecStack extends Stack {
                 .eventType(FunctionEventType.VIEWER_REQUEST).build()))
             .build())
         .minimumProtocolVersion(SecurityPolicyProtocol.TLS_V1_2_2021)
-        .enableIpv6(false)
-        .build();
-    String baseUrl = "https://" + distribution.getDistributionDomainName();
+        .enableIpv6(false);
+    if (domain != null) {
+      distributionBuilder.domainNames(List.of(domain.name()))
+          .certificate(Certificate.fromCertificateArn(this, "DomainCertificate", domain.certificateArn()));
+    }
+    Distribution distribution = distributionBuilder.build();
+    String cloudFrontUrl = "https://" + distribution.getDistributionDomainName();
+    String baseUrl = domain == null ? cloudFrontUrl : "https://" + domain.name();
 
     // The browser PUTs recordings straight to S3 with a presigned URL, from SendRec's own pages
-    // and from approved MPD clients such as Staff OS.
+    // and from approved MPD clients such as Staff OS. Pages opened from links sent before the
+    // custom hostname still load captions from the CloudFront origin.
     List<String> uploadOrigins = new ArrayList<>(List.of(baseUrl));
+    if (domain != null) uploadOrigins.add(cloudFrontUrl);
     uploadOrigins.addAll(MpdIntegrationConfig.browserOrigins(this));
     recordings.addCorsRule(
         CorsRule.builder()

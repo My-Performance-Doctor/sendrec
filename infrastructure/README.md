@@ -2,7 +2,7 @@
 
 This stack targets account `537421187871` in `ap-southeast-2` using the existing staging VPC. CloudFront supplies a trusted `.cloudfront.net` HTTPS hostname. Its VPC origin reaches an internal ALB in isolated subnets. Fargate runs in private subnets with egress, and the dedicated encrypted PostgreSQL database runs in isolated subnets. S3 recordings remain private. Application responses use the managed CachingDisabled policy.
 
-The operator approved synthetic evaluation and requested an alternative to external DNS. This deployment does not use the pending regional certificate or require a domain CNAME. A future custom CloudFront hostname needs a separate change and an ACM certificate in `us-east-1`.
+The operator approved synthetic evaluation and requested an alternative to external DNS. This deployment does not use the pending regional certificate or require a domain CNAME. A deploy can add a custom hostname for patient-facing links; see [Custom hostname](#custom-hostname).
 
 ## Checks
 
@@ -72,6 +72,30 @@ python3 cdk-with-session.py deploy SendRecStaging -c bootstrap=false --require-a
 ```
 
 Do not combine those two deployments. CloudFront updates can finish before an ECS task replacement, so changing both at once could expose registration.
+
+## Custom hostname
+
+Watch links read `{BASE_URL}/{shareToken}`. Staging moves from the CloudFront hostname to `results-staging.mpd.health`, and production uses `results.mpd.health`. `mpd.health` is hosted at GoDaddy, not Route 53.
+
+1. Request a DNS-validated ACM certificate for the hostname in `us-east-1`. CloudFront accepts no other region. The developer SSO role is denied ACM in `us-east-1`, so an administrator requests it.
+2. Add its validation CNAME at GoDaddy and wait for the certificate to be issued.
+3. Add a CNAME from the hostname to the distribution's `*.cloudfront.net` name (`d2oopdll9i8yvf.cloudfront.net` for staging). It answers with a certificate error until step 4 deploys.
+4. In a reviewed pull request, override `customDomain()` in `StagingConfig`:
+
+```java
+@Override
+public CustomDomain customDomain() {
+  return new CustomDomain("results-staging.mpd.health", "arn:aws:acm:us-east-1:537421187871:certificate/<id>");
+}
+```
+
+5. After merge, diff and deploy staging with the current approved access contexts. The diff should change the distribution's aliases and certificate, `BASE_URL`, and the recordings bucket's CORS origins, and nothing else.
+
+The hostname is committed config rather than a deploy context on purpose: a deploy that left it out would take the alias off the distribution, and every link already sent on the new hostname would fail. Production's hostname, `results.mpd.health`, is added to `ProductionConfig` with production's own deployment change.
+
+In the same window, deploy mpd-api with `SENDREC_ORIGIN` set to `https://results-staging.mpd.health` and its `sendrecCallbackUrl` set to `https://results-staging.mpd.health/api/auth/mpd/callback`. mpd-api refuses metadata whose `watchUrl` origin differs from `SENDREC_ORIGIN`, so sends fail closed until both are deployed. The Cognito client takes the callback from `sendrecCallbackUrl`; without it, staff sign-in to SendRec's own pages fails. Staff OS needs no change, because SendRec allow-lists its origin rather than comparing it with `BASE_URL`.
+
+The CloudFront hostname keeps answering, so `/watch/{shareToken}` links sent earlier still open there, and the bucket's CORS rule keeps that origin for their captions. SendRec's own staff sign-in accepts only `BASE_URL` as its origin, so staff use the new hostname for SendRec's pages.
 
 ## Verify and recover
 

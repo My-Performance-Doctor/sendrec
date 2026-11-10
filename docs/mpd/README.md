@@ -35,7 +35,7 @@ Persisted media policy remains active when the integration switches or deploymen
 
 | Registered route | Policy |
 |---|---|
-| `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply, titled "Protected video" instead of the recording title |
+| `/{shareToken}`, `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply, titled "Protected video" instead of the recording title. The short path matches only share token shapes, and generated links use it |
 | `/api/watch/{shareToken}` | Publication, password, email and expiry checks |
 | `/api/watch/{shareToken}/download` | Never returns a link: share links offer no download, and a database check keeps every recording's downloads off |
 | `/api/watch/{shareToken}/thumbnail` | Publication and per-video access |

@@ -19,6 +19,7 @@ import { ManagedPreview } from "./ManagedPreview";
 import { SharingSection } from "./SharingSection";
 import { TranscriptSection } from "./TranscriptSection";
 import { CommentsSection } from "./CommentsSection";
+import { watchPath } from "../../utils/shareLink";
 
 interface PlaylistInfo {
   id: string;
@@ -448,7 +449,7 @@ export function VideoDetail() {
           &larr; Library
         </Link>
         {(!video.managed || video.published) && <a
-          href={`/watch/${video.shareToken}`}
+          href={watchPath(video.shareToken)}
           target="_blank"
           rel="noopener noreferrer"
           style={{

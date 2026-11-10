@@ -196,6 +196,8 @@ func TestWatchPage_Success_RendersVideoPlayer(t *testing.T) {
 		"hidden track":    "subTrack.mode = 'hidden'",
 		"object-fit":      "object-fit: contain",
 		"cue tag strip":   "function cueParts(",
+		// The MPD player reads the token here; the short path has no /watch/ segment.
+		"share token": `data-share-token="` + shareToken + `"`,
 	}
 	for name, want := range checks {
 		if !strings.Contains(body, want) {
@@ -2618,7 +2620,7 @@ func TestWatchPage_OGUrl(t *testing.T) {
 
 	storage := &mockStorage{downloadURL: "https://s3.example.com/video.webm"}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
-	shareToken := "ogurltoken12"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
@@ -2649,7 +2651,7 @@ func TestWatchPage_OGUrl(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	expectedURL := testBaseURL + "/watch/" + shareToken
+	expectedURL := `content="` + testBaseURL + "/" + shareToken + `"`
 	if !strings.Contains(body, `og:url`) {
 		t.Error("expected og:url meta tag in response")
 	}
@@ -2962,7 +2964,7 @@ func TestWatchPage_CanonicalURL(t *testing.T) {
 
 	storage := &mockStorage{downloadURL: "https://s3.example.com/video.webm"}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
-	shareToken := "canonical123"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
@@ -2993,7 +2995,7 @@ func TestWatchPage_CanonicalURL(t *testing.T) {
 	}
 	body := rec.Body.String()
 
-	expectedCanonical := `<link rel="canonical" href="` + testBaseURL + `/watch/` + shareToken + `">`
+	expectedCanonical := `<link rel="canonical" href="` + testBaseURL + `/` + shareToken + `">`
 	if !strings.Contains(body, expectedCanonical) {
 		t.Errorf("expected canonical URL %q in response", expectedCanonical)
 	}

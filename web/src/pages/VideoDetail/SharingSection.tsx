@@ -8,6 +8,7 @@ import type { Video } from "../../types/video";
 import { expiryLabel } from "../../utils/format";
 import { copyToClipboard } from "../../utils/clipboard";
 import { LimitsResponse } from "../../types/limits";
+import { watchPath } from "../../utils/shareLink";
 
 interface VideoBranding {
   companyName: string | null;
@@ -48,7 +49,7 @@ export function SharingSection({
         ...prev,
         published: result.published,
         mediaVersion: result.mediaVersion,
-        shareUrl: result.published ? `${window.location.origin}/watch/${encodeURIComponent(prev.shareToken)}` : "",
+        shareUrl: result.published ? `${window.location.origin}${watchPath(prev.shareToken)}` : "",
       } : prev);
     } catch (err) { setPublicationError(err instanceof Error ? err.message : "Publication unavailable"); }
     finally { setPublishing(false); }

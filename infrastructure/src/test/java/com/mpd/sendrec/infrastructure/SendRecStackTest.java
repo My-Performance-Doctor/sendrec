@@ -198,6 +198,61 @@ class SendRecStackTest {
     }
   }
 
+  private static final String DOMAIN_CERTIFICATE =
+      "arn:aws:acm:us-east-1:" + StagingConfig.ACCOUNT + ":certificate/00000000-0000-4000-8000-000000000003";
+
+  /** Staging, with a custom hostname as StagingConfig will carry once its certificate exists. */
+  private SendRecStack stackWithDomain(CustomDomain domain) {
+    App app = new App();
+    EnvironmentConfig staging = StagingConfig.INSTANCE;
+    EnvironmentConfig config = new EnvironmentConfig() {
+      public String environmentName() { return staging.environmentName(); }
+      public String vpcId() { return staging.vpcId(); }
+      public String cloudFrontPrefixListId() { return staging.cloudFrontPrefixListId(); }
+      public String recordingsBucketName() { return staging.recordingsBucketName(); }
+      public int taskCpu() { return staging.taskCpu(); }
+      public int taskMemoryMiB() { return staging.taskMemoryMiB(); }
+      public CustomDomain customDomain() { return domain; }
+    };
+    return new SendRecStack(app, "SendRecStaging", props, config, syntheticVpc(app, "SyntheticNetwork"));
+  }
+
+  @Test void customHostnameServesTheAppAndKeepsTheCloudFrontOrigin() {
+    Template template = Template.fromStack(stackWithDomain(new CustomDomain("results-staging.example.test", DOMAIN_CERTIFICATE)));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", List.of("results-staging.example.test"),
+        "ViewerCertificate", Map.of("AcmCertificateArn", DOMAIN_CERTIFICATE, "SslSupportMethod", "sni-only",
+            "MinimumProtocolVersion", "TLSv1.2_2021")))));
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+        "Environment", Match.arrayWith(List.of(Map.of("Name", "BASE_URL", "Value", "https://results-staging.example.test")))))))));
+    template.hasOutput("BaseUrl", Map.of("Value", "https://results-staging.example.test"));
+    // The custom origin first, then the CloudFront origin that links sent earlier still open on.
+    Map<String, Object> cloudFrontOrigin = Map.of("Fn::Join", List.of("", List.of("https://",
+        Map.of("Fn::GetAtt", List.of(Match.stringLikeRegexp("Distribution.*"), "DomainName")))));
+    template.hasResourceProperties("AWS::S3::Bucket", Map.of("CorsConfiguration", Map.of("CorsRules", List.of(Match.objectLike(Map.of(
+        "AllowedOrigins", List.of("https://results-staging.example.test", cloudFrontOrigin)))))));
+  }
+
+  @Test void stagingHasNoCustomHostnameUntilItsCertificateIsCommitted() {
+    assertNull(StagingConfig.INSTANCE.customDomain());
+    // A deploy context cannot add or drop the hostname.
+    Template template = Template.fromStack(stack(Map.of(
+        "domainName", "results-staging.example.test", "domainCertificateArn", DOMAIN_CERTIFICATE)));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", Match.absent()))));
+  }
+
+  @Test void customHostnameNeedsALowercaseNameAndAUsEast1CertificateInTheStackAccount() {
+    for (String name : List.of("Results-Staging.example.test", "https://results-staging.example.test", "results", "results-.example.test")) {
+      assertThrows(IllegalArgumentException.class, () -> new CustomDomain(name, DOMAIN_CERTIFICATE), name);
+    }
+    for (String arn : List.of(DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2"), DOMAIN_CERTIFICATE + "/x", "")) {
+      assertThrows(IllegalArgumentException.class, () -> new CustomDomain("results-staging.example.test", arn), arn);
+    }
+    CustomDomain otherAccount = new CustomDomain("results-staging.example.test", DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111"));
+    assertThrows(IllegalArgumentException.class, () -> stackWithDomain(otherAccount));
+  }
+
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";

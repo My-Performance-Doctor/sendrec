@@ -130,7 +130,7 @@ func TestEmbedPage_Success_RendersVideoPlayer(t *testing.T) {
 
 	storage := &mockStorage{downloadURL: "https://s3.example.com/video.webm"}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
-	shareToken := "validtoken12"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
@@ -171,7 +171,8 @@ func TestEmbedPage_Success_RendersVideoPlayer(t *testing.T) {
 		"seek tooltip":    "seek-time-tooltip",
 		"playsinline":     "playsinline",
 		"video source":    `src="https://s3.example.com/video.webm"`,
-		"watch link":      `/watch/` + shareToken,
+		"watch link":      `href="` + testBaseURL + "/" + shareToken + `"`,
+		"share token":     `data-share-token="` + shareToken + `"`,
 		"watch on text":   "Watch on",
 		"caption overlay": `id="caption-overlay"`,
 		"caption render":  "function bindCaptions()",

@@ -94,3 +94,11 @@ it('does not start any managed behavior on an initially legacy page',async()=>{
  expect(request).not.toHaveBeenCalled();expect(load).not.toHaveBeenCalled();
  expect(legacy.src).toBe('https://storage.example.test/legacy');
 });
+
+it('uses the page token on the short watch path',async()=>{
+ await flush();vi.clearAllTimers();request.mockClear();
+ history.replaceState(null,'','/dg82ewfrwhb87cq4');
+ document.body.innerHTML='<video id="player" data-mpd-managed="true" data-share-token="dg82ewfrwhb87cq4"></video>';
+ window.eval(script);await flush();
+ expect(request.mock.calls[0][0]).toBe('/api/watch/dg82ewfrwhb87cq4/playback-session');
+});

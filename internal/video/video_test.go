@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -206,13 +207,30 @@ func expectPlanQuery(mock pgxmock.PgxPoolIface, plan string) {
 
 // --- generateShareToken Tests ---
 
-func TestGenerateShareToken_Returns22CharacterString(t *testing.T) {
-	token, err := generateShareToken()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestGenerateShareToken_Returns16LowercaseAlphanumerics(t *testing.T) {
+	shape := regexp.MustCompile(`^[a-z0-9]{16}$`)
+	for i := 0; i < 1000; i++ {
+		token, err := generateShareToken()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !shape.MatchString(token) {
+			t.Fatalf("expected 16 lowercase letters and digits, got %q", token)
+		}
 	}
-	if len(token) != 22 {
-		t.Errorf("expected 22-character token, got %d characters: %q", len(token), token)
+}
+
+func TestWatchLink_ShortOnlyForTokensTheShortPathServes(t *testing.T) {
+	for token, want := range map[string]string{
+		"dg82ewfrwhb87cq4":       testBaseURL + "/dg82ewfrwhb87cq4",
+		"Xk3_9aBcDeFgHiJkLmNo-q": testBaseURL + "/Xk3_9aBcDeFgHiJkLmNo-q",
+		// Tokens of any other shape, such as the 12 characters minted before the
+		// 22-character ones, are not routed on the short path.
+		"abc123defghi": testBaseURL + "/watch/abc123defghi",
+	} {
+		if got := WatchLink(testBaseURL, token); got != want {
+			t.Errorf("WatchLink(%q) = %q, want %q", token, got, want)
+		}
 	}
 }
 
@@ -360,8 +378,8 @@ func TestCreate_Success(t *testing.T) {
 	if resp.ShareToken == "" {
 		t.Error("expected non-empty share token")
 	}
-	if len(resp.ShareToken) != 22 {
-		t.Errorf("expected 22-character share token, got %d: %q", len(resp.ShareToken), resp.ShareToken)
+	if !regexp.MustCompile(`^[a-z0-9]{16}$`).MatchString(resp.ShareToken) {
+		t.Errorf("expected a 16-character lowercase share token, got %q", resp.ShareToken)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1815,7 +1833,7 @@ func TestList_ShareURLIncludesBaseURL(t *testing.T) {
 	storage := &mockStorage{}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
 
-	shareToken := "abc123defghi"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 10, 30, 0, 0, time.UTC)
 	shareExpiresAt := createdAt.Add(7 * 24 * time.Hour)
 
@@ -1841,7 +1859,7 @@ func TestList_ShareURLIncludesBaseURL(t *testing.T) {
 		t.Fatalf("failed to parse response: %v", err)
 	}
 
-	expectedShareURL := testBaseURL + "/watch/" + shareToken
+	expectedShareURL := testBaseURL + "/" + shareToken
 	if items[0].ShareURL != expectedShareURL {
 		t.Errorf("expected share URL %q, got %q", expectedShareURL, items[0].ShareURL)
 	}
@@ -5933,7 +5951,7 @@ func TestOEmbed_Success(t *testing.T) {
 	storage := &mockStorage{downloadURL: downloadURL}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
 
-	shareToken := "abc123defghi"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 10, 14, 30, 0, 0, time.UTC)
 	shareExpiresAt := time.Now().Add(7 * 24 * time.Hour)
 
@@ -5972,7 +5990,7 @@ func TestOEmbed_Success(t *testing.T) {
 	if resp.ThumbnailURL != downloadURL {
 		t.Errorf("expected thumbnail URL %q, got %q", downloadURL, resp.ThumbnailURL)
 	}
-	expectedWatchURL := testBaseURL + "/watch/" + shareToken
+	expectedWatchURL := testBaseURL + "/" + shareToken
 	if resp.WatchURL != expectedWatchURL {
 		t.Errorf("expected watch URL %q, got %q", expectedWatchURL, resp.WatchURL)
 	}

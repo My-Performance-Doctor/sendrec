@@ -36,4 +36,7 @@ public final class StagingConfig implements EnvironmentConfig {
   public int taskMemoryMiB() {
     return 4096;
   }
+
+  // results-staging.mpd.health goes here, with its us-east-1 certificate, once the certificate
+  // is issued and the GoDaddy CNAME resolves. See "Custom hostname" in the README.
 }

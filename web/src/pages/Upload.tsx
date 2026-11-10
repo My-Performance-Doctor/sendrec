@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../api/client";
 import { LimitsResponse } from "../types/limits";
+import { watchPath } from "../utils/shareLink";
 
 interface UploadResponse {
   id: string;
@@ -221,7 +222,7 @@ export function Upload() {
         setProgress(100);
         uploadResults.push({
           fileName: entry.file.name,
-          shareUrl: result.managed ? "" : `${window.location.origin}/watch/${result.shareToken}`,
+          shareUrl: result.managed ? "" : `${window.location.origin}${watchPath(result.shareToken)}`,
           managed:result.managed,videoId:result.id,
         });
       } catch (err) {

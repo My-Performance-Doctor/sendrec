@@ -38,7 +38,7 @@ func TestProcessRetentionWarnings_SendsForExpiring(t *testing.T) {
 
 	mock.ExpectQuery(`SELECT v.id, v.title, v.share_token, u.email`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "title", "share_token", "email", "retention_days"}).
-			AddRow("vid-1", "My Video", "abc123", "alice@example.com", 30).
+			AddRow("vid-1", "My Video", "dg82ewfrwhb87cq4", "alice@example.com", 30).
 			AddRow("vid-2", "Other Video", "def456", "alice@example.com", 30))
 
 	mock.ExpectExec(`UPDATE videos SET retention_warned_at`).
@@ -59,7 +59,7 @@ func TestProcessRetentionWarnings_SendsForExpiring(t *testing.T) {
 	if sender.calls[0].videos[0].Title != "My Video" {
 		t.Errorf("expected first video title 'My Video', got %q", sender.calls[0].videos[0].Title)
 	}
-	if sender.calls[0].videos[0].WatchURL != "https://app.sendrec.eu/watch/abc123" {
+	if sender.calls[0].videos[0].WatchURL != "https://app.sendrec.eu/dg82ewfrwhb87cq4" {
 		t.Errorf("expected watchURL with share_token, got %q", sender.calls[0].videos[0].WatchURL)
 	}
 

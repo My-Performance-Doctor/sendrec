@@ -5,6 +5,7 @@ import { CameraRecorder } from "../components/CameraRecorder";
 import { Recorder } from "../components/Recorder";
 import { LimitsResponse } from "../types/limits";
 import { Upload } from "./Upload";
+import { watchPath } from "../utils/shareLink";
 
 interface CreateVideoResponse {
   id: string;
@@ -136,7 +137,7 @@ export function Record() {
       });
 
       setRecordedVideoId(result.id);
-      setShareUrl(result.managed ? null : `${window.location.origin}/watch/${result.shareToken}`);
+      setShareUrl(result.managed ? null : `${window.location.origin}${watchPath(result.shareToken)}`);
       setFailedTake(null);
     } catch (err) {
       if (pending && !pending.managed) {

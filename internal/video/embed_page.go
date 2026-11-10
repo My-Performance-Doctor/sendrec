@@ -43,7 +43,7 @@ type embedEmailGatePageData struct {
 	AccentColor string
 }
 
-var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE html>
+var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -191,7 +191,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
             </div>
 {{else}}
             <div class="player-container" id="player-container">
-                <video data-mpd-managed="{{.Managed}}" id="player" playsinline webkit-playsinline{{if .TranscriptURL}} crossorigin="anonymous"{{end}} controlsList="nodownload" src="{{.VideoURL}}"{{if .ThumbnailURL}} poster="{{.ThumbnailURL}}"{{end}}>{{if .TranscriptURL}}<track kind="subtitles" src="{{.TranscriptURL}}" srclang="en" label="Subtitles">{{end}}</video>
+                <video data-mpd-managed="{{.Managed}}" data-share-token="{{.ShareToken}}" id="player" playsinline webkit-playsinline{{if .TranscriptURL}} crossorigin="anonymous"{{end}} controlsList="nodownload" src="{{.VideoURL}}"{{if .ThumbnailURL}} poster="{{.ThumbnailURL}}"{{end}}>{{if .TranscriptURL}}<track kind="subtitles" src="{{.TranscriptURL}}" srclang="en" label="Subtitles">{{end}}</video>
 ` + playerControlsHTML + `
             </div>
 {{end}}
@@ -205,7 +205,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
 {{end}}
         <div class="footer">
             <span class="footer-title">{{.Title}}</span>
-            <a href="{{.BaseURL}}/watch/{{.ShareToken}}" target="_blank" rel="noopener">Watch on SendRec</a>
+            <a href="{{watchLink .BaseURL .ShareToken}}" target="_blank" rel="noopener">Watch on SendRec</a>
         </div>
 ` + safariWarningHTML + `
     </div>
