@@ -32,7 +32,7 @@ func seedManagedAdapter(t *testing.T) (*pgxpool.Pool, *Handler, *MPDAdapter, str
 	tenant := "33333333-3333-4333-8333-333333333333"
 	mustExec(t, db, `INSERT INTO mpd_managed_workspaces(organization_id,tenant_id,issuer,enabled,seat_limit) VALUES($1,$2,'https://issuer.example.test',true,10)`, org, tenant)
 	mustExec(t, db, `INSERT INTO mpd_external_identities(issuer,subject,user_id,organization_id,staff_id,tenant_id) VALUES('https://issuer.example.test','synthetic',$1,$2,'22222222-2222-4222-8222-222222222222',$3)`, user, org, tenant)
-	if err := db.QueryRow(ctx, `INSERT INTO videos(user_id,organization_id,title,file_key,share_token,status) VALUES($1,$2,'Synthetic','synthetic.mp4',gen_random_uuid()::text,'ready') RETURNING id,share_token`, user, org).Scan(&id, &share); err != nil {
+	if err := db.QueryRow(ctx, `INSERT INTO videos(user_id,organization_id,title,file_key,share_token,status) VALUES($1,$2,'Synthetic','synthetic.mp4',substr(replace(gen_random_uuid()::text,'-',''),1,16),'ready') RETURNING id,share_token`, user, org).Scan(&id, &share); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(db, newMemStorage(map[string]string{"synthetic.mp4": "synthetic bytes"}), "https://sendrec.example.test", 10000000, 0, 0, 0, "synthetic-hmac-key", true)
