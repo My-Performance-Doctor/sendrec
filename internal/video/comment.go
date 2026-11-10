@@ -244,7 +244,7 @@ func (h *Handler) PostWatchComment(w http.ResponseWriter, r *http.Request) {
 				slog.Error("comment: failed to fetch owner info for notification", "video_id", videoID, "error", err)
 				return
 			}
-			watchURL := watchLink(h.baseURL, shareToken)
+			watchURL := WatchLink(h.baseURL, shareToken)
 			authorName := req.AuthorName
 			if authorName == "" {
 				authorName = "Anonymous"

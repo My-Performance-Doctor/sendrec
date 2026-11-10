@@ -163,7 +163,7 @@ describe("Upload", () => {
       .mockResolvedValueOnce({
         id: "video-1",
         uploadUrl: "https://s3.example.com/upload?signed=xyz",
-        shareToken: "abc123defghi",
+        shareToken: "abc123defghi0000",
       })
       .mockResolvedValueOnce(undefined);
 
@@ -177,8 +177,8 @@ describe("Upload", () => {
       expect(screen.getByText("Upload complete")).toBeInTheDocument();
     });
 
-    const link = screen.getByRole("link", { name: /abc123defghi/ });
-    expect(link).toHaveAttribute("href", `${window.location.origin}/abc123defghi`);
+    const link = screen.getByRole("link", { name: /abc123defghi0000/ });
+    expect(link).toHaveAttribute("href", `${window.location.origin}/abc123defghi0000`);
     expect(link).toHaveAttribute("target", "_blank");
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/limits");
@@ -310,7 +310,7 @@ describe("Upload", () => {
       resolveUpload!({
         id: "video-1",
         uploadUrl: "https://s3.example.com/upload",
-        shareToken: "abc123defghi",
+        shareToken: "abc123defghi0000",
       });
     });
   });

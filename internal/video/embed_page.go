@@ -43,7 +43,7 @@ type embedEmailGatePageData struct {
 	AccentColor string
 }
 
-var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE html>
+var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -205,7 +205,7 @@ var embedPageTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE htm
 {{end}}
         <div class="footer">
             <span class="footer-title">{{.Title}}</span>
-            <a href="{{.BaseURL}}/{{.ShareToken}}" target="_blank" rel="noopener">Watch on SendRec</a>
+            <a href="{{watchLink .BaseURL .ShareToken}}" target="_blank" rel="noopener">Watch on SendRec</a>
         </div>
 ` + safariWarningHTML + `
     </div>

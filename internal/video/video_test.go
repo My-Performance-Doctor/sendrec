@@ -220,6 +220,20 @@ func TestGenerateShareToken_Returns16LowercaseAlphanumerics(t *testing.T) {
 	}
 }
 
+func TestWatchLink_ShortOnlyForTokensTheShortPathServes(t *testing.T) {
+	for token, want := range map[string]string{
+		"dg82ewfrwhb87cq4":       testBaseURL + "/dg82ewfrwhb87cq4",
+		"Xk3_9aBcDeFgHiJkLmNo-q": testBaseURL + "/Xk3_9aBcDeFgHiJkLmNo-q",
+		// Tokens of any other shape, such as the 12 characters minted before the
+		// 22-character ones, are not routed on the short path.
+		"abc123defghi": testBaseURL + "/watch/abc123defghi",
+	} {
+		if got := WatchLink(testBaseURL, token); got != want {
+			t.Errorf("WatchLink(%q) = %q, want %q", token, got, want)
+		}
+	}
+}
+
 func TestGenerateShareToken_ReturnsUniqueValues(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
@@ -1819,7 +1833,7 @@ func TestList_ShareURLIncludesBaseURL(t *testing.T) {
 	storage := &mockStorage{}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
 
-	shareToken := "abc123defghi"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 10, 30, 0, 0, time.UTC)
 	shareExpiresAt := createdAt.Add(7 * 24 * time.Hour)
 
@@ -5937,7 +5951,7 @@ func TestOEmbed_Success(t *testing.T) {
 	storage := &mockStorage{downloadURL: downloadURL}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
 
-	shareToken := "abc123defghi"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 10, 14, 30, 0, 0, time.UTC)
 	shareExpiresAt := time.Now().Add(7 * 24 * time.Hour)
 

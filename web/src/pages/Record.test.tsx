@@ -321,7 +321,7 @@ describe("Record", () => {
     mockApiFetch.mockResolvedValueOnce({
       id: "video-1",
       uploadUrl: "https://s3.example.com/upload",
-      shareToken: "share-abc",
+      shareToken: "shareabc00000000",
     });
 
     // Mock PATCH status update
@@ -337,7 +337,7 @@ describe("Record", () => {
     });
 
     // Share URL should be displayed in readonly input
-    const shareInput = screen.getByDisplayValue(`${window.location.origin}/share-abc`);
+    const shareInput = screen.getByDisplayValue(`${window.location.origin}/shareabc00000000`);
     expect(shareInput).toBeInTheDocument();
   });
 
@@ -397,7 +397,7 @@ describe("Record", () => {
     mockApiFetch.mockResolvedValueOnce({
       id: "video-3",
       uploadUrl: "https://s3.example.com/upload",
-      shareToken: "token-watch",
+      shareToken: "tokenwatch000000",
     });
 
     mockApiFetch.mockResolvedValueOnce(undefined);
@@ -412,7 +412,7 @@ describe("Record", () => {
       expect(watchLink).toBeInTheDocument();
       expect(watchLink.closest("a")).toHaveAttribute(
         "href",
-        `${window.location.origin}/token-watch`
+        `${window.location.origin}/tokenwatch000000`
       );
       expect(watchLink.closest("a")).toHaveAttribute("target", "_blank");
     });
@@ -774,7 +774,7 @@ describe("Record", () => {
     mockApiFetch.mockResolvedValueOnce({
       id: "video-copy",
       uploadUrl: "https://s3.example.com/upload",
-      shareToken: "token-copy",
+      shareToken: "tokencopy0000000",
     });
 
     mockApiFetch.mockResolvedValueOnce(undefined);
@@ -804,7 +804,7 @@ describe("Record", () => {
     });
 
     expect(writeTextMock).toHaveBeenCalledWith(
-      `${window.location.origin}/token-copy`
+      `${window.location.origin}/tokencopy0000000`
     );
 
     vi.useRealTimers();
@@ -1199,7 +1199,7 @@ describe("Record", () => {
       renderRecord();
       await waitFor(() => expect(screen.getByTestId("recorder")).toBeInTheDocument());
 
-      mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t1", managed });
+      mockApiFetch.mockResolvedValueOnce({ id: "video-1", uploadUrl: "https://s3.example.com/1", shareToken: "t100000000000000", managed });
       await act(async () => {
         capturedOnRecordingComplete!(take, 30);
       });
@@ -1216,12 +1216,12 @@ describe("Record", () => {
     it("cleans up a failed legacy upload and retries the same local recording", async () => {
       const user = await failFirstUpload(userEvent.setup());
       expect(mockApiFetch).toHaveBeenCalledWith("/api/videos/video-1", {method:"DELETE"});
-      mockApiFetch.mockResolvedValueOnce({ id: "video-2", uploadUrl: "https://s3.example.com/renewed", shareToken: "t1" });
+      mockApiFetch.mockResolvedValueOnce({ id: "video-2", uploadUrl: "https://s3.example.com/renewed", shareToken: "t100000000000000" });
       mockApiFetch.mockResolvedValueOnce(undefined); // PATCH ready
 
       await user.click(screen.getByText("Retry upload"));
 
-      await waitFor(() => expect(screen.getByDisplayValue(`${window.location.origin}/t1`)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByDisplayValue(`${window.location.origin}/t100000000000000`)).toBeInTheDocument());
       expect(sentBodies).toEqual([take, take]);
       expect(mockApiFetch.mock.calls.filter(call=>call[0]==="/api/videos")).toHaveLength(2);
       expect(mockApiFetch).not.toHaveBeenCalledWith("/api/videos/video-1/upload-url",expect.anything());
@@ -1482,7 +1482,7 @@ describe("Record", () => {
     mockApiFetch.mockResolvedValueOnce({
       id: "video-input",
       uploadUrl: "https://s3.example.com/upload",
-      shareToken: "token-input",
+      shareToken: "tokeninput000000",
     });
 
     mockApiFetch.mockResolvedValueOnce(undefined);
@@ -1496,7 +1496,7 @@ describe("Record", () => {
       expect(screen.getByText("Your video is ready!")).toBeInTheDocument();
     });
 
-    const input = screen.getByDisplayValue(`${window.location.origin}/token-input`);
+    const input = screen.getByDisplayValue(`${window.location.origin}/tokeninput000000`);
     expect(input).toBeInTheDocument();
     expect(input.tagName).toBe("INPUT");
     expect(input).toHaveAttribute("readOnly");
@@ -1593,7 +1593,7 @@ describe("Record", () => {
     mockApiFetch.mockResolvedValueOnce({
       id: "video-autocopy",
       uploadUrl: "https://s3.example.com/upload",
-      shareToken: "token-autocopy",
+      shareToken: "tokenautocopy000",
     });
 
     mockApiFetch.mockResolvedValueOnce(undefined);
@@ -1608,7 +1608,7 @@ describe("Record", () => {
     });
 
     expect(writeTextMock).toHaveBeenCalledWith(
-      `${window.location.origin}/token-autocopy`
+      `${window.location.origin}/tokenautocopy000`
     );
   });
 });

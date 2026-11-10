@@ -90,7 +90,7 @@ func processDigest(ctx context.Context, db database.DBTX, notifier ViewNotifier,
 			Title:        title,
 			ViewCount:    int(viewCount),
 			CommentCount: int(commentCount),
-			WatchURL:     watchLink(baseURL, shareToken),
+			WatchURL:     WatchLink(baseURL, shareToken),
 		})
 	}
 	if err := rows.Err(); err != nil {

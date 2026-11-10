@@ -2620,7 +2620,7 @@ func TestWatchPage_OGUrl(t *testing.T) {
 
 	storage := &mockStorage{downloadURL: "https://s3.example.com/video.webm"}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
-	shareToken := "ogurltoken12"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 
@@ -2964,7 +2964,7 @@ func TestWatchPage_CanonicalURL(t *testing.T) {
 
 	storage := &mockStorage{downloadURL: "https://s3.example.com/video.webm"}
 	handler := NewHandler(mock, storage, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
-	shareToken := "canonical123"
+	shareToken := "dg82ewfrwhb87cq4"
 	createdAt := time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC)
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 

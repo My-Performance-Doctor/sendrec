@@ -233,7 +233,7 @@ func (h *Handler) GetPlaylist(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.CreatedAt = videoCreatedAt.Format(time.RFC3339)
-		v.ShareURL = watchLink(h.baseURL, v.ShareToken)
+		v.ShareURL = WatchLink(h.baseURL, v.ShareToken)
 		if thumbnailKey != nil {
 			thumbURL, err := h.storage.GenerateDownloadURL(r.Context(), *thumbnailKey, 1*time.Hour)
 			if err == nil {

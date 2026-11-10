@@ -71,7 +71,7 @@ func processRetentionWarnings(ctx context.Context, db database.DBTX, sender Rete
 		for i, e := range entries {
 			videos[i] = email.RetentionVideoSummary{
 				Title:    e.title,
-				WatchURL: watchLink(baseURL, e.shareToken),
+				WatchURL: WatchLink(baseURL, e.shareToken),
 			}
 			videoIDs = append(videoIDs, e.id)
 		}

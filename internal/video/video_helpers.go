@@ -70,7 +70,7 @@ func (r videoReadyHook) send(userID, videoID, shareToken string, duration int) {
 			"videoId":    videoID,
 			"duration":   duration,
 			"shareToken": shareToken,
-			"watchUrl":   watchLink(r.baseURL, shareToken),
+			"watchUrl":   WatchLink(r.baseURL, shareToken),
 		},
 	})
 }

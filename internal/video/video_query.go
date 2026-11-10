@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,8 +113,18 @@ func generateShareToken() (string, error) {
 	return string(token), nil
 }
 
-// watchLink is a video's public link. /watch/{token} still serves the same page.
-func watchLink(baseURL, shareToken string) string {
+// ShareTokenPattern is the shape the short link serves: new 16-character tokens and the
+// 22-character ones minted before them. The router matches the short path with it.
+const ShareTokenPattern = `(?:[a-z0-9]{16}|[A-Za-z0-9_-]{22})`
+
+var shortShareToken = regexp.MustCompile(`^` + ShareTokenPattern + `$`)
+
+// WatchLink is a video's public link: the short one for every token the short path
+// serves, and /watch/{token}, which serves the same page, for any other shape.
+func WatchLink(baseURL, shareToken string) string {
+	if !shortShareToken.MatchString(shareToken) {
+		return baseURL + "/watch/" + shareToken
+	}
 	return baseURL + "/" + shareToken
 }
 
@@ -361,7 +372,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			formatted := shareExpiresAt.Format(time.RFC3339)
 			item.ShareExpiresAt = &formatted
 		}
-		item.ShareURL = watchLink(h.baseURL, item.ShareToken)
+		item.ShareURL = WatchLink(h.baseURL, item.ShareToken)
 		item.HasPassword = sharePassword != nil
 		if managedRequest {
 			if published == nil || mediaVersion == nil {
