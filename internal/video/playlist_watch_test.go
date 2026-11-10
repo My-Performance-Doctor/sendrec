@@ -105,6 +105,7 @@ func TestPlaylistWatchPage_Success(t *testing.T) {
 		"nonce in style":  `nonce="test-nonce"`,
 		"nonce in script": `<script nonce="test-nonce">`,
 		"branding":        "SendRec",
+		"no save menu":    "player.addEventListener('contextmenu'",
 	}
 	for name, want := range checks {
 		if !strings.Contains(body, want) {

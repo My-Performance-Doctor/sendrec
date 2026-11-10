@@ -176,6 +176,7 @@ func TestEmbedPage_Success_RendersVideoPlayer(t *testing.T) {
 		"caption overlay": `id="caption-overlay"`,
 		"caption render":  "function bindCaptions()",
 		"start-at link":   "function startAtSeconds(",
+		"no save menu":    "player.addEventListener('contextmenu'",
 	}
 	for name, want := range checks {
 		if !strings.Contains(body, want) {

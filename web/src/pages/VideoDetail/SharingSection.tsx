@@ -91,17 +91,6 @@ export function SharingSection({
     toast.show("Embed code copied");
   }
 
-  async function toggleDownload() {
-    const newValue = !video.downloadEnabled;
-    await apiFetch(`/api/videos/${video.id}/download-enabled`, {
-      method: "PUT",
-      body: JSON.stringify({ downloadEnabled: newValue }),
-    });
-    onVideoUpdate((prev) =>
-      prev ? { ...prev, downloadEnabled: newValue } : prev,
-    );
-  }
-
   async function toggleEmailGate() {
     const newValue = !video.emailGateEnabled;
     await apiFetch(`/api/videos/${video.id}/email-gate`, {
@@ -439,16 +428,6 @@ export function SharingSection({
                   </button>
                 )}
               </div>
-            </div>
-
-            <div className="detail-setting-row">
-              <span className="detail-setting-label">Downloads</span>
-              <button
-                onClick={toggleDownload}
-                className={`detail-toggle${video.downloadEnabled ? " detail-toggle--active" : ""}`}
-              >
-                {video.downloadEnabled ? "Enabled" : "Disabled"}
-              </button>
             </div>
 
             <div className="detail-setting-row">
