@@ -27,7 +27,11 @@ SendRec SHALL give each new video a share token of 16 characters drawn uniformly
 - **THEN** its share token matches `[a-z0-9]{16}`
 
 ### Requirement: Generated links use the short form
-Every video watch link SendRec generates SHALL be `{BASE_URL}/{shareToken}`.
+Every video watch link SendRec generates SHALL be `{BASE_URL}/{shareToken}` when the short path serves the token's shape, and `{BASE_URL}/watch/{shareToken}` for a token of any other shape.
+
+#### Scenario: A token the short path does not serve
+- **WHEN** SendRec generates a link for a video whose share token is neither 16 lowercase letters and digits nor 22 base64url characters
+- **THEN** the link is `{BASE_URL}/watch/{shareToken}`, which opens the same page
 
 #### Scenario: MPD metadata
 - **WHEN** mpd-api reads a published recording's metadata

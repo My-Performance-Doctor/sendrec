@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/sendrec/sendrec/internal/mpd"
 	"github.com/sendrec/sendrec/internal/organization"
 	"github.com/sendrec/sendrec/internal/plans"
+	"github.com/sendrec/sendrec/internal/sharelink"
 	"github.com/sendrec/sendrec/internal/validate"
 )
 
@@ -113,19 +113,14 @@ func generateShareToken() (string, error) {
 	return string(token), nil
 }
 
-// ShareTokenPattern is the shape the short link serves: new 16-character tokens and the
-// 22-character ones minted before them. The router matches the short path with it.
-const ShareTokenPattern = `(?:[a-z0-9]{16}|[A-Za-z0-9_-]{22})`
-
-var shortShareToken = regexp.MustCompile(`^` + ShareTokenPattern + `$`)
+// ShareTokenPattern is the shape the short link serves. The router matches the short
+// path with it.
+const ShareTokenPattern = sharelink.TokenPattern
 
 // WatchLink is a video's public link: the short one for every token the short path
 // serves, and /watch/{token}, which serves the same page, for any other shape.
 func WatchLink(baseURL, shareToken string) string {
-	if !shortShareToken.MatchString(shareToken) {
-		return baseURL + "/watch/" + shareToken
-	}
-	return baseURL + "/" + shareToken
+	return sharelink.Watch(baseURL, shareToken)
 }
 
 type limitsResponse struct {
