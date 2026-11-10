@@ -124,3 +124,23 @@ Using an existing synthetic recording from the synthetic patient's record, the w
 | Focus `Play from 0:07`, press Enter | Seeking, play, seeked and playing at 7.76 seconds, matching the second caption cue's start |
 
 The check verified actual playback from both keyboard actions. It created no recording or upload and invoked no external send. MPD-258 was moved to Done in Plane. The browser tabs and private sign-in relay were closed afterward. This check used Chrome in the server browser; it does not add real-device or Safari evidence.
+
+## Update, 2026-11-09: staff preview frame
+
+Josh had PR #23 (`fit-mpd-preview-to-frame`) merged as `b3f937ad4a35b3ac2b28ecafe2b1b3bdd7f48e56` and promoted to staging. No review by Sami of its proposal was recorded on the PR; Josh made the merge call. PR #22 waits for that review and is not deployed. No production resource changed.
+
+Main CI on `b3f937a` passed the frontend, lint, Go test and module checks, then failed `govulncheck` on GO-2026-6909. That advisory covers `github.com/crewjam/saml` v0.5.1, has no fixed version yet, and is reached from the SAML ACS callback in `internal/sso/saml.go`. The previous staging image, `3d79c3c8`, carries the same module version, so this release neither adds nor removes that exposure.
+
+- The image was built for linux/amd64 from the merge commit on the pinned base. The CA check found 118 distinct roots, none blocked. It was pushed to `sendrec` tagged with the full revision, digest `sha256:06c58d4ae30e1faef5f2bae61d64b69aac1cfd0a51ec6a1dc9e23038af8ed6a4`.
+- Contexts were read back from task definition 15. `MPD_ALLOWED_ORIGINS` stayed exactly `https://staff.example.test,https://app-staging.mpd.health`. With the previous digest as `releaseImage`, synthesis equalled the live template in every resource but `CDKMetadata`. With the new digest, the diff changed only the application and migration image references and the service's task definition.
+- The CDK deploy ran from 00:34:41 to 00:38:46 UTC. The service runs `sendrec-staging:16` with rollout `COMPLETED`; the migration definition is `sendrec-staging-migration:4`.
+- `promote-release.py` ran for staging from 00:38:59 to 00:39:43 UTC. It checked the immutable repository and the revision tag, the definitions' image and migration modes, one migration task (exit 0), the task count and three readiness probes. The production half of the template pair needs the private grant-sheet inputs, which this host lacked. A wrapper therefore replaced only the pair digest with an exact comparison of the live staging template against the reviewed synthesis, SHA256 `3786cc832e2b831be1b99aa9b4c1b5a6c431082b658a39df70ff3c2f07e4eb7e`.
+
+| Check | Result |
+| --- | --- |
+| Health and readiness | Health 200 with version `b3f937ad`; database, storage and workers ready |
+| Preview styles under the CSP | `/mpd-preview` carries one `<style>` whose nonce equals the CSP `style-src` nonce, with no `style` attributes. `frame-ancestors` still lists `'self'` and the two staging origins only |
+| Preview in Chromium at 560 × 315 | Black page, heading visually hidden, status centred, player 560 × 315 with `object-fit: contain` and hidden without media, no scroll. At 1280 × 800 it also fits without scroll. Opened directly, without a handoff, the status read "Access ended…", as it should |
+| Regressions | Unknown watch page and watch API 404, `player.js` and the app 200, anonymous registration 403. No error or panic in the service log in the 15 minutes after the deploy |
+
+Not checked: the preview framed by Staff OS with a loaded recording, and Safari and Firefox. Task 2.1 of `fit-mpd-preview-to-frame` stays open for a staff sign-in.

@@ -98,7 +98,7 @@ function makeVideo(overrides: Record<string, unknown> = {}) {
     commentCount: 0,
     transcriptStatus: "none",
     viewNotification: null,
-    downloadEnabled: true,
+    downloadEnabled: false,
     emailGateEnabled: false,
     ctaText: null,
     ctaUrl: null,
@@ -549,28 +549,15 @@ describe("VideoDetail", () => {
     });
   });
 
-  it("toggle download calls API with correct body", async () => {
-    const video = makeVideo({ downloadEnabled: true });
+  it("has no Downloads toggle", async () => {
     setupDefaultMocks();
-    mockApiFetch.mockResolvedValueOnce(undefined); // toggle response
 
     renderVideoDetail("v1");
 
     await waitFor(() => {
-      expect(screen.getByText("Enabled")).toBeInTheDocument();
+      expect(screen.getByText("Email gate")).toBeInTheDocument();
     });
-
-    fireEvent.click(screen.getByText("Enabled"));
-
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        "/api/videos/v1/download-enabled",
-        {
-          method: "PUT",
-          body: JSON.stringify({ downloadEnabled: false }),
-        },
-      );
-    });
+    expect(screen.queryByText("Downloads")).not.toBeInTheDocument();
   });
 
   it("toggle email gate calls API", async () => {

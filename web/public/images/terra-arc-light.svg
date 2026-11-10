@@ -1,0 +1,30 @@
+<svg width="1440" height="300" preserveAspectRatio="xMidYMax meet" role="img" aria-labelledby="terra-arc-light-title" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 300">
+  <title id="terra-arc-light-title">Terra arc light</title>
+  <defs>
+    <linearGradient id="terra-arc-light-fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17516B" stop-opacity=".6"></stop>
+      <stop offset=".45" stop-color="#2E7D6B" stop-opacity=".22"></stop>
+      <stop offset="1" stop-color="#4E9178" stop-opacity="0"></stop>
+    </linearGradient>
+    <linearGradient id="terra-arc-light-drift" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0E2F3D" stop-opacity=".45"></stop>
+      <stop offset=".5" stop-color="#0E2F3D" stop-opacity="0"></stop>
+      <stop offset="1" stop-color="#4E9178" stop-opacity=".3"></stop>
+    </linearGradient>
+    <clipPath id="terra-arc-light-below"><path d="M0,220 Q720,40 1440,220 L1440,300 L0,300 Z"></path></clipPath>
+    <clipPath id="terra-arc-light-above"><path d="M0,219 Q720,39 1440,219 L1440,0 L0,0 Z"></path></clipPath>
+    <filter id="terra-arc-light-b4" x="-10%" y="-80%" width="120%" height="260%"><feGaussianBlur stdDeviation="4"></feGaussianBlur></filter>
+    <filter id="terra-arc-light-b9" x="-10%" y="-80%" width="120%" height="260%"><feGaussianBlur stdDeviation="9"></feGaussianBlur></filter>
+    <filter id="terra-arc-light-b14" x="-10%" y="-120%" width="120%" height="340%"><feGaussianBlur stdDeviation="14"></feGaussianBlur></filter>
+  </defs>
+  <path d="M0,220 Q720,40 1440,220 L1440,300 L0,300 Z" fill="url(#terra-arc-light-fade)"></path>
+  <path d="M0,220 Q720,40 1440,220 L1440,300 L0,300 Z" fill="url(#terra-arc-light-drift)"></path>
+  <g clip-path="url(#terra-arc-light-below)">
+    <path d="M0,224 Q720,44 1440,224" fill="none" stroke="#123A52" stroke-opacity=".55" stroke-width="14" filter="url(#terra-arc-light-b9)"></path>
+  </g>
+  <g clip-path="url(#terra-arc-light-above)">
+    <path d="M0,214 Q720,34 1440,214" fill="none" stroke="#8FC7B4" stroke-opacity=".5" stroke-width="16" filter="url(#terra-arc-light-b14)"></path>
+  </g>
+  <path d="M0,220 Q720,40 1440,220" fill="none" stroke="#E8C88F" stroke-opacity=".55" stroke-width="6" filter="url(#terra-arc-light-b4)"></path>
+  <path d="M0,220 Q720,40 1440,220" fill="none" stroke="#D9AE6B" stroke-width="2.4"></path>
+</svg>

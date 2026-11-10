@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="164" height="164" viewBox="0 0 164 164" role="img" aria-labelledby="title">
+  <title id="title">MPD OS</title>
+  <!-- The orb from mpd-os-black.svg, moved to the origin. -->
+  <defs>
+    <linearGradient id="terra" x1="0" y1="0" x2="0" y2="164" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#042A4A"/>
+      <stop offset=".08" stop-color="#002D53"/>
+      <stop offset=".18" stop-color="#01365E"/>
+      <stop offset=".27" stop-color="#014C77"/>
+      <stop offset=".39" stop-color="#016495"/>
+      <stop offset=".5" stop-color="#017B9B"/>
+      <stop offset=".62" stop-color="#0197A2"/>
+      <stop offset=".75" stop-color="#01ADA1"/>
+      <stop offset=".87" stop-color="#00C09E"/>
+      <stop offset="1" stop-color="#00CDA0"/>
+    </linearGradient>
+    <radialGradient id="terra-depth" cx="44%" cy="45%" r="67%">
+      <stop offset=".38" stop-color="#003354" stop-opacity="0"/>
+      <stop offset="1" stop-color="#003354" stop-opacity=".12"/>
+    </radialGradient>
+  </defs>
+  <circle cx="82" cy="82" r="82" fill="url(#terra)"/>
+  <circle cx="82" cy="82" r="82" fill="url(#terra-depth)"/>
+</svg>

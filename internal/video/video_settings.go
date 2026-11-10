@@ -15,10 +15,6 @@ import (
 	"github.com/sendrec/sendrec/internal/languages"
 )
 
-type setDownloadEnabledRequest struct {
-	DownloadEnabled bool `json:"downloadEnabled"`
-}
-
 type setEmailGateRequest struct {
 	Enabled bool `json:"enabled"`
 }
@@ -40,31 +36,6 @@ type setPasswordRequest struct {
 
 type retranscribeRequest struct {
 	Language string `json:"language"`
-}
-
-func (h *Handler) SetDownloadEnabled(w http.ResponseWriter, r *http.Request) {
-	videoID := chi.URLParam(r, "id")
-
-	var req setDownloadEnabledRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	where, args := orgRowFilter(r.Context(), videoID, []any{req.DownloadEnabled}, "AND status != 'deleted'")
-	tag, err := h.db.Exec(r.Context(),
-		`UPDATE videos SET download_enabled = $1 WHERE `+where, args...,
-	)
-	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "could not update download setting")
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		httputil.WriteError(w, http.StatusNotFound, "video not found")
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) SetEmailGate(w http.ResponseWriter, r *http.Request) {

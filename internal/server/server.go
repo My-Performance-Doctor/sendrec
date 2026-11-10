@@ -490,7 +490,6 @@ func (s *Server) routes() {
 					r.Put("/{id}/comment-mode", s.videoHandler.SetCommentMode)
 					r.Delete("/{id}/comments/{commentId}", s.videoHandler.DeleteComment)
 					r.Put("/{id}/notifications", s.videoHandler.SetVideoNotification)
-					r.Put("/{id}/download-enabled", s.videoHandler.SetDownloadEnabled)
 					r.Put("/{id}/link-expiry", s.videoHandler.SetLinkExpiry)
 					r.Put("/{id}/branding", s.videoHandler.SetVideoBranding)
 					r.Post("/{id}/thumbnail", s.videoHandler.UploadThumbnail)

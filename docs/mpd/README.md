@@ -37,7 +37,8 @@ Persisted media policy remains active when the integration switches or deploymen
 |---|---|
 | `/{shareToken}`, `/watch/{shareToken}`, `/embed/{shareToken}` | Publication required; existing password/email forms apply, titled "Protected video" instead of the recording title. The short path matches only share token shapes, and generated links use it |
 | `/api/watch/{shareToken}` | Publication, password, email and expiry checks |
-| `/api/watch/{shareToken}/download`, `/thumbnail` | Publication and per-video access, plus existing download policy |
+| `/api/watch/{shareToken}/download` | Never returns a link: share links offer no download, and a database check keeps every recording's downloads off |
+| `/api/watch/{shareToken}/thumbnail` | Publication and per-video access |
 | `/api/videos/{shareToken}/oembed` | No unpublished or password-protected metadata disclosure |
 | Watch `/verify`, `/identify`, `/comments`, `/cta-click`, `/milestone`, `/segments` | Publication required; protected operations require per-video access |
 | `/watch/playlist/{shareToken}`, `/embed/playlist/{shareToken}` | Every managed item must pass its own publication/password/email/expiry policy, then playlist policy |
@@ -45,6 +46,10 @@ Persisted media policy remains active when the integration switches or deploymen
 | Watch `/renew`, `/playback-session`, `/playback-start` | Publication, password, email and expiry rechecked |
 
 Share password checks are limited per address and per video. After 10 wrong passwords for one video within 15 minutes of the first, `/verify` answers 429 for the rest of that 15-minute window without checking the password, whatever address the request comes from. Viewers who already passed the form keep watching. Anyone holding the link can trigger this lock, so a viewer may have to wait up to 15 minutes.
+
+### Patient pages
+
+A managed recording's link is opened by a patient, usually on a phone, so `internal/video/mpd_pages.go` gives it MPD's pages. The password page asks for a video code. It accepts any case, spacing or missing hyphens, finds a code in a whole pasted message and opens the video once the code is complete. Anything else stays as entered. An unpublished, deleted or expired managed link, or an unknown link, shows one page that does not say which it was. The watch page takes MPD's look through the custom CSS slot. Unmanaged shares keep SendRec's pages, and `MPD_SERVICE_ENABLED` decides the page for an unknown link. TT Neoris stays out of this public repository, so headings use Geist.
 
 Playback/download GET links expire within five minutes. Watch, embed and playlist players renew them and preserve position and paused state. Denied renewal stops playback. Managed library/detail uses the private preview player; download clicks request a fresh authorized link.
 

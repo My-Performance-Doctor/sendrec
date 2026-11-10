@@ -204,6 +204,7 @@ func main() {
 	}
 	go eventWorker.Run(cleanupCtx)
 	serviceConfig := video.MPDServiceConfig{Enabled: strictBool("MPD_SERVICE_ENABLED", false), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID"), TenantID: os.Getenv("MPD_TENANT_ID"), TokenHashes: splitConfigured("MPD_SERVICE_TOKEN_HASHES"), RequirePassword: strictBool("MPD_REQUIRE_PASSWORD", true)}
+	video.SetMPDPatientPages(serviceConfig.Enabled)
 	if serviceConfig.Enabled && (serviceConfig.WorkspaceID == "" || serviceConfig.TenantID == "" || len(serviceConfig.TokenHashes) == 0) {
 		log.Fatal("managed service configuration incomplete")
 	}

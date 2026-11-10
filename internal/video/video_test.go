@@ -4222,69 +4222,6 @@ func TestWatchDownload_Expired(t *testing.T) {
 	}
 }
 
-// --- SetDownloadEnabled Tests ---
-
-func TestSetDownloadEnabled_Success(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
-	videoID := "video-123"
-
-	mock.ExpectExec(`UPDATE videos SET download_enabled = \$1 WHERE id = \$2 AND user_id = \$3 AND organization_id IS NULL AND status != 'deleted'`).
-		WithArgs(false, videoID, testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	body := []byte(`{"downloadEnabled":false}`)
-
-	r := chi.NewRouter()
-	r.With(newAuthMiddleware()).Put("/api/videos/{id}/download-enabled", handler.SetDownloadEnabled)
-
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPut, "/api/videos/"+videoID+"/download-enabled", body))
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
-func TestSetDownloadEnabled_NotFound(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mock.Close()
-
-	handler := NewHandler(mock, &mockStorage{}, testBaseURL, 0, 0, 0, 0, testJWTSecret, false)
-
-	mock.ExpectExec(`UPDATE videos SET download_enabled = \$1 WHERE id = \$2 AND user_id = \$3 AND organization_id IS NULL AND status != 'deleted'`).
-		WithArgs(true, "video-999", testUserID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-
-	body := []byte(`{"downloadEnabled":true}`)
-
-	r := chi.NewRouter()
-	r.With(newAuthMiddleware()).Put("/api/videos/{id}/download-enabled", handler.SetDownloadEnabled)
-
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, authenticatedRequest(t, http.MethodPut, "/api/videos/video-999/download-enabled", body))
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
 func TestWatchDownload_Disabled(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

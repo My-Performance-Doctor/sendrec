@@ -68,6 +68,9 @@ func TestPlaylistEmbedPage_RendersWorkspaceAccent(t *testing.T) {
 	if !strings.Contains(body, "--player-accent: #ff0000") {
 		t.Error("expected workspace accent color on playlist embed player")
 	}
+	if !strings.Contains(body, "player.addEventListener('contextmenu'") {
+		t.Error("expected the player script to shut the video's context menu")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}

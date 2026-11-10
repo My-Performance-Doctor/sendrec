@@ -119,8 +119,23 @@ jobs:
       - name: Verify Go modules
         run: go mod verify
 
+      # crewjam/saml v0.5.2 fixes GO-2026-6909, but the Go vulnerability
+      # database lists no fixed version yet, so govulncheck flags every
+      # release. Skip that one finding from v0.5.2 on. Remove the exception
+      # once the database records the fix: https://github.com/crewjam/saml/issues/693
       - name: Check Go vulnerabilities
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+        shell: bash
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -format json ./... > govulncheck.json
+          saml=$(go list -m -f '{{.Version}}' github.com/crewjam/saml)
+          skip=; printf '%s\n' v0.5.2 "$saml" | sort -VC && skip=GO-2026-6909
+          called=$(jq -r --arg skip "$skip" 'select((.finding.trace[0].function // "") != "" and .finding.osv != $skip) | .finding.osv' govulncheck.json | sort -u)
+          if [ -n "$called" ]; then
+            govulncheck ./... || true
+            echo "::error::Your code calls vulnerable functions: $called"
+            exit 1
+          fi
 
       - name: Build Go binary
         run: go build -o bin/sendrec ./cmd/sendrec
