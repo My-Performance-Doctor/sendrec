@@ -16,7 +16,7 @@ This updates [the 30 October record](readiness-2026-10-30.md) for MPD-187 and MP
 
 Two healthy staging targets in different availability zones ran the candidate. The initial pair of simultaneous 90-second synthetic uploads was claimed by different tasks. A stop requested while one job was processing allowed both jobs to complete at transcription generation 1 while the task drained. That establishes durable graceful completion, not abandoned-job recovery.
 
-The next case started two intentional retranscriptions of those same synthetic recordings. For this fault only, the staging target group's 30-second deregistration delay was set to zero. The worker was stopped immediately after its new claim. At 11:09:28 UTC the task was stopped and its job remained `processing`; a read-only database snapshot confirmed generation 2 with published generation 1. The peer completed generation 2. The original 30-second drain was restored and read back before further checks.
+The next case started two intentional retranscriptions of those same synthetic recordings. For this fault only, the staging target group's 30-second deregistration delay was set to zero. A stop was requested at 11:08:19 UTC, shortly after the new claim. The task stopped at 11:09:28 UTC, about 77 seconds after the claim, and its job remained `processing`; a read-only database snapshot confirmed generation 2 with published generation 1. The peer completed generation 2. The original 30-second drain was restored and read back before further checks.
 
 The abandoned claim began at 11:08:11 UTC. The service reclaimed it at 11:39:11.938 UTC, 31 minutes and 0.818 seconds later, and completed it at 11:42:46.517 UTC. Completion took 33 minutes 17.980 seconds from the task stopping, including 3 minutes 34.579 seconds of processing after reclaim. No timestamp was edited and no retry was requested after the interruption.
 
@@ -42,6 +42,8 @@ A separate dedicated synthetic staff account owned a new protected recording. Cr
 The source staging database was restored to an isolated RDS instance at its latest restorable point. The selected point trailed the request by 319 seconds. RDS became available after 30 minutes 3 seconds. The restored application first passed dependency readiness after 33 minutes 40 seconds; all application checks finished after 41 minutes 56 seconds.
 
 The application ran the previously deployed revision `f45db5c14c08ec7947ed863e63d5ac20a4958e1e`, image `sha256:e78b894003c80a9606ea71b88128501f2e9b16d8f5a19a794256d0a9a5005bfd`. Its media copy, versioned bucket, event receiver and database access were isolated from the source service.
+
+The application ran on the agent host through an SSM tunnel, not as an ECS service. Its readiness timing excludes ECS replacement and ALB cutover. Cloned pending events were quarantined before the worker started, so redelivery of events acknowledged by the source after the restore point was not exercised.
 
 | Check | Observed result |
 | --- | --- |
@@ -76,11 +78,12 @@ The repository and staging environment still have no release workflow variables 
 
 ## Remaining production gates
 
-1. Before patient activation, complete the missing versioned real-device browser cases and resolve the remaining production recovery and service-token rotation conditions. Empty-stack preparation does not establish those acceptance conditions.
-2. Obtain the decision to include SendRec, Josh's go and Sami's production maintenance grant. Read the current Window A commands and reviewed diff, with the final staging-verified digest.
-3. In the grant window, configure and confirm production alert delivery, copy that digest unchanged, review the empty stack, storage versioning and indefinite retention, and verify the approved infrastructure and recovery settings. The standard promotion needs the final template-pair hash and matching staging receipt. The script does not enforce a receipt expiry; use a fresh standard run and reject an older or mismatched receipt during operator review. Keep application tasks at zero until the concurrency and rollout gates pass.
-4. Promote only the approved digest and verify dependency readiness, task replacement, backups, and both fault and recovery email receipt. Integration stays disabled until the separately approved activation step.
-5. Complete the production identity/client, secrets and mpd-api activation steps, then run the synthetic end-to-end acceptance check. Preserve Vimeo and retained resources. Inventory, matching, import and link verification precede any Vimeo retirement.
+1. **Window A approval.** Obtain the decision to include SendRec, Josh's go and Sami's production maintenance grant. Read the current Window A commands and reviewed diff, with the final staging-verified digest.
+2. **Window A empty stack.** In the grant window, configure and confirm production alert delivery, copy that digest unchanged, review the empty stack, storage versioning and indefinite retention, and verify the approved infrastructure and recovery settings. Keep application tasks at zero. This phase can proceed under its own approval while later acceptance conditions remain open.
+3. **Before two production tasks, still open.** The 12 November drill met the transcription-reclaim and outbox-delivery parts of the earlier simultaneous-media prerequisite. It did not test the separate video stuck-processing reset, cleanup and thumbnails, or retention under an interrupted leader across two tasks. Record those checks and close the broader concurrency gate before scaling production. Optional sending workers must remain disabled. OpenSpec task 2.3 stays unchecked.
+4. **Two-task rollout.** Standard production promotion requires exactly two tasks. It waits for gate 3 and the explicit rollout approval for the exact digest. It also needs the final template-pair hash and matching staging receipt. The script does not enforce receipt expiry; use a fresh standard run and reject an older or mismatched receipt during operator review. Verify dependency readiness, task replacement, backups, and both fault and recovery email receipt. Integration stays disabled until patient activation is separately approved.
+5. **Before patient activation.** Complete the missing versioned real-device browser cases and resolve the remaining production recovery and service-token rotation conditions. Empty-stack preparation or the two-task rollout does not establish those acceptance conditions.
+6. **Patient activation.** Complete the production identity/client, secrets and mpd-api activation steps in their approved window, then run the synthetic end-to-end acceptance check. Preserve Vimeo and retained resources. Inventory, matching, import and link verification precede any separately approved Vimeo retirement.
 
 No production command ran during this staging work. MPD-187 and MPD-213 remain In Progress.
 
