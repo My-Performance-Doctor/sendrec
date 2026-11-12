@@ -1,6 +1,6 @@
 # Production preparation
 
-Production is not activated. The matching MPD integration has run on staging, with protected playback, captions and staff sign-in recorded in [the verification evidence](../mpd/verification.md). HQ marked the staging browser gate, MPD-210, Done after Sami's real-camera and Safari pass on 30 October 2026. This operator report does not establish a complete Chrome/Safari/Firefox matrix. See [the readiness record](readiness-2026-10-30.md) for the remaining checks.
+Production is not activated. The matching MPD integration has run on staging, with protected playback, captions and staff sign-in recorded in [the verification evidence](../mpd/verification.md). HQ marked the staging browser gate, MPD-210, Done after Sami's real-camera and Safari pass on 30 October 2026. This operator report does not establish a complete Chrome/Safari/Firefox matrix. The [12 November readiness record](readiness-2026-11-12.md) records fresh synthetic browser and restored-application checks and the remaining gates.
 
 The production template starts with zero application tasks. Its configuration requires an explicit Sydney account, separate VPC and bucket, immutable ECR image and operational SNS topic. The existing staging backup retention stays at seven days. Window A waits for Josh's go and a production maintenance grant.
 
@@ -49,7 +49,7 @@ A manifest contains references, never credentials. Record the reviewed template 
 
 The promotion workflow runs only from main. It checks that the source revision is an ancestor of its workflow revision and that the immutable image tag binds that revision to the requested digest. Configure the staging build/release roles and production release role through GitHub environment variables. Give the release roles only the relevant ECS, ECR read, CloudFormation GetTemplate and PassRole permissions. The staging build role also needs ECR read access to `sendrec-base`, because the `Dockerfile` pulls its runtime base from there. Their trust policies must match this repository and the corresponding GitHub environment.
 
-Before dispatch, configure the production environment with named reviewers and prevent self-review. The workflow checks that protection exists, deploys staging, stores its digest-bound readiness result, then waits at the production environment approval. These repository settings and roles are not configured by this change.
+Before dispatch, configure the production environment with named reviewers and prevent self-review. The workflow checks that protection exists, deploys staging, stores its digest-bound readiness result, then waits at the production environment approval. On 12 November the repository environment was configured and read back: `sami-abdul` or `Sunnndayyy`, no wait timer, no self-review, and deployments from `main` only. The release workflow roles and variables remain unconfigured. These settings do not authorize a production deployment.
 
 `infrastructure/promote-release.py` checks registered task images and migration modes before starting exactly one migration task. The migration definition gets database secrets only. Application tasks use `MIGRATIONS_MODE=skip`. After a successful migration, ECS deploys the candidate and the script checks the selected task definition, task count and dependency readiness. A failed candidate restores the previous application definition and count, checks the rollback, and retains the forward migration, recordings and events. A failed migration leaves the service untouched. The release workflow concurrency group prevents overlapping promotions through this workflow; operators must not start a competing release manually.
 
@@ -126,16 +126,16 @@ For each of Chrome, Firefox and Safari:
 
 | Check | Current evidence |
 |---|---|
-| Chrome screen/camera, camera-only, MP4/WebM, denied devices and interrupted network | Synthetic server-browser checks ran on 26 October. The full versioned real-device matrix remains incomplete |
+| Chrome screen/camera, camera-only, MP4/WebM, denied devices and interrupted network | Chromium 151 synthetic checks passed on 12 November. The full versioned real-device matrix remains incomplete |
 | Safari equivalent recording and protected watch/embed checks | HQ reported Sami's successful seven-step real-camera/Safari pass on 30 October. This worker has no versioned per-case record |
-| Firefox equivalent recording and protected watch/embed checks | No browser run for this implementation |
+| Firefox equivalent recording and protected watch/embed checks | Firefox 153 synthetic camera-only, interrupted MP4/WebM uploads, protected watch/embed, captions and 310-second pause/resume passed on 12 November. Screen capture, denied devices and real-device cases remain open |
 | Signed direct upload, captions and retranscription | Synthetic staged checks ran on 26 October, recorded in [verification.md](../mpd/verification.md) |
-| Fresh staff offboarding within 60 seconds | An earlier staging check denied access after 28 seconds. A fresh check with the current deployed services and service-token rotation remains open |
+| Fresh staff offboarding within 60 seconds | A dedicated synthetic account lost library access after 12.358 seconds on 12 November; preview and new exchange were denied while its protected patient link retained access. Service-token rotation remains open |
 | Production alert receipt | Staging SNS drill passed on 2026-10-26: ALARM after 89 seconds, OK 104 seconds after clearing. Production topic, email address and receipt pending |
-| AWS RDS/S3 restoration and measured recovery objectives | Staging RDS point-in-time restore on 2026-10-26: 31 minutes to a verified, matching database. Application checks against a restored database and S3 version restore pending |
-| Actual ECS candidate failure and rollback | Staging rehearsal on 2026-10-26: failed candidate rolled back, migration retained. Production reviewer gate and release roles not configured |
-| Two tasks | Staging failover on 2026-10-26 with no 5xx. Overlapping media work pending |
+| AWS RDS/S3 restoration and measured recovery objectives | The 12 November isolated RDS/application check completed after 41m56s, including decoded media, captions, fresh identity and newly seeded retained-event retry. An isolated versioned media copy recovered correctly. Original-password acceptance, pre-PITR pending-event survival and production recovery guarantees remain unverified; source staging storage is unversioned |
+| Actual ECS candidate failure and rollback | Staging rehearsal on 2026-10-26: failed candidate rolled back, migration retained. Production reviewers were configured on 12 November; release roles and variables remain unconfigured |
+| Two tasks | On 12 November two targets in separate zones claimed simultaneous MP4/WebM jobs. An abandoned retranscription recovered automatically at generation 3, with six unique acknowledged lifecycle events across the two recordings. The dated record includes timings, transport timeouts and limits |
 | Production account/VPC inputs, cost estimate and pilot approval | Database class, alert destination and recovery targets were approved on 26 October. Production alert resources and the Cognito client still need creation. Josh's go, a production grant and rollout approval remain required |
 | Prior staging change closure | All fourteen staging tasks are checked. The original human merge closed that review; archive remains separate work |
 
-Keep incomplete acceptance tasks open. The [dated readiness record](readiness-2026-10-30.md) names each remaining check and the concurrency prerequisite before starting two production tasks. No retained resources or Vimeo content move as part of this change.
+Keep incomplete acceptance tasks open. The [current readiness record](readiness-2026-11-12.md) names each remaining check and the concurrency prerequisite before starting two production tasks. No retained resources or Vimeo content move as part of this change.

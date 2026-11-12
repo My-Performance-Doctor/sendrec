@@ -1,5 +1,7 @@
 # Readiness evidence, 30 October 2026
 
+The [12 November staging record](readiness-2026-11-12.md) updates the remaining gates. Keep this dated record as the evidence available on 30 October.
+
 This is the MPD-211 gate 3 handoff for `prepare-production-video-service`. It records completed checks and remaining work. Production activation still requires Josh's go, a maintenance grant and a separate rollout decision. Nothing in this record closes those gates.
 
 ## Verified work
