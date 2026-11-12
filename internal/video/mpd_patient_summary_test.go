@@ -192,8 +192,8 @@ func TestBrandFont(t *testing.T) {
 	}
 	dir := t.TempDir()
 	SetBrandFontDir(dir)
-	if w := serve(); w.Code != 404 {
-		t.Fatalf("missing file: got %d", w.Code)
+	if w := serve(); w.Code != 404 || w.Header().Get("Cache-Control") != "public, max-age=86400" {
+		t.Fatalf("missing file: got %d, cache %q", w.Code, w.Header().Get("Cache-Control"))
 	}
 	if err := os.WriteFile(filepath.Join(dir, brandHeadingFont), []byte("synthetic font bytes"), 0o600); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestMPDPages_HeadingsNameTTNeorisFirst(t *testing.T) {
 
 func TestManagedWatchAPIAndEmbedServeOnlyTheApprovedSummary(t *testing.T) {
 	db, h, a, id, share := seedManagedAdapter(t)
-	mustExec(t, db, `UPDATE videos SET summary='SendRec own words.',chapters='[{"title":"SendRec chapter","start":1}]',summary_status='ready',duration=60 WHERE id=$1`, id)
+	mustExec(t, db, `UPDATE videos SET summary='SendRec own words.',chapters='[{"title":"SendRec chapter","start":1}]',summary_status='ready',document='SendRec document.',document_status='ready',duration=60 WHERE id=$1`, id)
 	if w := summaryRequest(a, id, `{"mediaVersion":1,"summary":"Approved words.","points":[{"start":5,"text":"Approved point."}]}`, "1", "set"); w.Code != 200 {
 		t.Fatalf("set: %d %s", w.Code, w.Body.String())
 	}
@@ -232,6 +232,7 @@ func TestManagedWatchAPIAndEmbedServeOnlyTheApprovedSummary(t *testing.T) {
 			Summary       string    `json:"summary"`
 			Chapters      []Chapter `json:"chapters"`
 			SummaryStatus string    `json:"summaryStatus"`
+			Document      string    `json:"document"`
 		}
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
 			t.Fatalf("managed=%v: %d %s", managed, w.Code, w.Body.String())
@@ -242,6 +243,9 @@ func TestManagedWatchAPIAndEmbedServeOnlyTheApprovedSummary(t *testing.T) {
 		}
 		if body.Summary != want || len(body.Chapters) != 1 || body.Chapters[0].Title != chapter || body.SummaryStatus != "ready" {
 			t.Errorf("managed=%v: got %+v", managed, body)
+		}
+		if wantDoc := map[bool]string{true: "", false: "SendRec document."}[managed]; body.Document != wantDoc {
+			t.Errorf("managed=%v: document %q", managed, body.Document)
 		}
 	}
 	w := httptest.NewRecorder()
