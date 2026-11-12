@@ -3,12 +3,34 @@ package server_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
+	"github.com/sendrec/sendrec/internal/video"
 )
+
+func TestMPDBrandFontSupportsHead(t *testing.T) {
+	srv, _ := newServerWithDB(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "tt-neoris-demibold.ttf"), []byte("synthetic font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	video.SetBrandFontDir(dir)
+	t.Cleanup(func() { video.SetBrandFontDir("") })
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if w := executeRequest(srv, method, "/fonts/brand/tt-neoris-demibold.ttf"); w.Code != 200 {
+			t.Fatalf("%s font: %d", method, w.Code)
+		}
+	}
+	video.SetBrandFontDir("")
+	if w := executeRequest(srv, http.MethodHead, "/fonts/brand/tt-neoris-demibold.ttf"); w.Code != 404 {
+		t.Fatalf("HEAD missing font: %d", w.Code)
+	}
+}
 
 func TestMPDAnonymousRoutesShareWatchRateLimit(t *testing.T) {
 	for _, route := range []struct {

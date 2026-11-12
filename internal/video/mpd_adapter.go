@@ -133,13 +133,53 @@ func (a *MPDAdapter) mutate(w http.ResponseWriter, r *http.Request, operation st
 		httputil.WriteError(w, 400, "invalid mutation")
 		return
 	}
+	body, _ := json.Marshal(request)
+	a.fenced(w, r, operation, request.MediaVersion, body, func(ctx context.Context, tx pgx.Tx, id string, media int) (any, error) {
+		if operation == "password" {
+			var encoded *string
+			if request.Password != nil {
+				value, e := hashSharePassword(*request.Password)
+				if e != nil {
+					return nil, errMutationRefused{503, "password unavailable"}
+				}
+				encoded = &value
+			}
+			_, err := tx.Exec(ctx, `UPDATE videos SET share_password=$2,updated_at=now() WHERE id=$1`, id, encoded)
+			return map[string]any{"mediaVersion": media, "passwordProtected": encoded != nil}, err
+		}
+		var ready, protected bool
+		if err := tx.QueryRow(ctx, `SELECT status='ready',share_password IS NOT NULL FROM videos WHERE id=$1`, id).Scan(&ready, &protected); err != nil {
+			return nil, err
+		}
+		if *request.Published && (!ready || a.cfg.RequirePassword && !protected) {
+			return nil, errMutationRefused{409, "recording must be ready and protected before publication"}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE mpd_video_state SET published=$2,published_at=CASE WHEN $2 THEN COALESCE(published_at,now()) ELSE NULL END WHERE video_id=$1`, id, *request.Published); err != nil {
+			return nil, err
+		}
+		return a.metadata(ctx, tx, id)
+	})
+}
+
+// errMutationRefused is a refusal a mutation's effect makes in its own words,
+// after the fence passed, so nothing it began is kept.
+type errMutationRefused struct {
+	status  int
+	message string
+}
+
+func (e errMutationRefused) Error() string { return e.message }
+
+// fenced applies one integration mutation under the recording's work fence,
+// once per idempotency key. A retry with the same key and body returns the
+// stored response without applying it again.
+func (a *MPDAdapter) fenced(w http.ResponseWriter, r *http.Request, operation string, mediaVersion int, body []byte, apply func(context.Context, pgx.Tx, string, int) (any, error)) {
 	work, err := strconv.ParseInt(r.Header.Get("X-MPD-Work-Version"), 10, 64)
 	key := r.Header.Get("Idempotency-Key")
 	if err != nil || work <= 0 || len(key) == 0 || len(key) > 200 {
 		httputil.WriteError(w, 400, "mutation identity required")
 		return
 	}
-	body, _ := json.Marshal(request)
 	digest := hmac.New(sha256.New, deriveCookieKey(a.h.hmacSecret, "mpd-receipt"))
 	digest.Write(body)
 	hash := hex.EncodeToString(digest.Sum(nil))
@@ -165,7 +205,7 @@ func (a *MPDAdapter) mutate(w http.ResponseWriter, r *http.Request, operation st
 		return
 	}
 	// An old worker must not mutate, even if its HTTP request was delayed in transit.
-	if work < currentWork || media != request.MediaVersion {
+	if work < currentWork || media != mediaVersion {
 		httputil.WriteError(w, 409, "stale recording work")
 		return
 	}
@@ -193,31 +233,11 @@ func (a *MPDAdapter) mutate(w http.ResponseWriter, r *http.Request, operation st
 		httputil.WriteError(w, 503, "transaction unavailable")
 		return
 	}
-	var result any
-	if operation == "password" {
-		var encoded *string
-		if request.Password != nil {
-			value, e := hashSharePassword(*request.Password)
-			if e != nil {
-				httputil.WriteError(w, 503, "password unavailable")
-				return
-			}
-			encoded = &value
-		}
-		_, err = tx.Exec(r.Context(), `UPDATE videos SET share_password=$2,updated_at=now() WHERE id=$1`, id, encoded)
-		result = map[string]any{"mediaVersion": media, "passwordProtected": encoded != nil}
-	} else {
-		var ready, protected bool
-		if err = tx.QueryRow(r.Context(), `SELECT status='ready',share_password IS NOT NULL FROM videos WHERE id=$1`, id).Scan(&ready, &protected); err == nil {
-			if *request.Published && (!ready || a.cfg.RequirePassword && !protected) {
-				httputil.WriteError(w, 409, "recording must be ready and protected before publication")
-				return
-			}
-			_, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET published=$2,published_at=CASE WHEN $2 THEN COALESCE(published_at,now()) ELSE NULL END WHERE video_id=$1`, id, *request.Published)
-		}
-		if err == nil {
-			result, err = a.metadata(r.Context(), tx, id)
-		}
+	result, err := apply(r.Context(), tx, id, media)
+	var refused errMutationRefused
+	if errors.As(err, &refused) {
+		httputil.WriteError(w, refused.status, refused.message)
+		return
 	}
 	if err == nil {
 		_, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET work_version=$2 WHERE video_id=$1`, id, work)

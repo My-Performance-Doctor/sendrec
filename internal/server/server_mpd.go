@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/sendrec/sendrec/internal/mpd"
+	"github.com/sendrec/sendrec/internal/video"
 	"net/http"
 )
 
@@ -10,6 +11,9 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 	if cfg.Readiness != nil {
 		s.router.Handle("/api/ready", cfg.Readiness)
 	}
+	// MPD's heading font, where its runtime image carries it.
+	s.router.Get("/fonts/brand/tt-neoris-demibold.ttf", video.BrandFont)
+	s.router.Head("/fonts/brand/tt-neoris-demibold.ttf", video.BrandFont)
 	if s.videoHandler == nil {
 		return
 	}
@@ -21,6 +25,7 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 		r.Get("/transcript", adapter.Transcript)
 		r.Put("/password", adapter.Password)
 		r.Put("/publication", adapter.Publication)
+		r.Put("/patient-summary", adapter.PatientSummary)
 	})
 	media := s.videoHandler.MPDMedia(s.mpdHandler, cfg.MPDService, cfg.MPD.AllowedOrigins)
 	// The same bucket as the other /api/videos routes: preview handoffs and upload

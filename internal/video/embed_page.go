@@ -274,7 +274,8 @@ var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Pa
                 chaptersLayer.innerHTML = '';
                 for (var i = 0; i < chapters.length; i++) {
                     var start = chapters[i].start;
-                    var end = (i + 1 < chapters.length) ? chapters[i + 1].start : duration;
+                    var end = Math.min((i + 1 < chapters.length) ? chapters[i + 1].start : duration, duration);
+                    if (start < 0 || start >= duration || end <= start) continue;
                     var leftPct = (start / duration) * 100;
                     var widthPct = ((end - start) / duration) * 100;
                     var seg = document.createElement('div');
@@ -286,8 +287,9 @@ var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Pa
                     seg.setAttribute('data-title', chapters[i].title);
                     seg.setAttribute('data-index', i);
                     if (i > 0) {
-                        seg.style.left = (leftPct + 0.1) + '%';
-                        seg.style.width = (widthPct - 0.1) + '%';
+                        var gapPct = Math.min(0.1, widthPct / 2);
+                        seg.style.left = (leftPct + gapPct) + '%';
+                        seg.style.width = (widthPct - gapPct) + '%';
                     }
                     var tooltip = document.createElement('div');
                     tooltip.className = 'seek-chapter-tooltip';
@@ -728,15 +730,19 @@ func (h *Handler) EmbedPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	managed := managedShare(r.Context(), shareToken)
 	chapterList := make([]Chapter, 0)
-	if chaptersJSON != nil {
+	if managed {
+		// A patient sees only the approved points, never SendRec's own chapters.
+		_, chapterList, _ = managedSummary(r.Context(), h.db, videoID)
+	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
 	chaptersJSONBytes, _ := json.Marshal(chapterList)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := embedPageTemplate.Execute(w, embedPageData{
-		Managed:       managedShare(r.Context(), shareToken),
+		Managed:       managed,
 		Title:         title,
 		VideoURL:      videoURL,
 		ThumbnailURL:  thumbnailURL,

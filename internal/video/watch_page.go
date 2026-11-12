@@ -913,7 +913,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 <p class="summary-text">{{.Summary}}</p>
                 {{if .Chapters}}
                 <div class="chapter-list">
-                    <h3 class="chapter-list-title">Chapters</h3>
+                    <h3 class="chapter-list-title">{{if .Managed}}In this video{{else}}Chapters{{end}}</h3>
                     {{range $i, $c := .Chapters}}
                     <div class="chapter-item" data-start="{{.Start}}">
                         <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="chapter-title-{{$i}}">{{formatTimestamp .Start}}</button>
@@ -1529,7 +1529,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 ch.addEventListener('click', function(e) {
                     if (e.detail) e.target.blur();
                     var start = parseFloat(ch.getAttribute('data-start'));
-                    player.currentTime = start;
+                    player.currentTime = Math.min(start, player.duration || start);
                     player.play().catch(function() {});
                 });
             });
@@ -1547,7 +1547,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 chaptersLayer.innerHTML = '';
                 for (var i = 0; i < chapters.length; i++) {
                     var start = chapters[i].start;
-                    var end = (i + 1 < chapters.length) ? chapters[i + 1].start : duration;
+                    var end = Math.min((i + 1 < chapters.length) ? chapters[i + 1].start : duration, duration);
+                    if (start < 0 || start >= duration || end <= start) continue;
                     var leftPct = (start / duration) * 100;
                     var widthPct = ((end - start) / duration) * 100;
                     var seg = document.createElement('div');
@@ -1559,8 +1560,9 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                     seg.setAttribute('data-title', chapters[i].title);
                     seg.setAttribute('data-index', i);
                     if (i > 0) {
-                        seg.style.left = (leftPct + 0.1) + '%';
-                        seg.style.width = (widthPct - 0.1) + '%';
+                        var gapPct = Math.min(0.1, widthPct / 2);
+                        seg.style.left = (leftPct + gapPct) + '%';
+                        seg.style.width = (widthPct - gapPct) + '%';
                     }
                     var tooltip = document.createElement('div');
                     tooltip.className = 'seek-chapter-tooltip';
@@ -1709,7 +1711,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
         {{end}}
         </script>
         {{end}}
-        {{if or (eq .SubscriptionPlan "pro") (eq .SubscriptionPlan "business")}}{{if .Branding.FooterText}}<p class="branding">{{.Branding.FooterText}}</p>{{end}}{{else}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="https://sendrec.eu">Recorded with SendRec</a> — free and open source</p>{{end}}
+        {{if .Managed}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="` + mpdSourceURL + `">Source code</a></p>{{else if or (eq .SubscriptionPlan "pro") (eq .SubscriptionPlan "business")}}{{if .Branding.FooterText}}<p class="branding">{{.Branding.FooterText}}</p>{{end}}{{else}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="https://sendrec.eu">Recorded with SendRec</a> — free and open source</p>{{end}}
     </div>
 {{.AnalyticsScript}}
 <script nonce="{{.Nonce}}" src="/api/mpd/player.js" defer></script>
@@ -2290,12 +2292,17 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 	if summaryText != nil {
 		summaryStr = *summaryText
 	}
-	if chaptersJSON != nil {
+	description := summaryStr
+	if managed {
+		// A patient sees only the summary staff approved through mpd-api, never
+		// SendRec's own, and the page's description never carries it.
+		summaryStr, chapterList, summaryStatus = managedSummary(r.Context(), h.db, videoID)
+		description = ""
+	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
 	chaptersJSONBytes, _ := json.Marshal(chapterList)
 
-	description := summaryStr
 	if description == "" {
 		if duration > 0 {
 			description = fmt.Sprintf("Video by %s (%s)", creator, formatDuration(duration))

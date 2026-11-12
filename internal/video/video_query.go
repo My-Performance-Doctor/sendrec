@@ -537,12 +537,19 @@ func (h *Handler) Watch(w http.ResponseWriter, r *http.Request) {
 	if summaryText != nil {
 		summary = *summaryText
 	}
-	if chaptersJSON != nil {
+	managed := managedShare(r.Context(), shareToken)
+	if managed {
+		// A patient gets only the summary staff approved, never SendRec's own.
+		summary, chapters, summaryStatus = managedSummary(r.Context(), h.db, videoID)
+	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapters)
 	}
 
 	var document string
-	if documentText != nil {
+	if managed {
+		// SendRec's AI document is its own output too, so a patient never gets it.
+		documentStatus = "none"
+	} else if documentText != nil {
 		document = *documentText
 	}
 
