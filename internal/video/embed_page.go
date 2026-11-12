@@ -728,15 +728,19 @@ func (h *Handler) EmbedPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	managed := managedShare(r.Context(), shareToken)
 	chapterList := make([]Chapter, 0)
-	if chaptersJSON != nil {
+	if managed {
+		// A patient sees only the approved points, never SendRec's own chapters.
+		_, chapterList, _ = managedSummary(r.Context(), h.db, videoID)
+	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
 	chaptersJSONBytes, _ := json.Marshal(chapterList)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := embedPageTemplate.Execute(w, embedPageData{
-		Managed:       managedShare(r.Context(), shareToken),
+		Managed:       managed,
 		Title:         title,
 		VideoURL:      videoURL,
 		ThumbnailURL:  thumbnailURL,

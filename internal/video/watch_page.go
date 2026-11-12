@@ -2297,7 +2297,8 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 	if managed {
 		// A patient sees only the summary staff approved through mpd-api, never
 		// SendRec's own, and the page's description never carries it.
-		summaryStr, chapterList, summaryStatus, description = managedSummary(r.Context(), h.db, videoID)
+		summaryStr, chapterList, summaryStatus = managedSummary(r.Context(), h.db, videoID)
+		description = ""
 	}
 	chaptersJSONBytes, _ := json.Marshal(chapterList)
 

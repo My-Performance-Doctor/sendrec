@@ -113,7 +113,7 @@ func TestMPDAdapterPatientSummary(t *testing.T) {
 	if currentPatientSummary(ctx, db, id) != nil {
 		t.Fatal("a summary for older media still shows")
 	}
-	if text, points, status, _ := managedSummary(ctx, h.db, id); text != "" || len(points) != 0 || status != "none" {
+	if text, points, status := managedSummary(ctx, h.db, id); text != "" || len(points) != 0 || status != "none" {
 		t.Fatal("the page should show no summary for new media")
 	}
 }
@@ -209,5 +209,44 @@ func TestMPDPages_HeadingsNameTTNeorisFirst(t *testing.T) {
 		if !strings.Contains(css, `url("/fonts/brand/`+brandHeadingFont+`")`) || !strings.Contains(css, `font-family: "TT Neoris", "Geist"`) {
 			t.Errorf("%s: expected TT Neoris first with Geist behind it", name)
 		}
+	}
+}
+
+func TestManagedWatchAPIAndEmbedServeOnlyTheApprovedSummary(t *testing.T) {
+	db, h, a, id, share := seedManagedAdapter(t)
+	mustExec(t, db, `UPDATE videos SET summary='SendRec own words.',chapters='[{"title":"SendRec chapter","start":1}]',summary_status='ready',duration=60 WHERE id=$1`, id)
+	if w := summaryRequest(a, id, `{"mediaVersion":1,"summary":"Approved words.","points":[{"start":5,"text":"Approved point."}]}`, "1", "set"); w.Code != 200 {
+		t.Fatalf("set: %d %s", w.Code, w.Body.String())
+	}
+	request := func(path string, managed bool) *http.Request {
+		r := withURLParam(httptest.NewRequest("GET", path, nil), "shareToken", share)
+		if managed {
+			r = r.WithContext(context.WithValue(r.Context(), mpdManagedTokensKey{}, map[string]bool{share: true}))
+		}
+		return r
+	}
+	for _, managed := range []bool{true, false} {
+		w := httptest.NewRecorder()
+		h.Watch(w, request("/api/watch/"+share, managed))
+		var body struct {
+			Summary       string    `json:"summary"`
+			Chapters      []Chapter `json:"chapters"`
+			SummaryStatus string    `json:"summaryStatus"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+			t.Fatalf("managed=%v: %d %s", managed, w.Code, w.Body.String())
+		}
+		want, chapter := "SendRec own words.", "SendRec chapter"
+		if managed {
+			want, chapter = "Approved words.", "Approved point."
+		}
+		if body.Summary != want || len(body.Chapters) != 1 || body.Chapters[0].Title != chapter || body.SummaryStatus != "ready" {
+			t.Errorf("managed=%v: got %+v", managed, body)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.EmbedPage(w, request("/embed/"+share, true))
+	if page := w.Body.String(); w.Code != 200 || strings.Contains(page, "SendRec chapter") || !strings.Contains(page, "Approved point.") {
+		t.Errorf("the managed embed should carry only the approved points: %d", w.Code)
 	}
 }

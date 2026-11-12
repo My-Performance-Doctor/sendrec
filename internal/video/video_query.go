@@ -540,6 +540,10 @@ func (h *Handler) Watch(w http.ResponseWriter, r *http.Request) {
 	if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapters)
 	}
+	if managedShare(r.Context(), shareToken) {
+		// A patient gets only the summary staff approved, never SendRec's own.
+		summary, chapters, summaryStatus = managedSummary(r.Context(), h.db, videoID)
+	}
 
 	var document string
 	if documentText != nil {

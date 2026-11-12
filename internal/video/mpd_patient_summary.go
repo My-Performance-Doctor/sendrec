@@ -3,7 +3,9 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -101,6 +103,9 @@ func currentPatientSummary(ctx context.Context, db database.DBTX, videoID string
 	var raw []byte
 	err := db.QueryRow(ctx, `SELECT patient_summary FROM mpd_video_state WHERE video_id=$1 AND deleted_at IS NULL AND patient_summary IS NOT NULL AND patient_summary_media_version=media_version`, videoID).Scan(&raw)
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("mpd: patient summary unavailable", "video_id", videoID, "error", err)
+		}
 		return nil
 	}
 	var summary patientSummary
@@ -110,16 +115,17 @@ func currentPatientSummary(ctx context.Context, db database.DBTX, videoID string
 	return &summary
 }
 
-// managedSummary is what a managed watch page shows in its Summary tab: the
-// approved summary with its points as the "In this video" list, or nothing.
-func managedSummary(ctx context.Context, db database.DBTX, videoID string) (string, []Chapter, string, string) {
+// managedSummary is what a managed share shows in place of SendRec's own
+// summary and chapters: the approved summary with its points as the "In this
+// video" list, and its status, or nothing.
+func managedSummary(ctx context.Context, db database.DBTX, videoID string) (string, []Chapter, string) {
 	summary := currentPatientSummary(ctx, db, videoID)
 	if summary == nil {
-		return "", []Chapter{}, "none", ""
+		return "", []Chapter{}, "none"
 	}
 	points := make([]Chapter, 0, len(summary.Points))
 	for _, point := range summary.Points {
 		points = append(points, Chapter{Title: point.Text, Start: point.Start})
 	}
-	return summary.Text, points, "ready", ""
+	return summary.Text, points, "ready"
 }
