@@ -274,7 +274,8 @@ var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Pa
                 chaptersLayer.innerHTML = '';
                 for (var i = 0; i < chapters.length; i++) {
                     var start = chapters[i].start;
-                    var end = (i + 1 < chapters.length) ? chapters[i + 1].start : duration;
+                    var end = Math.min((i + 1 < chapters.length) ? chapters[i + 1].start : duration, duration);
+                    if (start < 0 || start >= duration || end <= start) continue;
                     var leftPct = (start / duration) * 100;
                     var widthPct = ((end - start) / duration) * 100;
                     var seg = document.createElement('div');
@@ -286,8 +287,9 @@ var embedPageTemplate = template.Must(template.New("embed").Funcs(watchFuncs).Pa
                     seg.setAttribute('data-title', chapters[i].title);
                     seg.setAttribute('data-index', i);
                     if (i > 0) {
-                        seg.style.left = (leftPct + 0.1) + '%';
-                        seg.style.width = (widthPct - 0.1) + '%';
+                        var gapPct = Math.min(0.1, widthPct / 2);
+                        seg.style.left = (leftPct + gapPct) + '%';
+                        seg.style.width = (widthPct - gapPct) + '%';
                     }
                     var tooltip = document.createElement('div');
                     tooltip.className = 'seek-chapter-tooltip';

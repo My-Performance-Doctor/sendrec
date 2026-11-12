@@ -1529,7 +1529,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 ch.addEventListener('click', function(e) {
                     if (e.detail) e.target.blur();
                     var start = parseFloat(ch.getAttribute('data-start'));
-                    player.currentTime = start;
+                    player.currentTime = Math.min(start, player.duration || start);
                     player.play().catch(function() {});
                 });
             });
@@ -1547,7 +1547,8 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 chaptersLayer.innerHTML = '';
                 for (var i = 0; i < chapters.length; i++) {
                     var start = chapters[i].start;
-                    var end = (i + 1 < chapters.length) ? chapters[i + 1].start : duration;
+                    var end = Math.min((i + 1 < chapters.length) ? chapters[i + 1].start : duration, duration);
+                    if (start < 0 || start >= duration || end <= start) continue;
                     var leftPct = (start / duration) * 100;
                     var widthPct = ((end - start) / duration) * 100;
                     var seg = document.createElement('div');
@@ -1559,8 +1560,9 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                     seg.setAttribute('data-title', chapters[i].title);
                     seg.setAttribute('data-index', i);
                     if (i > 0) {
-                        seg.style.left = (leftPct + 0.1) + '%';
-                        seg.style.width = (widthPct - 0.1) + '%';
+                        var gapPct = Math.min(0.1, widthPct / 2);
+                        seg.style.left = (leftPct + gapPct) + '%';
+                        seg.style.width = (widthPct - gapPct) + '%';
                     }
                     var tooltip = document.createElement('div');
                     tooltip.className = 'seek-chapter-tooltip';

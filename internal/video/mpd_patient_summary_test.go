@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,52 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 )
+
+func TestPatientChapterSegmentsStayWithinMedia(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required to execute player JavaScript")
+	}
+	const script = `
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const begin = source.indexOf('function renderChapters()');
+const end = source.indexOf("player.addEventListener('timeupdate'", begin);
+assert.ok(begin >= 0 && end > begin);
+for (const starts of [[0, 100.25, 900], [0, 10, 10, 20], [0, 100.499]]) {
+    const segments = [];
+    const context = {
+        player: { duration: 100.5 },
+        chapters: starts.map(start => ({ start, title: 'Synthetic point' })),
+        chaptersLayer: { appendChild: segment => segments.push(segment) },
+        document: { createElement: () => ({
+            style: {}, attributes: {},
+            setAttribute(name, value) { this.attributes[name] = value; },
+            appendChild() {}, addEventListener() {}
+        }) }
+    };
+    vm.runInNewContext(source.slice(begin, end) + '\nrenderChapters();', context);
+    const expected = starts.length === 3 && starts[2] === 900 ? 2 : starts.length === 4 ? 3 : 2;
+    assert.equal(segments.length, expected);
+    for (const segment of segments) {
+        const left = parseFloat(segment.style.left);
+        const width = parseFloat(segment.style.width);
+        assert.ok(Number.isFinite(left) && Number.isFinite(width));
+        assert.ok(left >= 0 && width > 0 && left + width <= 100.000001);
+    }
+    assert.ok(segments.some(segment => segment.attributes['data-start'] === starts.at(-1))
+        || starts.at(-1) > context.player.duration);
+}`
+	for _, file := range []string{"watch_page.go", "embed_page.go"} {
+		t.Run(file, func(t *testing.T) {
+			if out, err := exec.Command(node, "-e", script, file).CombinedOutput(); err != nil {
+				t.Fatalf("chapter bounds: %v\n%s", err, out)
+			}
+		})
+	}
+}
 
 func TestTidyPatientSummary(t *testing.T) {
 	text := "  Your scan shows a healthy heart.  "

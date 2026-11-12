@@ -13,6 +13,7 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 	}
 	// MPD's heading font, where its runtime image carries it.
 	s.router.Get("/fonts/brand/tt-neoris-demibold.ttf", video.BrandFont)
+	s.router.Head("/fonts/brand/tt-neoris-demibold.ttf", video.BrandFont)
 	if s.videoHandler == nil {
 		return
 	}
