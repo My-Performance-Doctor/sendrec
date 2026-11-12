@@ -913,7 +913,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
                 <p class="summary-text">{{.Summary}}</p>
                 {{if .Chapters}}
                 <div class="chapter-list">
-                    <h3 class="chapter-list-title">Chapters</h3>
+                    <h3 class="chapter-list-title">{{if .Managed}}In this video{{else}}Chapters{{end}}</h3>
                     {{range $i, $c := .Chapters}}
                     <div class="chapter-item" data-start="{{.Start}}">
                         <button type="button" class="chapter-timestamp" aria-label="Play from {{formatTimestamp .Start}}" aria-describedby="chapter-title-{{$i}}">{{formatTimestamp .Start}}</button>
@@ -1709,7 +1709,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
         {{end}}
         </script>
         {{end}}
-        {{if or (eq .SubscriptionPlan "pro") (eq .SubscriptionPlan "business")}}{{if .Branding.FooterText}}<p class="branding">{{.Branding.FooterText}}</p>{{end}}{{else}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="https://sendrec.eu">Recorded with SendRec</a> — free and open source</p>{{end}}
+        {{if .Managed}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="` + mpdSourceURL + `">Source code</a></p>{{else if or (eq .SubscriptionPlan "pro") (eq .SubscriptionPlan "business")}}{{if .Branding.FooterText}}<p class="branding">{{.Branding.FooterText}}</p>{{end}}{{else}}<p class="branding">{{if .Branding.FooterText}}{{.Branding.FooterText}} · {{end}}<a href="https://sendrec.eu">Recorded with SendRec</a> — free and open source</p>{{end}}
     </div>
 {{.AnalyticsScript}}
 <script nonce="{{.Nonce}}" src="/api/mpd/player.js" defer></script>
@@ -2293,9 +2293,14 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 	if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
+	description := summaryStr
+	if managed {
+		// A patient sees only the summary staff approved through mpd-api, never
+		// SendRec's own, and the page's description never carries it.
+		summaryStr, chapterList, summaryStatus, description = managedSummary(r.Context(), h.db, videoID)
+	}
 	chaptersJSONBytes, _ := json.Marshal(chapterList)
 
-	description := summaryStr
 	if description == "" {
 		if duration > 0 {
 			description = fmt.Sprintf("Video by %s (%s)", creator, formatDuration(duration))

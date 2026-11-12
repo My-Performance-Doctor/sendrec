@@ -99,9 +99,11 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	}
 	defer mock.Close()
 	password, _ := hashSharePassword("K7QM-2XPA-9RTF-HD4W")
+	mock.MatchExpectationsInOrder(false)
 	shareToken := "managedopen1"
 	expectManagedWatchRow(mock, shareToken, "Sleep check-in", &password, nil)
 	expectViewRecording(mock, "vid-1")
+	expectManagedSummary(mock, nil)
 
 	handler := NewHandler(mock, &mockStorage{downloadURL: "https://s3.example.com/video.webm"}, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	req := managedWatchRequest(shareToken)
@@ -114,6 +116,9 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	}
 	if strings.Contains(body, `href="`+testBaseURL+`" class="logo"`) {
 		t.Error("the logo should not lead a patient to SendRec's sign-in")
+	}
+	if !strings.Contains(body, `<a href="`+mpdSourceURL+`">Source code</a>`) || strings.Contains(body, "Recorded with SendRec") || strings.Contains(body, `href="https://sendrec.eu"`) {
+		t.Error("the footer should offer the source, not credit SendRec")
 	}
 	waitAndCheckExpectations(t, mock)
 }

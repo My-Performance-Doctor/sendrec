@@ -15,7 +15,17 @@ var mpdPatientPages bool
 
 func SetMPDPatientPages(enabled bool) { mpdPatientPages = enabled }
 
-const mpdFontCSS = `@font-face { font-family: "Geist"; src: url("/fonts/geist-variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }`
+// mpdSourceURL is where a managed watch page offers the source of the running
+// service, as the AGPL asks, in place of SendRec's credit.
+const mpdSourceURL = "https://github.com/My-Performance-Doctor/sendrec"
+
+// TT Neoris is MPD's heading face. Its licence keeps it out of this public
+// repository, so MPD's runtime image carries it and BrandFont serves it. Where
+// it is missing the path answers 404 and headings fall back to Geist.
+const mpdFontCSS = `@font-face { font-family: "Geist"; src: url("/fonts/geist-variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+        @font-face { font-family: "TT Neoris"; src: url("/fonts/brand/` + brandHeadingFont + `") format("truetype"); font-weight: 600; font-display: swap; }`
+
+const mpdHeadingFont = `"TT Neoris", "Geist", system-ui, -apple-system, sans-serif`
 
 // The arc sits in the page's flow, so it never covers text on a short screen.
 const mpdPageCSS = mpdFontCSS + `
@@ -24,7 +34,7 @@ const mpdPageCSS = mpdFontCSS + `
         body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; background: #f4f7f6; color: #103340; font: 16px/1.4 "Geist", system-ui, -apple-system, sans-serif; }
         main { width: 100%; max-width: 438px; margin: 0 auto; padding: 24px 24px 32px; }
         .logo { display: block; width: 96px; height: 30px; margin-bottom: 44px; }
-        h1 { margin-bottom: 8px; font-size: 30px; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
+        h1 { margin-bottom: 8px; font-family: ` + mpdHeadingFont + `; font-size: 30px; font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
         .stop { color: #d9ae6b; }
         p { color: #42594f; }
         .arc { display: block; width: 100%; height: auto; margin-top: auto; }`
@@ -226,7 +236,8 @@ const mpdWatchCSS = mpdFontCSS + `
         .logo { display: block; width: 96px; height: 30px; background: url("/images/mpd-os-black.svg") left center / contain no-repeat; color: transparent; font-size: 0; }
         .logo img { display: none; }
         .player-container { --player-accent: #d9ae6b; }
-        .video-title { font-weight: 600; letter-spacing: -0.02em; }
+        .video-title, .transcript-header, .chapter-list-title { font-family: ` + mpdHeadingFont + `; font-weight: 600; }
+        .video-title { letter-spacing: -0.02em; }
         .video-meta, .video-meta-avatar, .comment-meta, .comment-form-actions label, .no-comments, .panel-tab,
         .transcript-processing, .processing-desc, .cta-desc, .cta-dismiss, .timestamp-toggle { color: #42594f; }
         .video-meta-name, .comment-author, .comment-body, .transcript-header, .transcript-text, .comment-form textarea,
