@@ -324,6 +324,8 @@ public class SendRecStack extends Stack {
     environment.put("EMAIL_FROM_NAME", "My Performance Doctor");
     environment.put("BRANDING_DEFAULT_NAME", "My Performance Doctor");
     environment.put("BRANDING_DEFAULT_LOGO_URL", "/images/mpd-orb.svg");
+    // MPD's private base image keeps its licensed heading font here; without it, headings use Geist.
+    environment.put("BRAND_FONT_DIR", "/usr/share/mpd-brand/fonts");
 
     Map<String, Secret> secrets = new HashMap<>();
     secrets.put("DB_HOST", Secret.fromSecretsManager(database.getSecret(), "host"));

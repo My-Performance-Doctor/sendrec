@@ -47,6 +47,15 @@ docker push 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base:whisp
 
 CI cannot read this registry, so it builds `Dockerfile.base` itself and passes that local tag as `BASE_IMAGE`. `make docker-up` does the same for local stacks.
 
+The stack sets `BRAND_FONT_DIR` to `/usr/share/mpd-brand/fonts`. Patient pages load TT Neoris DemiBold from `tt-neoris-demibold.ttf` there and fall back to Geist without it. The font's licence keeps it out of this repository, so add it as a layer over the pinned base, built from a private directory, push that under a new tag and pin its digest in `BASE_IMAGE`:
+
+```dockerfile
+FROM 537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec-base@sha256:<current base digest>
+COPY --chmod=644 tt-neoris-demibold.ttf /usr/share/mpd-brand/fonts/tt-neoris-demibold.ttf
+```
+
+Use only a file MPD holds a web licence for. The copy in Staff OS is a trial build, so the current base carries no font. A base rebuilt from `Dockerfile.base` loses this layer until it is added again.
+
 ## First owner
 
 Verify the source machine's public IPv4 address and use only that `/32`. Bootstrap mode without a valid address fails before synthesis. Substitute that non-secret CIDR in the commands below:

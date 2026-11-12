@@ -49,17 +49,23 @@ Share password checks are limited per address and per video. After 10 wrong pass
 
 ### Patient pages
 
-A managed recording's link is opened by a patient, usually on a phone, so `internal/video/mpd_pages.go` gives it MPD's pages. The password page asks for a video code. It accepts any case, spacing or missing hyphens, finds a code in a whole pasted message and opens the video once the code is complete. Anything else stays as entered. An unpublished, deleted or expired managed link, or an unknown link, shows one page that does not say which it was. The watch page takes MPD's look through the custom CSS slot. Unmanaged shares keep SendRec's pages, and `MPD_SERVICE_ENABLED` decides the page for an unknown link. TT Neoris stays out of this public repository, so headings use Geist.
+A managed recording's link is opened by a patient, usually on a phone, so `internal/video/mpd_pages.go` gives it MPD's pages. The password page asks for a video code. It accepts any case, spacing or missing hyphens, finds a code in a whole pasted message and opens the video once the code is complete. Anything else stays as entered. An unpublished, deleted or expired managed link, or an unknown link, shows one page that does not say which it was. The watch page takes MPD's look through the custom CSS slot. Its footer links to this repository's source in place of SendRec's credit, which keeps the AGPL offer of source on the page patients use. Unmanaged shares keep SendRec's pages, and `MPD_SERVICE_ENABLED` decides the page for an unknown link.
+
+Headings name TT Neoris first and Geist after it. The font's licence keeps it out of this public repository: the server serves `/fonts/brand/tt-neoris-demibold.ttf` from `BRAND_FONT_DIR`, which MPD's private base image is meant to fill, and answers 404 without it, so headings fall back to Geist. The only copy found so far, in Staff OS, is a trial build, so no image carries it yet.
+
+When mpd-api has sent a patient summary for the recording's current media version, the watch page shows it in a Summary tab above the transcript, with its points under "In this video". Each point plays the video from its start time. A managed page never shows SendRec's own AI summary or chapters, and new media hides a summary until mpd-api sends one for it.
 
 Playback/download GET links expire within five minutes. Watch, embed and playlist players renew them and preserve position and paused state. Denied renewal stops playback. Managed library/detail uses the private preview player; download clicks request a fresh authorized link.
 
 ## Backend service API
 
-The deployment stores one or two SHA-256 service-token verifiers for rotation. The caller keeps the original high-entropy token in Secrets Manager. A service token can only read metadata/captions or set password/publication for the configured workspace. It cannot act as staff, record, delete or administer workspaces.
+The deployment stores one or two SHA-256 service-token verifiers for rotation. The caller keeps the original high-entropy token in Secrets Manager. A service token can only read metadata/captions or set password, publication or the patient summary for the configured workspace. It cannot act as staff, record, delete or administer workspaces.
 
 `GET /api/integrations/mpd/videos/{videoId}` and `/transcript` return the strict shapes in [contracts.json](contracts.json). Transcript responses include the published media and transcript versions and bounded VTT text.
 
 Both PUT endpoints require `Idempotency-Key` and a positive `X-MPD-Work-Version`. Password bodies contain `mediaVersion` and nullable `password`; publication bodies contain `mediaVersion` and `published`. A database transaction locks the current recording, rejects lower work versions and stale media, applies the mutation and stores its receipt. Reusing an effect key with another body returns 409. A valid replay advances the work fence and returns the original receipt without reapplying the effect. Receipts store keyed request digests and response metadata, never plaintext passwords.
+
+`PUT /api/integrations/mpd/videos/{videoId}/patient-summary` follows the same rules. Its body contains `mediaVersion`, a nullable `summary` of at most 1,200 characters and `points`, at most eight of `{"start": seconds, "text": "..."}` with up to 300 characters each. A null summary with no points clears it. SendRec trims the text, orders the points by start time and stores them with the media version, and answers `{"mediaVersion": n, "patientSummary": true|false}`. Send only a summary staff approved for the patient.
 
 ## Events and recovery
 
