@@ -48,7 +48,9 @@ func (a *MPDAdapter) PatientSummary(w http.ResponseWriter, r *http.Request) {
 		Summary      *string               `json:"summary"`
 		Points       []patientSummaryPoint `json:"points"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024))
+	// Room for the largest valid summary even when every character arrives as a
+	// \u escape, as Python's json module sends non-ASCII text by default.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&request) != nil || request.MediaVersion < 1 || dec.Decode(new(any)) != io.EOF {
 		httputil.WriteError(w, 400, "invalid patient summary")
@@ -75,19 +77,20 @@ func (a *MPDAdapter) PatientSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 // tidyPatientSummary trims the summary and its points and puts the points in
-// video order. It refuses blank or oversized text, points without a summary,
-// and start times that are not a plain number of seconds within a day.
+// video order. It refuses blank or oversized text, NUL characters, which
+// PostgreSQL's jsonb cannot store, points without a summary, and start times
+// that are not a plain number of seconds within a day.
 func tidyPatientSummary(text *string, points []patientSummaryPoint) (*patientSummary, bool) {
 	if text == nil {
 		return nil, len(points) == 0
 	}
 	summary := &patientSummary{Text: strings.TrimSpace(*text), Points: make([]patientSummaryPoint, 0, len(points))}
-	if summary.Text == "" || utf8.RuneCountInString(summary.Text) > maxPatientSummaryRunes || len(points) > maxPatientSummaryItems {
+	if summary.Text == "" || utf8.RuneCountInString(summary.Text) > maxPatientSummaryRunes || strings.ContainsRune(summary.Text, 0) || len(points) > maxPatientSummaryItems {
 		return nil, false
 	}
 	for _, point := range points {
 		point.Text = strings.TrimSpace(point.Text)
-		if point.Text == "" || utf8.RuneCountInString(point.Text) > maxPatientSummaryPoint ||
+		if point.Text == "" || utf8.RuneCountInString(point.Text) > maxPatientSummaryPoint || strings.ContainsRune(point.Text, 0) ||
 			math.IsNaN(point.Start) || math.IsInf(point.Start, 0) || point.Start < 0 || point.Start > maxPatientSummaryStart {
 			return nil, false
 		}

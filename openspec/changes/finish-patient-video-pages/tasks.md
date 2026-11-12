@@ -15,4 +15,4 @@
 
 - [x] 3.1 Document the summary route, the font and the footer in `docs/mpd/README.md` and the infrastructure README.
 - [x] 3.2 Run the Go, web and infrastructure checks.
-- [ ] 3.3 Render the managed pages at phone size and capture them for the pull request.
+- [x] 3.3 Render the managed pages at phone size and capture them for the pull request. Synthetic before and after captures are attached to PR #28.

@@ -26,7 +26,7 @@ func TestTidyPatientSummary(t *testing.T) {
 	if summary, ok := tidyPatientSummary(nil, nil); !ok || summary != nil {
 		t.Fatal("a null summary with no points clears it")
 	}
-	blank, long := "   ", strings.Repeat("a", maxPatientSummaryRunes+1)
+	blank, long, nul := "   ", strings.Repeat("a", maxPatientSummaryRunes+1), "Fine\x00."
 	tooMany := make([]patientSummaryPoint, maxPatientSummaryItems+1)
 	for i := range tooMany {
 		tooMany[i] = patientSummaryPoint{Start: float64(i), Text: "Point"}
@@ -38,6 +38,8 @@ func TestTidyPatientSummary(t *testing.T) {
 		"points without a summary": {nil, []patientSummaryPoint{{Start: 1, Text: "Point"}}},
 		"blank summary":            {&blank, nil},
 		"long summary":             {&long, nil},
+		"NUL in summary":           {&nul, nil},
+		"NUL in point":             {&text, []patientSummaryPoint{{Start: 1, Text: nul}}},
 		"too many points":          {&text, tooMany},
 		"blank point":              {&text, []patientSummaryPoint{{Start: 1, Text: " "}}},
 		"long point":               {&text, []patientSummaryPoint{{Start: 1, Text: strings.Repeat("b", maxPatientSummaryPoint+1)}}},
@@ -107,6 +109,19 @@ func TestMPDAdapterPatientSummary(t *testing.T) {
 
 	if w := summaryRequest(a, id, set, "9", "again"); w.Code != 200 {
 		t.Fatalf("set again: %d", w.Code)
+	}
+	// Python's default encoder escapes non-ASCII text. The maximum valid
+	// payload must fit even when every character uses a surrogate pair.
+	points := make([]string, maxPatientSummaryItems)
+	for i := range points {
+		points[i] = `{"start":1,"text":"` + strings.Repeat(`\ud83d\ude00`, maxPatientSummaryPoint) + `"}`
+	}
+	escaped := `{"mediaVersion":1,"summary":"` + strings.Repeat(`\ud83d\ude00`, maxPatientSummaryRunes) + `","points":[` + strings.Join(points, ",") + `]}`
+	if len(escaped) <= 32*1024 {
+		t.Fatal("fixture must exceed the old request limit")
+	}
+	if w := summaryRequest(a, id, escaped, "10", "escaped"); w.Code != 200 {
+		t.Fatalf("escaped maximum: %d %s", w.Code, w.Body.String())
 	}
 	// New media hides the summary written for the old one.
 	mustExec(t, db, `UPDATE mpd_video_state SET media_version=2 WHERE video_id=$1`, id)
@@ -192,14 +207,14 @@ func TestBrandFont(t *testing.T) {
 	}
 	dir := t.TempDir()
 	SetBrandFontDir(dir)
-	if w := serve(); w.Code != 404 || w.Header().Get("Cache-Control") != "public, max-age=86400" {
+	if w := serve(); w.Code != 404 || w.Header().Get("Cache-Control") != "public, max-age=60" {
 		t.Fatalf("missing file: got %d, cache %q", w.Code, w.Header().Get("Cache-Control"))
 	}
 	if err := os.WriteFile(filepath.Join(dir, brandHeadingFont), []byte("synthetic font bytes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	w := serve()
-	if w.Code != 200 || w.Header().Get("Content-Type") != "font/ttf" || w.Body.String() != "synthetic font bytes" {
+	if w.Code != 200 || w.Header().Get("Content-Type") != "font/ttf" || w.Body.String() != "synthetic font bytes" || w.Header().Get("Cache-Control") != "public, max-age=86400" {
 		t.Fatalf("got %d %q %q", w.Code, w.Header().Get("Content-Type"), w.Body.String())
 	}
 }

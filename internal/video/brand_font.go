@@ -18,10 +18,10 @@ var brandFontDir string
 func SetBrandFontDir(dir string) { brandFontDir = dir }
 
 // BrandFont serves the heading font from brandFontDir, and 404 when the image
-// does not carry it, so pages fall back to Geist. Both answers are cached for a
-// day, so a page without the font does not ask for it on every load.
+// does not carry it, so pages fall back to Geist. Missing fonts are cached for
+// one minute, so a deployment adding the font takes effect without a long wait.
 func BrandFont(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", "public, max-age=60")
 	if brandFontDir == "" {
 		http.NotFound(w, r)
 		return
@@ -31,12 +31,13 @@ func BrandFont(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "font/ttf")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeContent(w, r, brandHeadingFont, info.ModTime(), file)
 }
