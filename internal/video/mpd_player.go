@@ -31,7 +31,7 @@ const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff
 const mpdPlayerJS = `(function(){
 'use strict';
 var player=document.getElementById('player');if(!player)return;
-var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null, progressing=false;
+var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null;
 function managed(){return preview||player.dataset.mpdManaged==='true';}
 function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
 function stop(){player.pause();player.removeAttribute('src');player.load();status('Access ended. Sign in again and open a new preview.');if(timer)clearInterval(timer);}
@@ -50,8 +50,8 @@ async function start(){
 async function activate(){if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token)timer=setInterval(function(){renew();},240000);}
 player.addEventListener('mpd-recording-change',function(){activate().catch(function(){if(preview)stop();});});
 player.addEventListener('playing',function(){observed={time:player.currentTime,wall:performance.now()};});
-player.addEventListener('seeking',function(){observed=null;});
-player.addEventListener('pause',function(){observed=null;});
+player.addEventListener('seeking',function(){flush();observed=null;});
+player.addEventListener('pause',function(){flush();observed=null;});
 player.addEventListener('error',function(){if(session&&!renewing)renew();});
 player.addEventListener('timeupdate',async function(){
  if(!preview&&activeToken!==share()){await activate();return;}
@@ -62,15 +62,26 @@ player.addEventListener('timeupdate',async function(){
  if(delta>elapsed/1000*2.1){observed=null;return;}
  try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;observed={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
 });
-// After the start, a patient's link reports contiguous playing time every few seconds, so MPD can tell when a
-// session has played most of the video. A preview never counts, so it reports nothing more.
-player.addEventListener('timeupdate',async function(){
- if(preview||!managed()||!session||!sent||progressing||player.paused||player.seeking||renewing)return;
- var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
- if(elapsed<5000||delta<0.2)return;
- if(elapsed>10000||delta>elapsed/1000*2.1){observed={time:player.currentTime,wall:now};return;}
- progressing=true;
- try{var answer=await request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;observed={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;if(Date.parse(session.expiresAt)<=Date.now())newSession().catch(function(){});}finally{progressing=false;}
+// After the start, a patient's link reports the stretch it has played every few seconds, and the stretch since the last
+// report when playback pauses or seeks, so MPD can tell when a session has played most of the video. A preview never
+// counts, so it reports nothing more.
+var seen=null;
+function report(from,to){
+ if(preview||!managed()||!session||!sent||!from||!to)return;
+ var elapsed=to.wall-from.wall,delta=to.time-from.time;
+ if(elapsed<250||elapsed>10000||delta<0.2||delta>elapsed/1000*2.1)return;
+ request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:from.time,currentTime:to.time,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false})
+  .then(function(answer){if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;})
+  .catch(function(){if(session&&Date.parse(session.expiresAt)<=Date.now())newSession().catch(function(){});});
+}
+function flush(){if(observed&&seen&&seen.time>observed.time)report(observed,seen);seen=null;}
+player.addEventListener('timeupdate',function(){
+ if(preview||!managed()||!session||!sent||player.paused||player.seeking||renewing)return;
+ var now={time:player.currentTime,wall:performance.now()};
+ if(!observed||!seen){if(!observed)observed=now;seen=now;return;}
+ if(now.time<seen.time||now.time-seen.time>(now.wall-seen.wall)/1000*2.1+0.5){observed=now;seen=now;return;}
+ seen=now;
+ if(now.wall-observed.wall>=5000){report(observed,now);observed=now;}
 });
 start().catch(function(){if(preview)stop();});
 })();`

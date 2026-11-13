@@ -2,6 +2,7 @@ package video
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -49,8 +50,9 @@ func (h *Handler) MPDPlaybackStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // MPDPlaybackProgress adds one progress observation to a playback session's
-// verified playing time and keeps the session open while the viewer plays, so
-// MPD learns when a session has played 80% of the video (mpdevents.Played).
+// coverage and keeps the session open while the viewer plays, so MPD learns
+// when a session has played 80% of the video (mpdevents.Played). A server fault
+// is a 500, not a refused observation.
 func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
 	var id string
 	if err := h.db.QueryRow(r.Context(), `SELECT id FROM videos WHERE share_token=$1 AND status='ready'`, chi.URLParam(r, "shareToken")).Scan(&id); err != nil {
@@ -65,8 +67,11 @@ func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires, err := mpdevents.Played(r.Context(), h.db, id, p)
-	if err != nil {
+	if errors.Is(err, mpdevents.ErrPlaybackClosed) || errors.Is(err, mpdevents.ErrInvalidProgress) {
 		httputil.WriteError(w, 403, "invalid or expired playback observation")
+		return
+	} else if err != nil {
+		httputil.WriteError(w, 500, "playback progress could not be saved")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

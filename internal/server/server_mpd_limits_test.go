@@ -40,6 +40,7 @@ func TestMPDAnonymousRoutesShareWatchRateLimit(t *testing.T) {
 		{"GET", "/api/watch/synthetic/renew", "SELECT file_key,share_password", 404},
 		{"POST", "/api/watch/synthetic/playback-session", "SELECT share_password,share_expires_at", 404},
 		{"POST", "/api/watch/synthetic/playback-start", "SELECT share_password,share_expires_at", 404},
+		{"POST", "/api/watch/synthetic/playback-progress", "SELECT share_password,share_expires_at", 404},
 		{"POST", "/api/mpd/preview/redeem", "", 403},
 		{"POST", "/api/mpd/preview/media", "", 403},
 		{"POST", "/api/mpd/preview/session", "", 403},
