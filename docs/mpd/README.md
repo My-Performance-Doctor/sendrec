@@ -12,6 +12,8 @@ A future client exchanges an approved Cognito staff access token through `POST /
 
 Sessions enforce the `/api/v1/staff/video-access` response, bounded by its `validUntil` and 30 seconds. Expired grants fail closed during outages. A managed session cannot use personal scope, a different workspace header, old API keys or local password login to expand access. Offboarding retains media.
 
+The grant can carry a `profile` with `displayName` and `photoVersion`. Either can be null. On sign-in and on each grant refresh, SendRec copies the name to the user. When `photoVersion` changes, SendRec reads `GET {MPD_ACCESS_URL}/photo` with the same token. It keeps only a JPEG of at most 64 KiB and 512 px a side. Managed watch pages show that photo beside the name, inline in the page, and show initials without a photo. A null `photoVersion` removes the photo. A null name keeps the last name. A bad profile or a failed photo read never blocks access, and the next grant tries the photo again. A grant without a profile, from an older mpd-api, changes nothing.
+
 | Operation | Request | Authorization |
 |---|---|---|
 | Record | `POST /api/videos`, title, duration, fileSize, contentType and optional webcam size/type | `record` |
