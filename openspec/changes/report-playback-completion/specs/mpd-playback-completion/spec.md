@@ -14,7 +14,7 @@ SendRec SHALL enqueue one `video.playback_completed` event for a non-preview pla
 
 ### Requirement: Only played seconds count
 
-A session's coverage SHALL count each second of the video once. Seconds skipped by a seek, seconds past the video's end, and observations faster than four times the server's clock SHALL add nothing.
+A session's coverage SHALL count each second of the video once, when its midpoint has played. Seconds skipped by a seek and seconds past the video's end SHALL add nothing, and an observation that would leave the session holding more than four times the seconds since it opened, plus one, SHALL add nothing.
 
 #### Scenario: A seek to the end
 - **WHEN** a session plays 10 seconds, seeks to 90 and plays to the end of a 100-second video

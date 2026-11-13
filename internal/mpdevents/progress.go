@@ -19,7 +19,8 @@ const WatchedShare = 0.8
 // accepted progress, so a viewer can pause and come back without losing it.
 const sessionLife = 30 * time.Minute
 
-// maxPace is how much faster than the server's clock media time may advance.
+// maxPace bounds a session's coverage: it may hold no more seconds than this
+// many times the seconds since the session opened, plus one.
 const maxPace = 4
 
 // ErrPlaybackClosed means the session expired, never started, the media
@@ -33,27 +34,33 @@ type beginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
-// cover marks the whole seconds from `from` to `to` that lie within the video,
-// in a bitmap of one bit per second, and returns how many are now marked.
-func cover(bitmap []byte, from, to float64, duration int) int {
-	first := max(0, int(math.Floor(from)))
-	last := min(duration, int(math.Ceil(to)))
+// cover marks the seconds of the video whose midpoint lies between `from` and
+// `to`, in a bitmap of one bit per second, so back-to-back stretches mark each
+// second once whatever their fractions.
+func cover(bitmap []byte, from, to float64, duration int) {
+	first := max(0, int(math.Ceil(from-0.5)))
+	last := min(duration, int(math.Ceil(to-0.5)))
 	for second := first; second < last; second++ {
 		bitmap[second/8] |= 1 << (second % 8)
 	}
-	marked := 0
+}
+
+// marked counts the seconds a bitmap holds.
+func marked(bitmap []byte) int {
+	n := 0
 	for _, b := range bitmap {
-		marked += bits.OnesCount8(b)
+		n += bits.OnesCount8(b)
 	}
-	return marked
+	return n
 }
 
 // Played records one progress observation of a started, open session: the
 // seconds it covers, within the video's length, join the session's coverage.
 // Seconds already covered, and any stretch skipped by a seek, add nothing. An
-// observation that advances media time more than maxPace times faster than
-// the server's clock since the session's previous observation, or since it
-// opened, covers nothing. Progress keeps the session open for sessionLife.
+// observation that would leave the session holding more than maxPace times
+// the seconds since it opened adds nothing, so neither bursts nor a late
+// report can claim play faster than that overall, and network jitter loses
+// nothing. Progress keeps the session open for sessionLife.
 // Once a non-preview session covers WatchedShare of the video it enqueues
 // video.playback_completed, once per session. It returns when the session now
 // expires.
@@ -85,13 +92,13 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 
 	var class string
 	var coverage []byte
-	var since float64
+	var age float64
 	var completed bool
 	err = tx.QueryRow(ctx, `SELECT p.viewer_class,p.coverage,
- EXTRACT(EPOCH FROM clock_timestamp()-COALESCE(p.last_progress_at,p.created_at))::float8,p.completed_at IS NOT NULL
+ EXTRACT(EPOCH FROM clock_timestamp()-p.created_at)::float8,p.completed_at IS NOT NULL
  FROM mpd_playback_sessions p JOIN mpd_playback_facts f ON f.session_id=p.session_id
  WHERE p.session_id=$1 AND p.video_id=$2 AND p.media_version=$3 AND p.expires_at>now() FOR UPDATE OF p`,
-		p.SessionID, videoID, version).Scan(&class, &coverage, &since, &completed)
+		p.SessionID, videoID, version).Scan(&class, &coverage, &age, &completed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, ErrPlaybackClosed
 	} else if err != nil {
@@ -101,31 +108,31 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 		return time.Time{}, ErrPlaybackClosed
 	}
 
-	size := (max(duration, 0) + 7) / 8
-	if len(coverage) != size {
-		coverage = make([]byte, size)
+	// A length corrected since the session began keeps the seconds already played.
+	sized := make([]byte, (max(duration, 0)+7)/8)
+	copy(sized, coverage)
+	coverage = sized
+	next := append([]byte(nil), coverage...)
+	cover(next, p.PreviousTime, p.CurrentTime, duration)
+	if float64(marked(next)) <= maxPace*age+1 {
+		coverage = next
 	}
-	marked := 0
-	if since*maxPace >= p.CurrentTime-p.PreviousTime {
-		marked = cover(coverage, p.PreviousTime, p.CurrentTime, duration)
-	} else {
-		marked = cover(coverage, 0, 0, duration)
-	}
+	played := marked(coverage)
 
 	var expires time.Time
-	if err = tx.QueryRow(ctx, `UPDATE mpd_playback_sessions SET coverage=$2,last_progress_at=clock_timestamp(),
+	if err = tx.QueryRow(ctx, `UPDATE mpd_playback_sessions SET coverage=$2,
  expires_at=GREATEST(expires_at,now()+$3::interval) WHERE session_id=$1 RETURNING expires_at`,
 		p.SessionID, coverage, sessionLife.String()).Scan(&expires); err != nil {
 		return time.Time{}, err
 	}
 
-	if !completed && class != "staff_preview" && duration > 0 && float64(marked) >= WatchedShare*float64(duration) {
+	if !completed && class != "staff_preview" && duration > 0 && float64(played) >= WatchedShare*float64(duration) {
 		if _, err = tx.Exec(ctx, `UPDATE mpd_playback_sessions SET completed_at=clock_timestamp() WHERE session_id=$1`, p.SessionID); err != nil {
 			return time.Time{}, err
 		}
 		if _, err = tx.Exec(ctx, `SELECT mpd_enqueue_event($1,'video.playback_completed',$2,
  jsonb_build_object('playbackSessionId',$3::uuid,'viewerClass',$4::text,'watchedSeconds',$5::float8,'durationSeconds',$6::float8),
- $3::text||':completed')`, videoID, version, p.SessionID, class, float64(marked), float64(duration)); err != nil {
+ $3::text||':completed')`, videoID, version, p.SessionID, class, float64(played), float64(duration)); err != nil {
 			return time.Time{}, err
 		}
 	}
