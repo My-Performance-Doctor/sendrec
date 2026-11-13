@@ -200,12 +200,18 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 	}))
 	defer tokenServer.Close()
 	var denyGrant atomic.Bool
+	var displayName atomic.Value
+	displayName.Store("Dr Callback Staff")
 	grantServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if denyGrant.Load() {
 			w.WriteHeader(403)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(Grant{SchemaVersion: 1, StaffID: staffID, TenantID: tenantID, Capabilities: Capabilities{Read: true}, ValidUntil: time.Now().Add(30 * time.Second)})
+		name := displayName.Load().(string)
+		_ = json.NewEncoder(w).Encode(struct {
+			Grant
+			Profile Profile `json:"profile"`
+		}{Grant{SchemaVersion: 1, StaffID: staffID, TenantID: tenantID, Capabilities: Capabilities{Read: true}, ValidUntil: time.Now().Add(30 * time.Second)}, Profile{DisplayName: &name}})
 	}))
 	defer grantServer.Close()
 	h.cfg.AccessURL = grantServer.URL
@@ -231,6 +237,14 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 	if w.Code != 302 {
 		t.Fatalf("callback: %d %s", w.Code, w.Body.String())
 	}
+	assertName := func(want string) {
+		t.Helper()
+		var got string
+		if e := db.QueryRow(ctx, `SELECT name FROM users WHERE email='native@example.test'`).Scan(&got); e != nil || got != want {
+			t.Fatalf("staff name %q, want %q: %v", got, want, e)
+		}
+	}
+	assertName("Dr Callback Staff")
 	location := w.Header().Get("Location")
 	if strings.Contains(location, access) || strings.Contains(location, idToken) || !strings.Contains(location, "#mpd_code=") {
 		t.Fatal("unsafe callback redirect")
@@ -309,10 +323,12 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 		return w
 	}
 	futureToken := sign(map[string]any{"client_id": "future"})
+	displayName.Store("Dr Exchange Staff")
 	w = exchange("https://staff.example", futureToken)
 	if w.Code != 200 {
 		t.Fatalf("future exchange: %d %s", w.Code, w.Body.String())
 	}
+	assertName("Dr Exchange Staff")
 	var futureResponse struct {
 		AccessToken string `json:"accessToken"`
 	}

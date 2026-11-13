@@ -28,8 +28,9 @@ type Grant struct {
 	TenantID      string       `json:"tenantId"`
 	Capabilities  Capabilities `json:"capabilities"`
 	ValidUntil    time.Time    `json:"validUntil"`
-	// Profile is absent from mpd-api builds that predate it.
-	Profile *Profile `json:"profile,omitempty"`
+	// Profile is read by decodeGrant and not stored with the session. It is
+	// nil from mpd-api builds that predate it.
+	Profile *Profile `json:"-"`
 }
 
 // Profile is how mpd-api names the staff member to patients. A nil field means

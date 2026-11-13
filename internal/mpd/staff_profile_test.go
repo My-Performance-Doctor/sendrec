@@ -28,35 +28,51 @@ func jpegPhoto(t *testing.T, width, height int) []byte {
 
 func TestGrantProfile(t *testing.T) {
 	now := time.Now()
-	decode := func(profile string) *Grant {
+	decode := func(profile string) *Profile {
 		t.Helper()
 		raw := `{"schemaVersion":1,"staffId":"` + staffID + `","tenantId":"` + tenantID + `","capabilities":{"read":true},"validUntil":"` + now.Add(time.Minute).Format(time.RFC3339Nano) + `"` + profile + `}`
 		g, err := decodeGrant(strings.NewReader(raw), now, now.Add(time.Minute))
 		if err != nil {
-			t.Fatalf("grant refused: %v", err)
+			t.Fatalf("profile %s refused the grant: %v", profile, err)
 		}
-		return g
+		return g.Profile
 	}
-	if decode("").Profile != nil {
-		t.Error("a grant from an older mpd-api has no profile")
-	}
-	g := decode(`,"profile":{"displayName":" Dr Synthetic Staff ","photoVersion":"0f3a9c"}`)
-	if g.Profile == nil || *g.Profile.DisplayName != "Dr Synthetic Staff" || *g.Profile.PhotoVersion != "0f3a9c" {
-		t.Fatalf("profile not kept and trimmed: %+v", g.Profile)
-	}
-	g = decode(`,"profile":{"displayName":null,"photoVersion":null}`)
-	if g.Profile == nil || g.Profile.DisplayName != nil || g.Profile.PhotoVersion != nil {
-		t.Fatalf("an empty profile means no name and no photo: %+v", g.Profile)
-	}
-	for _, bad := range []string{`"   "`, `"Dr\nStaff"`, `"` + strings.Repeat("a", 101) + `"`} {
-		g = decode(`,"profile":{"displayName":` + bad + `,"photoVersion":"0f3a9c"}`)
-		if g.Profile == nil || g.Profile.DisplayName != nil || *g.Profile.PhotoVersion != "0f3a9c" {
-			t.Errorf("name %s should be dropped and the photo kept: %+v", bad, g.Profile)
+	str := func(p *string) string {
+		if p == nil {
+			return "<nil>"
 		}
+		return *p
 	}
-	for _, bad := range []string{`""`, `"../photo"`} {
-		if decode(`,"profile":{"displayName":"Dr Synthetic Staff","photoVersion":`+bad+`}`).Profile != nil {
-			t.Errorf("photo version %s should drop the profile without refusing the grant", bad)
+	long := strings.Repeat("é", maxNameRunes)
+	for _, tc := range []struct {
+		profile, name, version string
+		dropped                bool
+	}{
+		{profile: ``, dropped: true},
+		{profile: `,"profile":null`, dropped: true},
+		{profile: `,"profile":"x"`, dropped: true},
+		{profile: `,"profile":{"displayName":"Dr Synthetic Staff"}`, dropped: true},
+		{profile: `,"profile":{"photoVersion":5}`, dropped: true},
+		{profile: `,"profile":{"photoVersion":"../photo"}`, dropped: true},
+		{profile: `,"profile":{"photoVersion":""}`, dropped: true},
+		{profile: `,"profile":{"displayName":" Dr Synthetic Staff ","photoVersion":"0f3a9c"}`, name: "Dr Synthetic Staff", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":null,"photoVersion":null}`, name: "<nil>", version: "<nil>"},
+		{profile: `,"profile":{"photoVersion":null}`, name: "<nil>", version: "<nil>"},
+		{profile: `,"profile":{"displayName":"` + long + `","photoVersion":null}`, name: long, version: "<nil>"},
+		{profile: `,"profile":{"displayName":"` + long + `e","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":"   ","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":"Dr\nStaff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":5,"photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+	} {
+		got := decode(tc.profile)
+		if tc.dropped {
+			if got != nil {
+				t.Errorf("%s: profile kept", tc.profile)
+			}
+			continue
+		}
+		if got == nil || str(got.DisplayName) != tc.name || str(got.PhotoVersion) != tc.version {
+			t.Errorf("%s: got %+v", tc.profile, got)
 		}
 	}
 }

@@ -120,12 +120,12 @@ func (h *Handler) Exchange(w http.ResponseWriter, r *http.Request) {
 		refuse(w, r, "exchange", "provision", err)
 		return
 	}
-	h.applyProfile(r.Context(), p.UserID, raw, g.Profile)
 	sid, err := h.createSession(r.Context(), p, id, g, raw, "")
 	if err != nil {
 		refuse(w, r, "exchange", "session", ErrUnavailable)
 		return
 	}
+	h.applyProfile(r.Context(), p.UserID, raw, g.Profile)
 	h.respondSession(w, r, sid, false)
 }
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +227,6 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		refuse(w, r, "callback", "provision", e)
 		return
 	}
-	h.applyProfile(r.Context(), p.UserID, token.AccessToken, g.Profile)
 	if token.RefreshToken == "" {
 		refuse(w, r, "callback", "refresh_token_missing", ErrDenied)
 		return
@@ -237,6 +236,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		refuse(w, r, "callback", "session", ErrUnavailable)
 		return
 	}
+	h.applyProfile(r.Context(), p.UserID, token.AccessToken, g.Profile)
 	code, e := randomSecret()
 	if e != nil {
 		refuse(w, r, "callback", "handoff_code", ErrUnavailable)
