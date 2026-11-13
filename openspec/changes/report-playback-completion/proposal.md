@@ -5,7 +5,7 @@ MPD-460: Sami decided on 13 Nov 2026 that a video counts as watched once the pat
 ## What Changes
 
 - After a playback starts, the player reports the stretch it has played to `POST /api/watch/{shareToken}/playback-progress` every few seconds, and when playback pauses or seeks.
-- Each playback session keeps a map of the video's seconds it has played. Seconds already played, stretches skipped by a seek, and positions past the end add nothing. A session never holds more seconds than four times the time since it opened, so bursts cannot fake play and a late report still counts.
+- Each playback session keeps a map of the video's seconds it has played. Seconds already played, stretches skipped by a seek, and positions past the end add nothing. A session never holds more seconds than four times the time since its playback started, so bursts cannot fake play and a late report still counts. Once complete, progress only keeps the session open and the player stops reporting.
 - Once a session has played 80% of the video's seconds, SendRec enqueues `video.playback_completed` with `playbackSessionId`, `viewerClass`, `watchedSeconds` and `durationSeconds`, once per session.
 - Progress keeps the session open for 30 minutes. A session that never started, has expired, or whose media changed is refused.
 - Staff previews report no progress and never complete. A video of unknown length never completes.

@@ -20,12 +20,19 @@ const WatchedShare = 0.8
 const sessionLife = 30 * time.Minute
 
 // maxPace bounds a session's coverage: it may hold no more seconds than this
-// many times the seconds since the session opened, plus one.
+// many times the seconds since its playback started, plus one.
 const maxPace = 4
 
 // ErrPlaybackClosed means the session expired, never started, the media
 // changed or the video stopped being playable.
 var ErrPlaybackClosed = errors.New("playback session expired or media changed")
+
+// Progressed is when the session now expires, and whether it has completed,
+// after which the player need not report any more.
+type Progressed struct {
+	ExpiresAt time.Time `json:"expiresAt"`
+	Completed bool      `json:"completed"`
+}
 
 // ErrInvalidProgress means the observation was not advancing playback.
 var ErrInvalidProgress = errors.New("advancing playback is required")
@@ -58,23 +65,24 @@ func marked(bitmap []byte) int {
 // seconds it covers, within the video's length, join the session's coverage.
 // Seconds already covered, and any stretch skipped by a seek, add nothing. An
 // observation that would leave the session holding more than maxPace times
-// the seconds since it opened adds nothing, so neither bursts nor a late
-// report can claim play faster than that overall, and network jitter loses
-// nothing. Progress keeps the session open for sessionLife.
+// the seconds since its playback started adds nothing, so neither bursts nor
+// a late report can claim play faster than that overall, and network jitter
+// loses nothing. Progress keeps the session open for sessionLife; once the
+// session has completed it only does that, and reports completed.
 // Once a non-preview session covers WatchedShare of the video it enqueues
 // video.playback_completed, once per session. It returns when the session now
 // expires.
-func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (time.Time, error) {
+func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (Progressed, error) {
 	if !p.Valid() {
-		return time.Time{}, ErrInvalidProgress
+		return Progressed{}, ErrInvalidProgress
 	}
 	b, ok := db.(beginner)
 	if !ok {
-		return time.Time{}, errors.New("playback progress needs a transaction")
+		return Progressed{}, errors.New("playback progress needs a transaction")
 	}
 	tx, err := b.Begin(ctx)
 	if err != nil {
-		return time.Time{}, err
+		return Progressed{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -85,9 +93,9 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 	err = tx.QueryRow(ctx, `SELECT s.media_version,v.duration,s.published FROM videos v JOIN mpd_video_state s ON s.video_id=v.id
  WHERE v.id=$1 AND v.status='ready' AND s.deleted_at IS NULL FOR SHARE OF v,s`, videoID).Scan(&version, &duration, &published)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, ErrPlaybackClosed
+		return Progressed{}, ErrPlaybackClosed
 	} else if err != nil {
-		return time.Time{}, err
+		return Progressed{}, err
 	}
 
 	var class string
@@ -95,22 +103,35 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 	var age float64
 	var completed bool
 	err = tx.QueryRow(ctx, `SELECT p.viewer_class,p.coverage,
- EXTRACT(EPOCH FROM clock_timestamp()-p.created_at)::float8,p.completed_at IS NOT NULL
+ EXTRACT(EPOCH FROM clock_timestamp()-f.occurred_at)::float8,p.completed_at IS NOT NULL
  FROM mpd_playback_sessions p JOIN mpd_playback_facts f ON f.session_id=p.session_id
  WHERE p.session_id=$1 AND p.video_id=$2 AND p.media_version=$3 AND p.expires_at>now() FOR UPDATE OF p`,
 		p.SessionID, videoID, version).Scan(&class, &coverage, &age, &completed)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, ErrPlaybackClosed
+		return Progressed{}, ErrPlaybackClosed
 	} else if err != nil {
-		return time.Time{}, err
+		return Progressed{}, err
 	}
 	if !published && class != "staff_preview" {
-		return time.Time{}, ErrPlaybackClosed
+		return Progressed{}, ErrPlaybackClosed
 	}
 
-	// A length corrected since the session began keeps the seconds already played.
+	if completed {
+		var expires time.Time
+		if err = tx.QueryRow(ctx, `UPDATE mpd_playback_sessions SET expires_at=GREATEST(expires_at,now()+$2::interval)
+ WHERE session_id=$1 RETURNING expires_at`, p.SessionID, sessionLife.String()).Scan(&expires); err != nil {
+			return Progressed{}, err
+		}
+		return Progressed{ExpiresAt: expires, Completed: true}, tx.Commit(ctx)
+	}
+
+	// A length corrected since the session began keeps the seconds already
+	// played that the video still has.
 	sized := make([]byte, (max(duration, 0)+7)/8)
 	copy(sized, coverage)
+	if duration%8 != 0 && len(sized) > 0 {
+		sized[len(sized)-1] &= byte(1<<(duration%8)) - 1
+	}
 	coverage = sized
 	next := append([]byte(nil), coverage...)
 	cover(next, p.PreviousTime, p.CurrentTime, duration)
@@ -123,18 +144,19 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 	if err = tx.QueryRow(ctx, `UPDATE mpd_playback_sessions SET coverage=$2,
  expires_at=GREATEST(expires_at,now()+$3::interval) WHERE session_id=$1 RETURNING expires_at`,
 		p.SessionID, coverage, sessionLife.String()).Scan(&expires); err != nil {
-		return time.Time{}, err
+		return Progressed{}, err
 	}
 
-	if !completed && class != "staff_preview" && duration > 0 && float64(played) >= WatchedShare*float64(duration) {
+	done := class != "staff_preview" && duration > 0 && float64(played) >= WatchedShare*float64(duration)
+	if done {
 		if _, err = tx.Exec(ctx, `UPDATE mpd_playback_sessions SET completed_at=clock_timestamp() WHERE session_id=$1`, p.SessionID); err != nil {
-			return time.Time{}, err
+			return Progressed{}, err
 		}
 		if _, err = tx.Exec(ctx, `SELECT mpd_enqueue_event($1,'video.playback_completed',$2,
  jsonb_build_object('playbackSessionId',$3::uuid,'viewerClass',$4::text,'watchedSeconds',$5::float8,'durationSeconds',$6::float8),
  $3::text||':completed')`, videoID, version, p.SessionID, class, float64(played), float64(duration)); err != nil {
-			return time.Time{}, err
+			return Progressed{}, err
 		}
 	}
-	return expires, tx.Commit(ctx)
+	return Progressed{ExpiresAt: expires, Completed: done}, tx.Commit(ctx)
 }

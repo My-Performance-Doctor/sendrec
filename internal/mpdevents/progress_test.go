@@ -28,11 +28,11 @@ func published(t *testing.T, db *pgxpool.Pool, seconds int, preview bool) (strin
 	return id, s.ID
 }
 
-// step plays from one position to another. The session's opening is moved
-// back by the step's length first, so the server sees real-time pace.
+// step plays from one position to another. The session's playback start is
+// moved back by the step's length first, so the server sees real-time pace.
 func step(t *testing.T, db *pgxpool.Pool, id, session string, from, to float64) error {
 	t.Helper()
-	exec(t, db, `UPDATE mpd_playback_sessions SET created_at=created_at-make_interval(secs=>$2) WHERE session_id=$1`, session, to-from)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-make_interval(secs=>$2) WHERE session_id=$1`, session, to-from)
 	_, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: from, CurrentTime: to, ElapsedMilliseconds: int((to - from) * 1000)})
 	return err
 }
@@ -122,7 +122,9 @@ func TestPlayFasterThanTheClockCoversNothing(t *testing.T) {
 	ctx := context.Background()
 	id, session := published(t, db, 100, false)
 
-	// Straight after the session opened, eight seconds of media are far too fast.
+	// A session opened long before its playback started gains no budget from the wait.
+	exec(t, db, `UPDATE mpd_playback_sessions SET created_at=created_at-interval '5 minutes' WHERE session_id=$1`, session)
+	// Straight after playback started, eight seconds of media are far too fast.
 	if _, err := Played(ctx, db, id, Progress{SessionID: session, Playing: true, PreviousTime: 0, CurrentTime: 8, ElapsedMilliseconds: 8000}); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestALateReportStillCounts(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	id, session := published(t, db, 100, false)
-	exec(t, db, `UPDATE mpd_playback_sessions SET created_at=created_at-interval '10 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '10 seconds' WHERE session_id=$1`, session)
 
 	// Two five-second reports arrive back to back after ten seconds of play.
 	for _, from := range []float64{0, 5} {
@@ -164,6 +166,43 @@ func TestFractionalStretchesMarkEachSecondOnce(t *testing.T) {
 
 	if n := covered(t, db, session); n != 15 {
 		t.Fatalf("covered %d", n)
+	}
+}
+
+func TestAShortenedLengthDropsSecondsPastTheEnd(t *testing.T) {
+	db := testDB(t)
+	id, session := published(t, db, 12, false)
+	// Seconds 2 to 10: nine of twelve, short of 80%.
+	watch(t, db, id, session, 2, 11)
+	exec(t, db, `UPDATE videos SET duration=9 WHERE id=$1`, id)
+
+	if _, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 20, CurrentTime: 21, ElapsedMilliseconds: 1000}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := covered(t, db, session); n != 7 {
+		t.Fatalf("covered %d", n)
+	}
+}
+
+func TestACompletedSessionOnlyStaysOpen(t *testing.T) {
+	db := testDB(t)
+	id, session := published(t, db, 10, false)
+	watch(t, db, id, session, 0, 8)
+
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	progressed, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 8, CurrentTime: 10, ElapsedMilliseconds: 2000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !progressed.Completed {
+		t.Fatal("a completed session did not say so")
+	}
+	if n := covered(t, db, session); n != 8 {
+		t.Fatalf("covered %d after completion", n)
+	}
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
 	}
 }
 

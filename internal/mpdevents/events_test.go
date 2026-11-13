@@ -511,7 +511,7 @@ func TestContractFixturesMatchProducer(t *testing.T) {
 			t.Fatal(err)
 		}
 		// A one-second video played to 80% completes the anonymous session; a preview never does.
-		exec(t, db, `UPDATE mpd_playback_sessions SET created_at=created_at-interval '1 second' WHERE session_id=$1`, s.ID)
+		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1`, s.ID)
 		if _, err = Played(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.8, ElapsedMilliseconds: 800}); err != nil {
 			t.Fatal(err)
 		}

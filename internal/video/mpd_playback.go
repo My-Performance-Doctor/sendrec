@@ -66,7 +66,7 @@ func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 400, "invalid playback observation")
 		return
 	}
-	expires, err := mpdevents.Played(r.Context(), h.db, id, p)
+	progressed, err := mpdevents.Played(r.Context(), h.db, id, p)
 	if errors.Is(err, mpdevents.ErrPlaybackClosed) || errors.Is(err, mpdevents.ErrInvalidProgress) {
 		httputil.WriteError(w, 403, "invalid or expired playback observation")
 		return
@@ -75,5 +75,5 @@ func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	httputil.WriteJSON(w, 200, map[string]any{"expiresAt": expires})
+	httputil.WriteJSON(w, 200, progressed)
 }

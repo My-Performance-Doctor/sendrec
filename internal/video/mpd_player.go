@@ -49,7 +49,7 @@ async function start(){
 }
 async function activate(){if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token)timer=setInterval(function(){renew();},240000);}
 player.addEventListener('mpd-recording-change',function(){activate().catch(function(){if(preview)stop();});});
-player.addEventListener('playing',function(){observed={time:player.currentTime,wall:performance.now()};});
+player.addEventListener('playing',function(){flush();observed={time:player.currentTime,wall:performance.now()};});
 player.addEventListener('seeking',function(){flush();observed=null;});
 player.addEventListener('pause',function(){flush();observed=null;});
 player.addEventListener('error',function(){if(session&&!renewing)renew();});
@@ -60,19 +60,20 @@ player.addEventListener('timeupdate',async function(){
  var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
  if(elapsed<300||delta<0.2)return;
  if(delta>elapsed/1000*2.1){observed=null;return;}
- try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;observed={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
+ try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;seen={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
 });
 // After the start, a patient's link reports the stretch it has played every few seconds, and the stretch since the last
 // report when playback pauses or seeks, so MPD can tell when a session has played most of the video. A preview never
 // counts, so it reports nothing more.
-var seen=null;
+var seen=null, done=false, refused=0;
 function report(from,to){
- if(preview||!managed()||!session||!sent||!from||!to)return;
+ if(preview||done||!managed()||!session||!sent||!from||!to)return;
  var elapsed=to.wall-from.wall,delta=to.time-from.time;
  if(elapsed<250||elapsed>10000||delta<0.2||delta>elapsed/1000*2.1)return;
  request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:from.time,currentTime:to.time,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false})
-  .then(function(answer){if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;})
-  .catch(function(){if(session&&Date.parse(session.expiresAt)<=Date.now())newSession().catch(function(){});});
+  .then(function(answer){refused=0;if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;if(answer&&answer.completed)done=true;})
+  // Two refusals in a row, or a session past its time, mean the server closed it: open a new one, which starts again.
+  .catch(function(){refused++;if(session&&(refused>=2||Date.parse(session.expiresAt)<=Date.now())){refused=0;done=false;newSession().catch(function(){});}});
 }
 function flush(){if(observed&&seen&&seen.time>observed.time)report(observed,seen);seen=null;}
 // Closing or hiding the page reports the stretch since the last report; keepalive lets it outlive the page.
@@ -82,7 +83,7 @@ player.addEventListener('timeupdate',function(){
  if(preview||!managed()||!session||!sent||player.paused||player.seeking||renewing)return;
  var now={time:player.currentTime,wall:performance.now()};
  if(!observed||!seen){if(!observed)observed=now;seen=now;return;}
- if(now.time<seen.time||now.time-seen.time>(now.wall-seen.wall)/1000*2.1+0.5){observed=now;seen=now;return;}
+ if(now.time<seen.time||now.time-seen.time>(now.wall-seen.wall)/1000*2.1+0.5){flush();observed=now;seen=now;return;}
  seen=now;
  if(now.wall-observed.wall>=5000){report(observed,now);observed=now;}
 });
