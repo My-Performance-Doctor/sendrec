@@ -20,15 +20,8 @@ func derefString(s *string) string {
 	return *s
 }
 
-// initials skips a leading title, so "Dr Jane Smith" gives "JS".
 func initials(name string) string {
 	parts := strings.Fields(name)
-	if len(parts) > 1 {
-		switch strings.ToLower(strings.TrimSuffix(parts[0], ".")) {
-		case "dr", "prof":
-			parts = parts[1:]
-		}
-	}
 	if len(parts) == 0 {
 		return "?"
 	}
@@ -2302,12 +2295,14 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 	}
 	description := summaryStr
 	var creatorPhoto template.URL
+	creatorInitials := initials(creator)
 	if managed {
 		// A patient sees only the summary staff approved through mpd-api, never
 		// SendRec's own, and the page's description never carries it.
 		summaryStr, chapterList, summaryStatus = managedSummary(r.Context(), h.db, videoID)
 		description = ""
 		creatorPhoto = managedCreatorPhoto(r.Context(), h.db, ownerID)
+		creatorInitials = staffInitials(creator)
 	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
@@ -2335,7 +2330,7 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 		Title:              title,
 		VideoURL:           videoURL,
 		Creator:            creator,
-		CreatorInitials:    initials(creator),
+		CreatorInitials:    creatorInitials,
 		CreatorPhoto:       creatorPhoto,
 		Date:               createdAt.Format("02/01/2006"),
 		Nonce:              nonce,

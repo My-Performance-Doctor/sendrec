@@ -165,11 +165,14 @@ func TestWatchPage_Managed_ShowsTheStaffPhoto(t *testing.T) {
 	waitAndCheckExpectations(t, mock)
 }
 
-func TestInitials_SkipsTitle(t *testing.T) {
+func TestStaffInitials_SkipsTitle(t *testing.T) {
 	for name, want := range map[string]string{"Dr Jane Smith": "JS", "dr. jane smith": "JS", "Prof Lee": "L", "Dr": "D", "Drew Smith": "DS", "MPD staff": "MS"} {
-		if got := initials(name); got != want {
-			t.Errorf("initials(%q) = %q, want %q", name, got, want)
+		if got := staffInitials(name); got != want {
+			t.Errorf("staffInitials(%q) = %q, want %q", name, got, want)
 		}
+	}
+	if got := initials("Dr Jane Smith"); got != "DS" {
+		t.Errorf("unmanaged pages keep SendRec's initials, got %q", got)
 	}
 }
 

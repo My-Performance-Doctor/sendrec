@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
@@ -237,6 +238,18 @@ func managedCreatorPhoto(ctx context.Context, db database.DBTX, userID string) t
 		return ""
 	}
 	return template.URL("data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg))
+}
+
+// staffInitials skips the title mpd-api puts on a doctor's name, so
+// "Dr Jane Smith" gives "JS". Only managed pages use it.
+func staffInitials(name string) string {
+	if title, rest, ok := strings.Cut(strings.TrimSpace(name), " "); ok {
+		switch strings.ToLower(strings.TrimSuffix(title, ".")) {
+		case "dr", "prof":
+			return initials(rest)
+		}
+	}
+	return initials(name)
 }
 
 // watchPageCSS gives a managed recording's watch page MPD's light look over the
