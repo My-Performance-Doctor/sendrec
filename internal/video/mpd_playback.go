@@ -47,3 +47,28 @@ func (h *Handler) MPDPlaybackStart(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// MPDPlaybackProgress adds one progress observation to a playback session's
+// verified playing time and keeps the session open while the viewer plays, so
+// MPD learns when a session has played 80% of the video (mpdevents.Played).
+func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
+	var id string
+	if err := h.db.QueryRow(r.Context(), `SELECT id FROM videos WHERE share_token=$1 AND status='ready'`, chi.URLParam(r, "shareToken")).Scan(&id); err != nil {
+		httputil.WriteError(w, 404, "video not found")
+		return
+	}
+	var p mpdevents.Progress
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		httputil.WriteError(w, 400, "invalid playback observation")
+		return
+	}
+	expires, err := mpdevents.Played(r.Context(), h.db, id, p)
+	if err != nil {
+		httputil.WriteError(w, 403, "invalid or expired playback observation")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httputil.WriteJSON(w, 200, map[string]any{"expiresAt": expires})
+}

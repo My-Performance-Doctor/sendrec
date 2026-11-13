@@ -31,7 +31,7 @@ const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff
 const mpdPlayerJS = `(function(){
 'use strict';
 var player=document.getElementById('player');if(!player)return;
-var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null;
+var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null, progressing=false;
 function managed(){return preview||player.dataset.mpdManaged==='true';}
 function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
 function stop(){player.pause();player.removeAttribute('src');player.load();status('Access ended. Sign in again and open a new preview.');if(timer)clearInterval(timer);}
@@ -60,7 +60,17 @@ player.addEventListener('timeupdate',async function(){
  var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
  if(elapsed<300||delta<0.2)return;
  if(delta>elapsed/1000*2.1){observed=null;return;}
- try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;}catch(e){observed=null;}
+ try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;observed={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
+});
+// After the start, a patient's link reports contiguous playing time every few seconds, so MPD can tell when a
+// session has played most of the video. A preview never counts, so it reports nothing more.
+player.addEventListener('timeupdate',async function(){
+ if(preview||!managed()||!session||!sent||progressing||player.paused||player.seeking||renewing)return;
+ var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
+ if(elapsed<5000||delta<0.2)return;
+ if(elapsed>10000||delta>elapsed/1000*2.1){observed={time:player.currentTime,wall:now};return;}
+ progressing=true;
+ try{var answer=await request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;observed={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;if(Date.parse(session.expiresAt)<=Date.now())newSession().catch(function(){});}finally{progressing=false;}
 });
 start().catch(function(){if(preview)stop();});
 })();`
