@@ -24,13 +24,17 @@ SendRec SHALL copy the staff member's display name and photo from the access gra
 - **THEN** the name and the photo do not change
 
 #### Scenario: A bad name
-- **WHEN** the profile's display name is blank, has control characters or is over 100 bytes
+- **WHEN** the profile's display name is not a string, is blank, has control characters or is over 256 characters
 - **THEN** access continues, the user keeps their current name, and SendRec still applies the photo
 
 #### Scenario: A bad photo version
-- **WHEN** the profile's photo version is not 1 to 64 letters, digits, `-` or `_`
+- **WHEN** the profile has no photo version, or one that is neither null nor 1 to 64 letters, digits, `-` or `_`
 - **THEN** access continues and SendRec ignores the whole profile
+
+#### Scenario: A slow photo read
+- **WHEN** the photo read is slow or hangs
+- **THEN** sign-in and the request that refreshed the grant do not wait for it, and only one read per user runs at a time
 
 #### Scenario: A failed photo read
 - **WHEN** the photo read fails, or returns anything other than a JPEG of at most 64 KiB and 512 px a side
-- **THEN** access continues, SendRec keeps the stored photo, and the next grant tries again
+- **THEN** access continues, SendRec keeps the stored photo, and it reads that version again no sooner than five minutes later

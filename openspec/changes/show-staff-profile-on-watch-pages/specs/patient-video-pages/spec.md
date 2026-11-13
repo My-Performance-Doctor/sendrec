@@ -13,4 +13,4 @@ A managed recording's watch page SHALL show its owner's stored staff photo besid
 
 #### Scenario: Unmanaged share
 - **WHEN** a viewer opens an unmanaged share
-- **THEN** the page does not read or show a staff photo
+- **THEN** the page does not read or show a staff photo, and its initials keep any leading title
