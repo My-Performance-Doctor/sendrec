@@ -221,6 +221,7 @@ func TestWatchPage_Managed_ShowsTheApprovedSummaryNotSendRecs(t *testing.T) {
 		))
 	expectViewRecording(mock, "vid-1")
 	expectManagedSummary(mock, &patientSummary{Text: "Your sleep looks steady.", Points: []patientSummaryPoint{{Start: 7, Text: "Keep a regular bedtime."}}})
+	expectCreatorPhoto(mock, nil)
 
 	handler := NewHandler(mock, &mockStorage{downloadURL: "https://s3.example.com/video.webm"}, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	req := managedWatchRequest(shareToken)

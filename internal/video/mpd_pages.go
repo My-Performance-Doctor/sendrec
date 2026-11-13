@@ -1,10 +1,16 @@
 package video
 
 import (
+	"context"
+	"encoding/base64"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/httputil"
 )
 
@@ -220,6 +226,32 @@ func writeMPDUnavailablePage(w http.ResponseWriter, r *http.Request, status int)
 	}
 }
 
+// managedCreatorPhoto is the recording owner's staff photo from MPD sign-in, as
+// a data URL, or "" when there is none. Inlining it keeps the photo behind the
+// page's own access check.
+func managedCreatorPhoto(ctx context.Context, db database.DBTX, userID string) template.URL {
+	var jpeg []byte
+	if err := db.QueryRow(ctx, `SELECT jpeg FROM mpd_staff_photos WHERE user_id=$1`, userID).Scan(&jpeg); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("mpd: staff photo unavailable", "error", err)
+		}
+		return ""
+	}
+	return template.URL("data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg))
+}
+
+// staffInitials skips the title mpd-api puts on a doctor's name, so
+// "Dr Jane Smith" gives "JS". Only managed pages use it.
+func staffInitials(name string) string {
+	if title, rest, ok := strings.Cut(strings.TrimSpace(name), " "); ok {
+		switch strings.ToLower(strings.TrimSuffix(title, ".")) {
+		case "dr", "prof":
+			return initials(rest)
+		}
+	}
+	return initials(name)
+}
+
 // watchPageCSS gives a managed recording's watch page MPD's light look over the
 // page's dark defaults. It goes through the custom CSS slot so the upstream
 // template stays as it is. The player keeps its dark controls.
@@ -243,6 +275,8 @@ const mpdWatchCSS = mpdFontCSS + `
         .video-meta-name, .comment-author, .comment-body, .transcript-header, .transcript-text, .comment-form textarea,
         .comment-form input, .reaction-btn, .emoji-trigger { color: #103340; }
         .video-meta-sep, .branding, .emoji-category { color: #52665f; }
+        .video-meta-avatar { width: 36px; height: 36px; font-size: 13px; }
+        img.video-meta-avatar { object-fit: cover; }
         .branding { border-top-color: rgb(47 65 52 / 16%); }
         .comment, .comment-form textarea, .comment-form input, .reaction-btn, .comment.emoji-reaction, .emoji-trigger, .emoji-grid { border-color: rgb(47 65 52 / 16%); }
         .emoji-grid { background: #fff; }

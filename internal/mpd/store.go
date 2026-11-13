@@ -192,6 +192,7 @@ func (h *Handler) validateSession(ctx context.Context, sid string) (*session, er
 	s.Grant = *g
 	s.GrantExpiry = g.ValidUntil
 	s.Capabilities = g.Capabilities
+	h.applyProfile(ctx, s.UserID, raw, g.Profile)
 	return s, nil
 }
 func (h *Handler) ValidateClassification(ctx context.Context, raw string) (*Principal, error) {

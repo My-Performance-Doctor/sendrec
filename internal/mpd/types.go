@@ -28,6 +28,16 @@ type Grant struct {
 	TenantID      string       `json:"tenantId"`
 	Capabilities  Capabilities `json:"capabilities"`
 	ValidUntil    time.Time    `json:"validUntil"`
+	// Profile is read by decodeGrant and not stored with the session. It is
+	// nil from mpd-api builds that predate it.
+	Profile *Profile `json:"-"`
+}
+
+// Profile is how mpd-api names the staff member to patients. A nil field means
+// mpd-api has no value for it.
+type Profile struct {
+	DisplayName  *string `json:"displayName"`
+	PhotoVersion *string `json:"photoVersion"`
 }
 type Principal struct {
 	UserID, OrganizationID, StaffID, TenantID, SessionID string

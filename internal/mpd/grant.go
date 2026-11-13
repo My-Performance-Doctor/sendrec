@@ -9,9 +9,14 @@ import (
 
 func validUUID(v string) bool { var u pgtype.UUID; return u.Scan(v) == nil && u.Valid }
 func decodeGrant(body io.Reader, now, tokenExpiry time.Time) (*Grant, error) {
-	var g Grant
+	var wire struct {
+		Grant
+		Profile json.RawMessage `json:"profile"`
+	}
 	d := json.NewDecoder(io.LimitReader(body, 16385))
-	if d.Decode(&g) != nil || g.SchemaVersion != 1 || !validUUID(g.StaffID) || !validUUID(g.TenantID) || !g.ValidUntil.After(now) || !g.Capabilities.Any() {
+	err := d.Decode(&wire)
+	g := wire.Grant
+	if err != nil || g.SchemaVersion != 1 || !validUUID(g.StaffID) || !validUUID(g.TenantID) || !g.ValidUntil.After(now) || !g.Capabilities.Any() {
 		return nil, ErrDenied
 	}
 	var extra any
@@ -27,5 +32,6 @@ func decodeGrant(body io.Reader, now, tokenExpiry time.Time) (*Grant, error) {
 	if !g.ValidUntil.After(now) {
 		return nil, ErrDenied
 	}
+	g.Profile = parseProfile(wire.Profile)
 	return &g, nil
 }

@@ -35,6 +35,43 @@
           ],
           "title": "VideoCapabilities",
           "type": "object"
+        },
+        "StaffProfile": {
+          "additionalProperties": false,
+          "properties": {
+            "displayName": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The name Staff OS shows, with \"Dr\" for doctors. Null when the staff member has no first or last name. Never the email address.",
+              "title": "Displayname"
+            },
+            "photoVersion": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque. Changes when the photo changes. Null when there is no photo. SendRec reads the photo from GET /api/v1/staff/video-access/photo only when this changes.",
+              "title": "Photoversion"
+            }
+          },
+          "required": [
+            "displayName",
+            "photoVersion"
+          ],
+          "title": "StaffProfile",
+          "type": "object"
         }
       },
       "properties": {
@@ -61,6 +98,10 @@
           "format": "date-time",
           "title": "Validuntil",
           "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/StaffProfile",
+          "description": "Optional. A grant from an older mpd-api has none."
         }
       },
       "required": [
@@ -276,7 +317,11 @@
         "manageWorkspace": false,
         "readPassword": true
       },
-      "validUntil": "2030-01-01T00:00:30Z"
+      "validUntil": "2030-01-01T00:00:30Z",
+      "profile": {
+        "displayName": "Dr Synthetic Staff",
+        "photoVersion": "9b2f4c1d0e8a7b6c5d4e3f2a1b0c9d8e"
+      }
     },
     "readyEvent": {
       "schemaVersion": 1,
