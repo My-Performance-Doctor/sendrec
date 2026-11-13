@@ -1,6 +1,6 @@
 ## 1. Staff profile from the grant
 
-- [x] 1.1 Accept an optional `profile` in the access grant, and drop a bad one without refusing access; test it.
+- [x] 1.1 Accept an optional `profile` in the access grant. Drop a bad name or a profile with a bad photo version, without refusing access; test it.
 - [x] 1.2 Add `mpd_staff_photos` in a migration.
 - [x] 1.3 Apply the profile on sign-in and on each grant refresh: the name, then the photo only when its version changes; test it against a database.
 

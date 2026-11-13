@@ -48,15 +48,15 @@ func TestGrantProfile(t *testing.T) {
 	if g.Profile == nil || g.Profile.DisplayName != nil || g.Profile.PhotoVersion != nil {
 		t.Fatalf("an empty profile means no name and no photo: %+v", g.Profile)
 	}
-	for _, bad := range []string{
-		`{"displayName":"   "}`,
-		`{"displayName":"Dr\nStaff"}`,
-		`{"displayName":"` + strings.Repeat("a", 101) + `"}`,
-		`{"photoVersion":""}`,
-		`{"photoVersion":"../photo"}`,
-	} {
-		if decode(`,"profile":`+bad).Profile != nil {
-			t.Errorf("profile %s should be dropped without refusing the grant", bad)
+	for _, bad := range []string{`"   "`, `"Dr\nStaff"`, `"` + strings.Repeat("a", 101) + `"`} {
+		g = decode(`,"profile":{"displayName":` + bad + `,"photoVersion":"0f3a9c"}`)
+		if g.Profile == nil || g.Profile.DisplayName != nil || *g.Profile.PhotoVersion != "0f3a9c" {
+			t.Errorf("name %s should be dropped and the photo kept: %+v", bad, g.Profile)
+		}
+	}
+	for _, bad := range []string{`""`, `"../photo"`} {
+		if decode(`,"profile":{"displayName":"Dr Synthetic Staff","photoVersion":`+bad+`}`).Profile != nil {
+			t.Errorf("photo version %s should drop the profile without refusing the grant", bad)
 		}
 	}
 }

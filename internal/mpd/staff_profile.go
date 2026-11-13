@@ -23,14 +23,16 @@ const (
 
 var photoVersionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-// clean trims the display name and reports whether every field is usable.
+// clean trims the display name and drops a bad one, which keeps the last name.
+// It reports whether the photo version is usable; a null one would remove the
+// photo, so a bad one cannot stand in for it.
 func (p *Profile) clean() bool {
 	if p.DisplayName != nil {
 		name := strings.TrimSpace(*p.DisplayName)
-		if name == "" || len(name) > maxNameBytes || strings.IndexFunc(name, unicode.IsControl) >= 0 {
-			return false
-		}
 		p.DisplayName = &name
+		if name == "" || len(name) > maxNameBytes || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			p.DisplayName = nil
+		}
 	}
 	return p.PhotoVersion == nil || photoVersionPattern.MatchString(*p.PhotoVersion)
 }
