@@ -243,7 +243,8 @@ const mpdWatchCSS = mpdFontCSS + `
         .video-meta-name, .comment-author, .comment-body, .transcript-header, .transcript-text, .comment-form textarea,
         .comment-form input, .reaction-btn, .emoji-trigger { color: #103340; }
         .video-meta-sep, .branding, .emoji-category { color: #52665f; }
-        .branding { border-top-color: rgb(47 65 52 / 16%); }
+        .branding { border-top: 0; padding-top: 0; font-size: 0.6875rem; }
+        .branding a { color: inherit; }
         .comment, .comment-form textarea, .comment-form input, .reaction-btn, .comment.emoji-reaction, .emoji-trigger, .emoji-grid { border-color: rgb(47 65 52 / 16%); }
         .emoji-grid { background: #fff; }
         .comment-form textarea::placeholder, .comment-form input::placeholder { color: #6b7a74; }
