@@ -36,7 +36,7 @@ function managed(){return preview||player.dataset.mpdManaged==='true';}
 function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
 function stop(){player.pause();player.removeAttribute('src');player.load();status('Access ended. Sign in again and open a new preview.');if(timer)clearInterval(timer);}
 function share(){if(player.dataset.shareToken)return player.dataset.shareToken;var parts=location.pathname.split('/');return parts.length===3?parts[2]:'';}
-async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store'});if(!response.ok)throw new Error('Access unavailable');if(response.status===204)return {};return response.json();}
+async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',keepalive:body!==undefined});if(!response.ok)throw new Error('Access unavailable');if(response.status===204)return {};return response.json();}
 function endpoint(suffix){return preview?'/api/mpd/preview/'+suffix:'/api/watch/'+encodeURIComponent(share())+'/'+(suffix==='session'?'playback-session':suffix);}
 async function newSession(){if(!managed())return;var token=share();activeToken=token;session=null;sent=false;observed=null;var result=await request(endpoint('session'),{});if(!managed()||!preview&&share()!==token)return;session=result;}
 async function renew(){if(!managed())return;if(renewing)return renewing;var token=share();renewing=(async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return;var position=player.currentTime, paused=player.paused;await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});if(!paused)await player.play();if(session&&media.mediaVersion&&session.mediaVersion!==media.mediaVersion){await newSession();}if(media.transcriptUrl){var track=player.querySelector('track');if(!track){track=document.createElement('track');track.kind='subtitles';track.srclang='en';track.label='Subtitles';player.appendChild(track);}track.src=media.transcriptUrl;}return media;})().catch(function(){if(managed()&&share()===token)stop();}).finally(function(){renewing=null;});return renewing;}
@@ -49,9 +49,9 @@ async function start(){
 }
 async function activate(){if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token)timer=setInterval(function(){renew();},240000);}
 player.addEventListener('mpd-recording-change',function(){activate().catch(function(){if(preview)stop();});});
-player.addEventListener('playing',function(){observed={time:player.currentTime,wall:performance.now()};});
-player.addEventListener('seeking',function(){observed=null;});
-player.addEventListener('pause',function(){observed=null;});
+player.addEventListener('playing',function(){flush();observed={time:player.currentTime,wall:performance.now()};});
+player.addEventListener('seeking',function(){flush();observed=null;});
+player.addEventListener('pause',function(){flush();observed=null;});
 player.addEventListener('error',function(){if(session&&!renewing)renew();});
 player.addEventListener('timeupdate',async function(){
  if(!preview&&activeToken!==share()){await activate();return;}
@@ -60,7 +60,32 @@ player.addEventListener('timeupdate',async function(){
  var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
  if(elapsed<300||delta<0.2)return;
  if(delta>elapsed/1000*2.1){observed=null;return;}
- try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;}catch(e){observed=null;}
+ try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;seen={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
+});
+// After the start, a patient's link reports the stretch it has played every few seconds, and the stretch since the last
+// report when playback pauses or seeks, so MPD can tell when a session has played most of the video. A preview never
+// counts, so it reports nothing more.
+var seen=null, done=false, refused=0;
+function report(from,to){
+ if(preview||done||!managed()||!session||!sent||!from||!to)return;
+ var elapsed=to.wall-from.wall,delta=to.time-from.time;
+ if(elapsed<250||elapsed>10000||delta<0.2||delta>elapsed/1000*2.1)return;
+ request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:from.time,currentTime:to.time,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false})
+  .then(function(answer){refused=0;if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;if(answer&&answer.completed)done=true;})
+  // Two refusals in a row, or a session past its time, mean the server closed it: open a new one, which starts again.
+  .catch(function(){refused++;if(session&&(refused>=2||Date.parse(session.expiresAt)<=Date.now())){refused=0;done=false;newSession().catch(function(){});}});
+}
+function flush(){if(observed&&seen&&seen.time>observed.time)report(observed,seen);seen=null;}
+// Closing or hiding the page reports the stretch since the last report; keepalive lets it outlive the page.
+addEventListener('pagehide',function(){flush();observed=null;});
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden'){flush();observed=null;}});
+player.addEventListener('timeupdate',function(){
+ if(preview||!managed()||!session||!sent||player.paused||player.seeking||renewing)return;
+ var now={time:player.currentTime,wall:performance.now()};
+ if(!observed||!seen){if(!observed)observed=now;seen=now;return;}
+ if(now.time<seen.time||now.time-seen.time>(now.wall-seen.wall)/1000*2.1+0.5){flush();observed=now;seen=now;return;}
+ seen=now;
+ if(now.wall-observed.wall>=5000){report(observed,now);observed=now;}
 });
 start().catch(function(){if(preview)stop();});
 })();`

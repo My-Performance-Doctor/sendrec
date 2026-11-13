@@ -2,7 +2,6 @@ package mpdevents
 
 import (
 	"context"
-	"errors"
 	"math"
 	"time"
 
@@ -50,7 +49,7 @@ func (p Progress) Valid() bool {
 // statement. Locking the video serializes this with deletion and media edits.
 func Accept(ctx context.Context, db database.DBTX, videoID string, p Progress) error {
 	if !p.Valid() {
-		return errors.New("advancing playback is required")
+		return ErrInvalidProgress
 	}
 	var accepted bool
 	err := db.QueryRow(ctx, `WITH locked AS MATERIALIZED (
@@ -70,7 +69,7 @@ func Accept(ctx context.Context, db database.DBTX, videoID string, p Progress) e
 		return err
 	}
 	if !accepted {
-		return errors.New("playback session expired or media changed")
+		return ErrPlaybackClosed
 	}
 	return nil
 }

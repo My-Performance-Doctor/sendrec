@@ -90,6 +90,7 @@
             "video.ready",
             "video.transcript_ready",
             "video.playback_started",
+            "video.playback_completed",
             "video.deleted"
           ],
           "title": "Eventtype",

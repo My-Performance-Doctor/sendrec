@@ -501,12 +501,18 @@ func TestContractFixturesMatchProducer(t *testing.T) {
 	id := video(t, db, user, org, "ready")
 	exec(t, db, `UPDATE videos SET transcript_generation=2,transcript_published_generation=2,transcript_status='ready',transcript_key='synthetic.vtt' WHERE id=$1`, id)
 	exec(t, db, `UPDATE mpd_video_state SET published=true,published_at=now() WHERE video_id=$1`, id)
+	exec(t, db, `UPDATE videos SET duration=1 WHERE id=$1`, id)
 	for _, preview := range []bool{false, true} {
 		s, err := NewSession(ctx, db, id, preview)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err = Accept(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.5, ElapsedMilliseconds: 500}); err != nil {
+			t.Fatal(err)
+		}
+		// A one-second video played to 80% completes the anonymous session; a preview never does.
+		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1`, s.ID)
+		if _, err = Played(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.8, ElapsedMilliseconds: 800}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -544,7 +550,7 @@ func TestContractFixturesMatchProducer(t *testing.T) {
 		event["eventId"] = match["eventId"]
 		event["videoId"] = match["videoId"]
 		event["occurredAt"] = match["occurredAt"]
-		if event["eventType"] == "video.playback_started" {
+		if event["eventType"] == "video.playback_started" || event["eventType"] == "video.playback_completed" {
 			event["data"].(map[string]any)["playbackSessionId"] = match["data"].(map[string]any)["playbackSessionId"]
 		}
 		want, _ := json.Marshal(match)
