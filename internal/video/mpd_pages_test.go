@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/httputil"
 )
@@ -104,6 +105,7 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	expectManagedWatchRow(mock, shareToken, "Sleep check-in", &password, nil)
 	expectViewRecording(mock, "vid-1")
 	expectManagedSummary(mock, nil)
+	expectCreatorPhoto(mock, nil)
 
 	handler := NewHandler(mock, &mockStorage{downloadURL: "https://s3.example.com/video.webm"}, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
 	req := managedWatchRequest(shareToken)
@@ -111,6 +113,9 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	rec := serveWatchPage(handler, req)
 
 	body := rec.Body.String()
+	if !strings.Contains(body, `<span class="video-meta-avatar">A</span>`) {
+		t.Error("a staff member without a photo keeps their initials")
+	}
 	if !strings.Contains(body, "<video") || !strings.Contains(body, "--brand-bg: #f4f7f6") || !strings.Contains(body, "/images/mpd-orb.svg") {
 		t.Error("expected the video with MPD's look")
 	}
@@ -121,6 +126,51 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 		t.Error("the footer should offer the source, not credit SendRec")
 	}
 	waitAndCheckExpectations(t, mock)
+}
+
+func expectCreatorPhoto(mock pgxmock.PgxPoolIface, jpeg []byte) {
+	query := mock.ExpectQuery(`SELECT jpeg FROM mpd_staff_photos`).WithArgs("owner-user-id")
+	if jpeg == nil {
+		query.WillReturnError(pgx.ErrNoRows)
+		return
+	}
+	query.WillReturnRows(pgxmock.NewRows([]string{"jpeg"}).AddRow(jpeg))
+}
+
+func TestWatchPage_Managed_ShowsTheStaffPhoto(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(false)
+	password, _ := hashSharePassword("K7QM-2XPA-9RTF-HD4W")
+	shareToken := "managedphoto"
+	expectManagedWatchRow(mock, shareToken, "Sleep check-in", &password, nil)
+	expectViewRecording(mock, "vid-1")
+	expectManagedSummary(mock, nil)
+	expectCreatorPhoto(mock, []byte{0xff, 0xd8, 0xff})
+
+	handler := NewHandler(mock, &mockStorage{downloadURL: "https://s3.example.com/video.webm"}, testBaseURL, 0, 0, 0, 0, testHMACSecret, false)
+	req := managedWatchRequest(shareToken)
+	req.AddCookie(&http.Cookie{Name: watchCookieName(shareToken), Value: signWatchCookie(testHMACSecret, shareToken, password)})
+	body := serveWatchPage(handler, req).Body.String()
+
+	if !strings.Contains(body, `<img class="video-meta-avatar" src="data:image/jpeg;base64,/9j/" alt=""`) {
+		t.Error("expected the staff photo inline beside the name")
+	}
+	if strings.Contains(body, `<span class="video-meta-avatar">`) {
+		t.Error("the photo replaces the initials")
+	}
+	waitAndCheckExpectations(t, mock)
+}
+
+func TestInitials_SkipsTitle(t *testing.T) {
+	for name, want := range map[string]string{"Dr Jane Smith": "JS", "dr. jane smith": "JS", "Prof Lee": "L", "Dr": "D", "Drew Smith": "DS", "MPD staff": "MS"} {
+		if got := initials(name); got != want {
+			t.Errorf("initials(%q) = %q, want %q", name, got, want)
+		}
+	}
 }
 
 func TestWatchPage_UnmanagedKeepsSendRecPages(t *testing.T) {
