@@ -27,5 +27,10 @@ func decodeGrant(body io.Reader, now, tokenExpiry time.Time) (*Grant, error) {
 	if !g.ValidUntil.After(now) {
 		return nil, ErrDenied
 	}
+	// A bad profile only changes what patients see, so it is dropped rather than
+	// refusing access.
+	if g.Profile != nil && !g.Profile.clean() {
+		g.Profile = nil
+	}
 	return &g, nil
 }

@@ -28,6 +28,15 @@ type Grant struct {
 	TenantID      string       `json:"tenantId"`
 	Capabilities  Capabilities `json:"capabilities"`
 	ValidUntil    time.Time    `json:"validUntil"`
+	// Profile is absent from mpd-api builds that predate it.
+	Profile *Profile `json:"profile,omitempty"`
+}
+
+// Profile is how mpd-api names the staff member to patients. A nil field means
+// mpd-api has no value for it.
+type Profile struct {
+	DisplayName  *string `json:"displayName"`
+	PhotoVersion *string `json:"photoVersion"`
 }
 type Principal struct {
 	UserID, OrganizationID, StaffID, TenantID, SessionID string
