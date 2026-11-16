@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -158,5 +160,33 @@ func TestWhisperModelPath(t *testing.T) {
 	customPath := whisperModelPath()
 	if customPath != "/custom/model.bin" {
 		t.Errorf("expected custom path %q, got %q", "/custom/model.bin", customPath)
+	}
+}
+
+// An encode beside whisper on a 2 vCPU task slowed both badly. At nice 19,
+// whisper takes only the CPU an encode leaves. nice execs whisper-cli, so the
+// process the context kills is whisper itself.
+func TestWhisperCommand_RunsAtLowestPriority(t *testing.T) {
+	dir := t.TempDir()
+	nice := filepath.Join(dir, "nice")
+	if err := os.WriteFile(nice, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got := whisperCommand("-m", "model.bin")
+	want := []string{nice, "-n", "19", "whisper-cli", "-m", "model.bin"}
+	if !slices.Equal(got, want) {
+		t.Errorf("whisperCommand = %q, want %q", got, want)
+	}
+}
+
+func TestWhisperCommand_WithoutNice(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	got := whisperCommand("-m", "model.bin")
+	want := []string{"whisper-cli", "-m", "model.bin"}
+	if !slices.Equal(got, want) {
+		t.Errorf("whisperCommand = %q, want %q", got, want)
 	}
 }

@@ -335,6 +335,12 @@ func main() {
 	<-shutdownCh
 	slog.Info("shutting down")
 
+	// First, while the database is surely reachable: ECS allows 30 seconds
+	// before it kills the task.
+	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
+	requeueCancel()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

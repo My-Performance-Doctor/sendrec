@@ -116,7 +116,7 @@ func segmentsToVTT(segments []TranscriptSegment) string {
 	return b.String()
 }
 
-func processTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, videoID, fileKey string, version int, userID, shareToken, language string, aiEnabled bool, generations ...int) {
+func processTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, videoID, fileKey string, version, duration int, userID, shareToken, language string, aiEnabled bool, generations ...int) {
 	generation := 0
 	if len(generations) > 0 {
 		generation = generations[0]
@@ -137,7 +137,7 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 	// The failure is recorded on the worker's context, not the job's: a job
 	// that ran out of time still has to say so. BG-07.
 	workerCtx := ctx
-	ctx, cancel := context.WithTimeout(ctx, transcriptionJobTimeout)
+	ctx, cancel := context.WithTimeout(ctx, transcriptionTimeout(duration))
 	defer cancel()
 
 	setFailed := func() {
