@@ -67,6 +67,24 @@ func encodeTimeout(durationSeconds int) time.Duration {
 	return perJobTimeout + time.Duration(extra)*time.Second
 }
 
+// claimEncode takes the video's encode lease for a conversion. It fails while
+// another conversion holds a lease younger than its deadline plus a minute: the
+// sweep on each task picked any video older than 5 minutes and repeated encodes
+// still running, three at once for one production recording. A dead task's
+// lease still runs out, so the sweep recovers its video. Publishing or recording
+// a failure releases the lease.
+func claimEncode(ctx context.Context, db database.DBTX, videoID string, duration int) (bool, error) {
+	tag, err := db.Exec(ctx,
+		`UPDATE videos SET encode_started_at = now()
+		 WHERE id = $1 AND (encode_started_at IS NULL OR encode_started_at < now() - make_interval(secs => $2::float8))`,
+		videoID, (encodeTimeout(duration) + time.Minute).Seconds(),
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // maxTranscodeAttempts bounds how often a single video is fed to ffmpeg before
 // it is abandoned. Without it a corrupt upload is retried on every worker tick
 // forever.
@@ -129,7 +147,7 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, file
 	err := db.QueryRow(ctx,
 		`UPDATE videos
 		 SET transcode_attempts = CASE WHEN $3 THEN $4 ELSE transcode_attempts + 1 END,
-		     transcode_error = $2,
+		     transcode_error = $2, encode_started_at = NULL,
 		     updated_at = now()
 		 WHERE id = $1 AND file_key = $5 AND status != 'deleted'
 		 RETURNING transcode_attempts`,
@@ -213,6 +231,13 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 		slog.Warn("transcode: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
 		return
 	}
+	if claimed, err := claimEncode(ctx, db, videoID, duration); err != nil {
+		slog.Error("transcode: failed to claim", "video_id", videoID, "error", err)
+		return
+	} else if !claimed {
+		slog.Info("transcode: skipped, another conversion is running", "video_id", videoID)
+		return
+	}
 
 	slog.Info("transcode: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -263,7 +288,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	newFileKey := replacementFileKey(fileKey, ".mp4")
 
 	switched, err := publishConversion(ctx, db, storage, "transcode", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true,
+		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, encode_started_at = NULL,
 		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)

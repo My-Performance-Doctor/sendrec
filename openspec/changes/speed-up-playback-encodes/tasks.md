@@ -1,7 +1,7 @@
 ## 1. One conversion per video
 
-- [ ] 1.1 Add `videos.encode_started_at` in migration 78.
-- [ ] 1.2 Claim the lease in `NormalizeVideoAsync` and `TranscodeWebMAsync` before the download; skip while another conversion holds it. Release it on publish and on a recorded failure. Test the claim and the release, the lease against PostgreSQL.
+- [x] 1.1 Add `videos.encode_started_at` in migration 78.
+- [x] 1.2 Claim the lease in `NormalizeVideoAsync` and `TranscodeWebMAsync` before the download; skip while another conversion holds it. Release it on publish and on a recorded failure. Test the claim and the release, the lease against PostgreSQL.
 
 ## 2. Faster playback encodes
 
@@ -9,6 +9,6 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run the Go checks.
+- [x] 3.1 Run the Go checks.
 - [ ] 3.2 Benchmark the old and new encode on a 10-minute synthetic recording on a staging task the size of production.
 - [ ] 3.3 After the production release, read `normalize: starting` and `normalize: completed` in production logs and confirm one encode per recording.

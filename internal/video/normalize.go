@@ -184,6 +184,13 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		slog.Warn("normalize: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
 		return
 	}
+	if claimed, err := claimEncode(ctx, db, videoID, duration); err != nil {
+		slog.Error("normalize: failed to claim", "video_id", videoID, "error", err)
+		return
+	} else if !claimed {
+		slog.Info("normalize: skipped, another conversion is running", "video_id", videoID)
+		return
+	}
 
 	slog.Info("normalize: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -253,7 +260,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	// Written next to the original, never over it: an edit may be reading it.
 	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
 	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true,
+		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true, encode_started_at = NULL,
 		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
@@ -272,7 +279,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 // row still points at it and no edit is replacing it.
 func markIOSNormalized(ctx context.Context, db database.DBTX, videoID, fileKey string) {
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
+		`UPDATE videos SET ios_normalized = true, encode_started_at = NULL, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		videoID, fileKey,
 	); err != nil {
 		slog.Error("normalize: failed to mark normalized", "video_id", videoID, "error", err)

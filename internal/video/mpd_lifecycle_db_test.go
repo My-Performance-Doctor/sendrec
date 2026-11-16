@@ -118,9 +118,11 @@ func TestMPDDirectTranscriptUploadInvalidatesEarlierJob(t *testing.T) {
 	}
 }
 
-// Two ECS tasks can run conversions simultaneously. Unique output keys and the
-// file-key compare-and-swap keep the winning publication intact; the losing
-// output stays in durable retired_objects for cleanup.
+// One conversion holds a video's encode lease, so the sweep on another task
+// skips it. Once a lease outlives its deadline, as a dead task's does, a second
+// conversion may start while a stalled first one finishes; unique output keys
+// and the file-key compare-and-swap then keep the winning publication intact,
+// and the losing output stays in durable retired_objects for cleanup.
 func TestMPDConcurrentConversionsPreserveWinnerAndRecoverLoser(t *testing.T) {
 	pool := accountDB(t)
 	ctx := context.Background()
@@ -130,11 +132,9 @@ func TestMPDConcurrentConversionsPreserveWinnerAndRecoverLoser(t *testing.T) {
 	stubConversions(t, "converted", func() { entered <- struct{}{}; <-release })
 	storage := newMemStorage(map[string]string{"synthetic.webm": "original"})
 	var wg sync.WaitGroup
-	for range 2 {
+	convert := func() {
 		wg.Add(1)
 		go func() { defer wg.Done(); TranscodeWebMAsync(ctx, pool, storage, id, "synthetic.webm", "") }()
-	}
-	for range 2 {
 		select {
 		case <-entered:
 		case <-time.After(10 * time.Second):
@@ -143,6 +143,19 @@ func TestMPDConcurrentConversionsPreserveWinnerAndRecoverLoser(t *testing.T) {
 			t.Fatal("conversion did not reach barrier")
 		}
 	}
+	convert()
+	skipped := make(chan struct{})
+	wg.Add(1)
+	go func() { defer wg.Done(); TranscodeWebMAsync(ctx, pool, storage, id, "synthetic.webm", ""); close(skipped) }()
+	select {
+	case <-skipped:
+	case <-entered:
+		close(release)
+		wg.Wait()
+		t.Fatal("a second conversion ran while the first held the lease")
+	}
+	mustExec(t, pool, `UPDATE videos SET encode_started_at=now()-interval '1 day' WHERE id=$1`, id)
+	convert()
 	close(release)
 	wg.Wait()
 	got := readConversionRow(t, pool, id)
