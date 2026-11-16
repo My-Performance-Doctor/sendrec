@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,10 +91,11 @@ func (a *MPDAdapter) links(share string) (*string, *string) {
 	return &watch, &embed
 }
 
-// currentLinks gives a stored publication receipt the links the current BASE_URL
-// serves, so a retry stored before a hostname change still names the origin mpd-api
-// accepts. The links derive from the share token; every other field is returned as
-// stored, and the stored receipt is not changed.
+// currentLinks moves a stored publication receipt's links to the current BASE_URL, so
+// a retry stored before a hostname change still names the origin mpd-api accepts. Only
+// the origin changes: each link keeps its stored path, and a link whose share token is
+// no longer the video's is refused rather than swapped for the new one. Every other
+// field is returned as stored, and the stored receipt is not changed.
 func (a *MPDAdapter) currentLinks(ctx context.Context, db database.DBTX, id string, receipt []byte) ([]byte, error) {
 	var m MPDMetadata
 	if err := json.Unmarshal(receipt, &m); err != nil {
@@ -105,14 +108,27 @@ func (a *MPDAdapter) currentLinks(ctx context.Context, db database.DBTX, id stri
 	if err := db.QueryRow(ctx, `SELECT share_token FROM videos WHERE id=$1`, id).Scan(&share); err != nil {
 		return nil, err
 	}
-	watch, embed := a.links(share)
-	if m.WatchURL != nil {
-		m.WatchURL = watch
+	var err error
+	if m.WatchURL, err = a.rebase(m.WatchURL, "/"+share, "/watch/"+share); err == nil {
+		m.EmbedURL, err = a.rebase(m.EmbedURL, "/embed/"+share)
 	}
-	if m.EmbedURL != nil {
-		m.EmbedURL = embed
+	if err != nil {
+		return nil, err
 	}
 	return json.Marshal(m)
+}
+
+// rebase puts a stored link on the current BASE_URL when its path is one of paths.
+func (a *MPDAdapter) rebase(link *string, paths ...string) (*string, error) {
+	if link == nil {
+		return nil, nil
+	}
+	u, err := url.Parse(*link)
+	if err != nil || !slices.Contains(paths, u.Path) || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errMutationRefused{409, "stale publication receipt"}
+	}
+	rebased := a.h.baseURL + u.Path
+	return &rebased, nil
 }
 func (a *MPDAdapter) Metadata(w http.ResponseWriter, r *http.Request) {
 	m, err := a.metadata(r.Context(), a.h.db, chi.URLParam(r, "videoId"))
@@ -249,6 +265,11 @@ func (a *MPDAdapter) fenced(w http.ResponseWriter, r *http.Request, operation st
 		}
 		if operation == "publication" {
 			receipt, err = a.currentLinks(r.Context(), tx, id, receipt)
+		}
+		var refused errMutationRefused
+		if errors.As(err, &refused) {
+			httputil.WriteError(w, refused.status, refused.message)
+			return
 		}
 		// Advancing the work fence never reapplies the original side effect.
 		if err == nil {
