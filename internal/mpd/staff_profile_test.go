@@ -79,17 +79,18 @@ func TestGrantProfile(t *testing.T) {
 
 func TestFetchPhotoAcceptsOnlyASmallJPEG(t *testing.T) {
 	photo := jpegPhoto(t, 128, 128)
-	status, body := http.StatusOK, photo
+	status, body, etag := http.StatusOK, photo, `"v1"`
 	var auth, path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth, path = r.Header.Get("Authorization"), r.URL.Path
+		w.Header().Set("ETag", etag)
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 	h := &Handler{cfg: Config{AccessURL: srv.URL + "/api/v1/staff/video-access"}, client: srv.Client()}
 
-	got, err := h.fetchPhoto(context.Background(), "synthetic-token")
+	got, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1")
 	if err != nil || !bytes.Equal(got, photo) {
 		t.Fatalf("photo not read: %v", err)
 	}
@@ -99,15 +100,18 @@ func TestFetchPhotoAcceptsOnlyASmallJPEG(t *testing.T) {
 	for name, tc := range map[string]struct {
 		status int
 		body   []byte
+		etag   string
 	}{
-		"no photo":  {http.StatusNotFound, nil},
-		"PNG":       {http.StatusOK, encodedImage(t, 128, 128, func(b *bytes.Buffer, m image.Image) error { return png.Encode(b, m) })},
-		"too wide":  {http.StatusOK, jpegPhoto(t, 513, 16)},
-		"too large": {http.StatusOK, append(append([]byte{}, photo...), make([]byte, maxPhotoBytes)...)},
-		"truncated": {http.StatusOK, photo[:len(photo)/2]},
+		"other version": {http.StatusOK, photo, `"v0"`},
+		"no version":    {http.StatusOK, photo, ""},
+		"no photo":      {http.StatusNotFound, nil, `"v1"`},
+		"PNG":           {http.StatusOK, encodedImage(t, 128, 128, func(b *bytes.Buffer, m image.Image) error { return png.Encode(b, m) }), `"v1"`},
+		"too wide":      {http.StatusOK, jpegPhoto(t, 513, 16), `"v1"`},
+		"too large":     {http.StatusOK, append(append([]byte{}, photo...), make([]byte, maxPhotoBytes)...), `"v1"`},
+		"truncated":     {http.StatusOK, photo[:len(photo)/2], `"v1"`},
 	} {
-		status, body = tc.status, tc.body
-		if _, err := h.fetchPhoto(context.Background(), "synthetic-token"); err == nil {
+		status, body, etag = tc.status, tc.body, tc.etag
+		if _, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1"); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

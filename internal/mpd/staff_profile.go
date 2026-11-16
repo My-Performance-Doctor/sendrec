@@ -16,6 +16,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -30,6 +32,16 @@ const (
 
 var photoVersionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// profileProblems holds the problems already logged. A grant is read about
+// every 30 seconds per session, so each problem is logged once per process.
+var profileProblems sync.Map
+
+func warnProfile(message, reason string) {
+	if _, seen := profileProblems.LoadOrStore(message+reason, true); !seen {
+		slog.Warn(message, "reason", reason)
+	}
+}
+
 // parseProfile reads the grant's profile and never fails the grant. A missing
 // or bad name is dropped, which keeps the last one. A missing or bad photo
 // version drops the whole profile, because a null one removes the photo.
@@ -39,7 +51,7 @@ func parseProfile(raw json.RawMessage) *Profile {
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
-		slog.Warn("mpd profile ignored", "reason", "shape")
+		warnProfile("mpd profile ignored", "shape")
 		return nil
 	}
 	if fields == nil {
@@ -47,18 +59,18 @@ func parseProfile(raw json.RawMessage) *Profile {
 	}
 	var version *string
 	if v, ok := fields["photoVersion"]; !ok || json.Unmarshal(v, &version) != nil || version != nil && !photoVersionPattern.MatchString(*version) {
-		slog.Warn("mpd profile ignored", "reason", "photo_version")
+		warnProfile("mpd profile ignored", "photo_version")
 		return nil
 	}
 	p := &Profile{PhotoVersion: version}
 	if v, ok := fields["displayName"]; ok {
 		var name *string
 		if json.Unmarshal(v, &name) != nil {
-			slog.Warn("mpd profile name ignored", "reason", "type")
+			warnProfile("mpd profile name ignored", "type")
 		} else if name != nil {
 			trimmed := strings.TrimSpace(*name)
 			if trimmed == "" || utf8.RuneCountInString(trimmed) > maxNameRunes || strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
-				slog.Warn("mpd profile name ignored", "reason", "value")
+				warnProfile("mpd profile name ignored", "value")
 			} else {
 				p.DisplayName = &trimmed
 			}
@@ -71,9 +83,10 @@ func parseProfile(raw json.RawMessage) *Profile {
 // SendRec user, so watch pages show who recorded. Sign-in and each grant
 // refresh call it. It writes only what changed, fetches a new photo off the
 // request path, and never fails the request. A profile without a name keeps
-// the last one.
+// the last one. Refresh validates inside its own transaction, which a failed
+// write here would abort, so there the next request applies the profile.
 func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Profile) {
-	if p == nil {
+	if _, inTx := h.db.(pgx.Tx); p == nil || inTx {
 		return
 	}
 	var name string
@@ -86,6 +99,11 @@ func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Pro
 		if _, err := h.db.Exec(ctx, `UPDATE users SET name=$2,updated_at=now() WHERE id=$1`, userID, *p.DisplayName); err != nil {
 			slog.Warn("mpd profile not applied", "stage", "name", "error", err)
 		}
+	}
+	if p.PhotoVersion == nil {
+		photoFetches.want.Delete(userID)
+	} else {
+		photoFetches.want.Store(userID, *p.PhotoVersion)
 	}
 	if sameVersion(version, p.PhotoVersion) {
 		return
@@ -109,6 +127,7 @@ func sameVersion(a, b *string) bool {
 var photoFetches struct {
 	busy   sync.Map // user ID → struct{}
 	failed sync.Map // user ID → photoFailure
+	want   sync.Map // user ID → the version the latest grant names; absent for none
 	wg     sync.WaitGroup
 }
 
@@ -130,9 +149,15 @@ func (h *Handler) fetchPhotoLater(userID, token, version string) {
 		defer photoFetches.busy.Delete(userID)
 		ctx, cancel := context.WithTimeout(context.Background(), photoTimeout)
 		defer cancel()
-		photo, err := h.fetchPhoto(ctx, token)
+		photo, err := h.fetchPhoto(ctx, token, version)
 		if err == nil {
 			_, err = h.db.Exec(ctx, `INSERT INTO mpd_staff_photos(user_id,version,jpeg) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET version=EXCLUDED.version,jpeg=EXCLUDED.jpeg,updated_at=now()`, userID, version, photo)
+		}
+		// A grant that changed or removed the photo during the read wins. If it
+		// deleted the row before this store, this removes the store; if after,
+		// its own delete does.
+		if w, ok := photoFetches.want.Load(userID); err == nil && (!ok || w.(string) != version) {
+			_, err = h.db.Exec(ctx, `DELETE FROM mpd_staff_photos WHERE user_id=$1 AND version=$2`, userID, version)
 		}
 		if err != nil {
 			photoFetches.failed.Store(userID, photoFailure{version: version, at: time.Now()})
@@ -144,8 +169,10 @@ func (h *Handler) fetchPhotoLater(userID, token, version string) {
 }
 
 // fetchPhoto reads the staff member's photo from `{access URL}/photo` with the
-// token that read the grant. It accepts only a small JPEG.
-func (h *Handler) fetchPhoto(ctx context.Context, token string) ([]byte, error) {
+// token that read the grant. It accepts only a small JPEG whose ETag names the
+// version the grant gave, so a lagging read cannot store an old photo under a
+// new version.
+func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.cfg.AccessURL, "/")+"/photo", nil)
 	if err != nil {
 		return nil, err
@@ -158,6 +185,9 @@ func (h *Handler) fetchPhoto(ctx context.Context, token string) ([]byte, error) 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("photo status %d", resp.StatusCode)
+	}
+	if resp.Header.Get("ETag") != `"`+version+`"` {
+		return nil, errors.New("photo is not the version the grant names")
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPhotoBytes+1))
 	if err != nil {

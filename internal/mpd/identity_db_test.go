@@ -207,14 +207,19 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 			w.WriteHeader(403)
 			return
 		}
-		name := displayName.Load().(string)
+		if strings.HasSuffix(r.URL.Path, "/photo") {
+			w.Header().Set("ETag", `"v1"`)
+			_, _ = w.Write(jpegPhoto(t, 128, 128))
+			return
+		}
+		name, version := displayName.Load().(string), "v1"
 		_ = json.NewEncoder(w).Encode(struct {
 			Grant
 			Profile Profile `json:"profile"`
-		}{Grant{SchemaVersion: 1, StaffID: staffID, TenantID: tenantID, Capabilities: Capabilities{Read: true}, ValidUntil: time.Now().Add(30 * time.Second)}, Profile{DisplayName: &name}})
+		}{Grant{SchemaVersion: 1, StaffID: staffID, TenantID: tenantID, Capabilities: Capabilities{Read: true}, ValidUntil: time.Now().Add(30 * time.Second)}, Profile{DisplayName: &name, PhotoVersion: &version}})
 	}))
 	defer grantServer.Close()
-	h.cfg.AccessURL = grantServer.URL
+	h.cfg.AccessURL = grantServer.URL + "/video-access"
 	h.oauth = oauth2.Config{ClientID: "recorder", ClientSecret: "synthetic", RedirectURL: "https://recorder.example/api/auth/mpd/callback", Endpoint: oauth2.Endpoint{TokenURL: tokenServer.URL}}
 	verifier, e := integration.Encrypt(h.key, "synthetic-verifier")
 	if e != nil {
@@ -239,9 +244,11 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 	}
 	assertName := func(want string) {
 		t.Helper()
+		photoFetches.wg.Wait()
 		var got string
-		if e := db.QueryRow(ctx, `SELECT name FROM users WHERE email='native@example.test'`).Scan(&got); e != nil || got != want {
-			t.Fatalf("staff name %q, want %q: %v", got, want, e)
+		var photo *string
+		if e := db.QueryRow(ctx, `SELECT u.name,p.version FROM users u LEFT JOIN mpd_staff_photos p ON p.user_id=u.id WHERE u.email='native@example.test'`).Scan(&got, &photo); e != nil || got != want || photo == nil || *photo != "v1" {
+			t.Fatalf("staff name %q and photo %v, want %q and v1: %v", got, photo, want, e)
 		}
 	}
 	assertName("Dr Callback Staff")

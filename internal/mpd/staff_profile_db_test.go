@@ -25,6 +25,7 @@ type profileFixture struct {
 	id      *Identity
 	g       *Grant
 	profile atomic.Value // the grant's profile JSON
+	version atomic.Value // the photo route's ETag version
 	status  atomic.Int32 // the photo route's status
 	hang    chan struct{}
 	fetches atomic.Int32
@@ -41,6 +42,7 @@ func newProfileFixture(t *testing.T) *profileFixture {
 	f := &profileFixture{h: h, db: db, sign: sign, photo: jpegPhoto(t, 128, 128), hang: make(chan struct{})}
 	close(f.hang)
 	f.profile.Store(`null`)
+	f.version.Store("v1")
 	f.status.Store(http.StatusOK)
 	for _, q := range []string{`INSERT INTO organizations(id,name,slug) VALUES('` + orgID + `','Synthetic','mpd-synthetic')`, `INSERT INTO mpd_managed_workspaces(organization_id,tenant_id,issuer,enabled,seat_limit) VALUES('` + orgID + `','` + tenantID + `','` + h.cfg.Issuer + `',true,2)`} {
 		if _, err := db.Exec(ctx, q); err != nil {
@@ -51,6 +53,7 @@ func newProfileFixture(t *testing.T) *profileFixture {
 		if strings.HasSuffix(r.URL.Path, "/photo") {
 			f.fetches.Add(1)
 			<-f.hang
+			w.Header().Set("ETag", `"`+f.version.Load().(string)+`"`)
 			w.WriteHeader(int(f.status.Load()))
 			_, _ = w.Write(f.photo)
 			return
@@ -102,6 +105,7 @@ func TestApplyProfileKeepsNameAndPhotoCurrent(t *testing.T) {
 	}
 
 	// A failed fetch keeps the old photo and waits before trying that version again.
+	f.version.Store(second)
 	f.status.Store(http.StatusServiceUnavailable)
 	f.h.applyProfile(ctx, f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &second})
 	f.read(t)
@@ -159,5 +163,36 @@ func TestGrantRefreshAppliesTheProfile(t *testing.T) {
 	}
 	if name, version, _ := f.read(t); name != "Dr Synthetic Staff" || version == nil || *version != "v1" {
 		t.Fatalf("grant refresh did not apply the profile: %q %v", name, version)
+	}
+}
+
+func TestApplyProfileRemovalWinsOverAFetchInFlight(t *testing.T) {
+	f := newProfileFixture(t)
+	f.hang = make(chan struct{})
+	version := "v1"
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{})
+	close(f.hang)
+	if _, stored, _ := f.read(t); stored != nil || f.fetches.Load() != 1 {
+		t.Fatalf("a photo removed during its read came back: %v, %d fetches", stored, f.fetches.Load())
+	}
+}
+
+func TestApplyProfileSkipsTheRefreshTransaction(t *testing.T) {
+	f := newProfileFixture(t)
+	ctx := context.Background()
+	tx, err := f.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := *f.h
+	scoped.db = tx
+	name, version := "Dr Synthetic Staff", "v1"
+	scoped.applyProfile(ctx, f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &version})
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, stored, _ := f.read(t); got != "MPD staff" || stored != nil || f.fetches.Load() != 0 {
+		t.Fatalf("the profile was applied inside the refresh transaction: %q %v %d", got, stored, f.fetches.Load())
 	}
 }
