@@ -20,9 +20,9 @@ func TestTranscriptionResetFollowsTheRecording(t *testing.T) {
 	shortDead := seed("short", 0, 45)    // unprobed: 30 minute deadline
 	longDead := seed("longdead", 600, 75)
 
-	// Every slot held, so the worker resets and claims nothing.
+	// Every slot held, so local Whisper's worker resets and claims nothing.
 	holdEncoderSlots(t, 1)
-	processNextTranscription(context.Background(), pool, &mockStorage{}, stubTranscriber{available: true}, false)
+	processNextTranscription(context.Background(), pool, &mockStorage{}, newLocalWhisper(), false)
 
 	for id, want := range map[string]string{longRunning: "processing", shortDead: "pending", longDead: "pending"} {
 		var got string
