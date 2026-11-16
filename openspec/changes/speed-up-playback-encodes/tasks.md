@@ -10,5 +10,5 @@
 ## 3. Verification
 
 - [x] 3.1 Run the Go checks.
-- [ ] 3.2 Benchmark the old and new encode on a 10-minute synthetic recording on a staging task the size of production.
+- [x] 3.2 Benchmark the old and new encode on a 10-minute synthetic recording on a staging task the size of production. The old encode took 530 and 529 s, the new one 208 and 211 s.
 - [ ] 3.3 After the production release, read `normalize: starting` and `normalize: completed` in production logs and confirm one encode per recording.

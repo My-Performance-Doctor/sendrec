@@ -23,6 +23,13 @@ Every playback encode also forces 60 frames a second (`-r 60`). Staff OS records
 | `-preset fast -fpsmax 60` | 20.8 s | 7.58 MB | 0.9977 |
 | `-preset veryfast -fpsmax 60` | 14.5 s | 7.21 MB | 0.9973 |
 
+On a staging task the size of production (2 vCPU, 4 GB), a 10-minute synthetic 1920×748 avc3 recording, with the production thread caps, x264 bounds and noise filter, ran twice each way (`docs/agents/claude/scripts/encode-bench.sh`):
+
+| Settings | Encode | Size |
+| --- | --- | --- |
+| `-preset fast -r 60` (now) | 530 s, 529 s | 45.8 MB |
+| `-preset veryfast -fpsmax 60` | 208 s, 211 s | 42.4 MB |
+
 ## What Changes
 
 - A conversion (WebM transcode or MP4 normalize) takes a lease on its video before it downloads anything. Another conversion of the same video, from either task, skips while the lease is live. The lease lasts as long as the encode's own deadline plus a minute, so the sweep still recovers a video whose task died. Failure and success release it.
