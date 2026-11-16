@@ -7,5 +7,5 @@
 ## 2. Verification
 
 - [x] 2.1 Run the Go checks.
-- [ ] 2.2 Benchmark a 10-minute synthetic recording on a staging task the size of production, with the encode and the low-priority Whisper running together.
+- [x] 2.2 Benchmark a 10-minute synthetic recording on a staging task the size of production, with the encode and the low-priority Whisper running together. On a normal host the encode took 9.4 minutes and Whisper 20.0. On a slow host they took 16.0 and 36.4, both inside the new 70-minute deadline.
 - [ ] 2.3 After the production release, read `transcribe: completed` against `transcribe: starting` in production logs for the first real recordings.

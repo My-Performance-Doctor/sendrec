@@ -16,7 +16,11 @@
 | --- | --- |
 | Whisper alone | 605 s (1.0× the recording) |
 | Encode alone | 448 s |
-| Both, same priority | encode 1108 s, Whisper 2207 s (3.7×, over the old 30-minute deadline) |
+| Both, same priority (slow host) | encode 1108 s, Whisper 2207 s (3.7×, over the old 30-minute deadline) |
+| Both, Whisper at nice 19, normal host | encode 566 s, Whisper 1201 s |
+| Both, Whisper at nice 19, slow host | encode 959 s, Whisper 2181 s |
+
+At nice 19 the encode is barely slowed and Whisper effectively waits for it, so Whisper ≈ encode + Whisper alone. On a slow host that still means about 36 minutes for a 10-minute recording. The deadline (70 minutes there) is what keeps it from failing; larger tasks are what would make it faster.
 
 Hosts vary about 2× (source generation took 317–668 s on identical tasks). Whisper's ggml threads wait at barriers, so CPU contention slows it far more than the encode. Staging logs show dense synthetic speech at about 2.4× even alone (90 s → 218 s).
 
