@@ -5,7 +5,7 @@
 
 ## 2. Faster playback encodes
 
-- [ ] 2.1 Share one set of H.264 playback options across normalize, transcode, trim and composite: `-preset veryfast` and `-fpsmax 60` in place of `-preset fast` and `-r 60`. Test that no builder forces a frame rate.
+- [x] 2.1 Share one set of H.264 playback options across normalize, transcode, trim and composite: `-preset veryfast` and `-fpsmax 60` in place of `-preset fast` and `-r 60`. Test that no builder forces a frame rate.
 
 ## 3. Verification
 

@@ -29,13 +29,10 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 			"-i", inputPath,
 			"-ss", fmt.Sprintf("%.3f", startSeconds),
 			"-to", fmt.Sprintf("%.3f", endSeconds),
-			"-c:v", "libx264",
-			"-profile:v", "high",
-			"-level:v", "5.1",
-			"-preset", "fast",
-			"-crf", "23",
+		)
+		args = append(args, playbackVideoArgs()...)
+		args = append(args,
 			"-vf", frame.filter(),
-			"-r", "60",
 			"-c:a", "aac",
 			"-movflags", "+faststart",
 		)

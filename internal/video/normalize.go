@@ -134,16 +134,9 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 
 func buildNormalizeArgs(inputPath, outputPath, audioFilter string, frame outputFrame) []string {
 	args := append(globalThreads(), inputThreads()...)
-	args = append(args,
-		"-i", inputPath,
-		"-c:v", "libx264",
-		"-profile:v", "high",
-		"-level:v", "5.1",
-		"-preset", "fast",
-		"-crf", "23",
-		"-vf", frame.filter(),
-		"-r", "60",
-	)
+	args = append(args, "-i", inputPath)
+	args = append(args, playbackVideoArgs()...)
+	args = append(args, "-vf", frame.filter())
 	args = appendEncoderBounds(args, "video/mp4")
 	if audioFilter != "" {
 		args = append(args, "-af", audioFilter)

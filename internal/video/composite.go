@@ -58,15 +58,9 @@ func buildCompositeArgs(screenPath, webcamPath, outputPath string) []string {
 		"-filter_complex", filterComplex,
 		"-map", "[vout]",
 		"-map", "0:a?",
-		"-c:v", "libx264",
-		"-profile:v", "high",
-		"-level:v", "5.1",
-		"-preset", "fast",
-		"-crf", "23",
-		"-r", "60",
-		"-c:a", "aac",
-		"-movflags", "+faststart",
 	)
+	args = append(args, playbackVideoArgs()...)
+	args = append(args, "-c:a", "aac", "-movflags", "+faststart")
 
 	// The bounds have to precede the output: ffmpeg applies options to the output
 	// that follows them and discards anything after the last one.
