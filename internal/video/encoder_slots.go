@@ -62,6 +62,13 @@ func (s *encoderSlots) acquire(ctx context.Context) (release func(), err error) 
 	}, nil
 }
 
+// busy reports whether every slot is taken. Local transcription checks it
+// before claiming a job: it yields the CPU to encodes, so starting beside one
+// only spends the job's deadline waiting.
+func (s *encoderSlots) busy() bool {
+	return len(s.tokens) == cap(s.tokens)
+}
+
 // ffmpegEncoders gates the five encoding paths. Probing, thumbnail extraction
 // and audio extraction stay outside it: they are cheap enough that queueing them
 // behind an encode would cost more than it saves.

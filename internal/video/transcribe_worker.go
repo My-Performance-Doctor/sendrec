@@ -10,10 +10,31 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 )
 
-// transcriptionJobTimeout bounds one transcription job, download to upload,
-// so a hung whisper-cli or ffmpeg cannot hold the queue. Long recordings on a
-// small CPU are the slow case. A var so tests can shorten it.
+// transcriptionJobTimeout is the base of every transcription deadline,
+// download to upload, so a hung whisper-cli or ffmpeg cannot hold the queue.
+// A var so tests can shorten it.
 var transcriptionJobTimeout = 30 * time.Minute
+
+// transcriptionSecondsPerSecond is how much deadline each second of recording
+// adds. Whisper's small model on a 2 vCPU task ran at 1.0× a 10 minute
+// recording, 2.4× on dense speech, and about twice as slow on a slow host.
+// Encodes also take the CPU first (localWhisper runs at the lowest priority),
+// so the job can sit waiting for them as well.
+const transcriptionSecondsPerSecond = 4
+
+// transcriptionExtraCapSeconds bounds how far a long recording stretches the
+// deadline, so a bogus duration cannot hold the worker for days.
+const transcriptionExtraCapSeconds = 4 * 60 * 60
+
+// transcriptionTimeout is the base plus four times the recording's length. A
+// fixed 30 minutes failed 10 minute recordings, and a failed transcript means
+// MPD never creates the patient's report. A zero duration, as for a recording
+// not yet probed, gives the base alone. The stuck-job reset in
+// processNextTranscription applies the same formula in SQL.
+func transcriptionTimeout(durationSeconds int) time.Duration {
+	extra := min(max(transcriptionSecondsPerSecond*durationSeconds, 0), transcriptionExtraCapSeconds)
+	return transcriptionJobTimeout + time.Duration(extra)*time.Second
+}
 
 func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string) error {
 	if !isTranscriptionEnabled() {
@@ -28,20 +49,29 @@ func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string)
 }
 
 func processNextTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, aiEnabled bool) {
-	// Requeue jobs whose worker died. A live job gives up at its deadline, so
-	// anything a minute past it belongs to nobody.
+	// Requeue jobs whose worker died. A live job gives up at its deadline,
+	// which grows with the recording, so anything a minute past it belongs to
+	// nobody.
 	if _, err := db.Exec(ctx,
 		`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation + 1, transcript_started_at = NULL, updated_at = now()
 		 WHERE transcript_status = 'processing'
-		   AND (transcript_started_at < now() - make_interval(secs => $1) OR transcript_started_at IS NULL)`,
-		(transcriptionJobTimeout + time.Minute).Seconds(),
+		   AND (transcript_started_at < now() - make_interval(secs => $1::float8 + LEAST(GREATEST($2::bigint * duration, 0), $3::bigint))
+		        OR transcript_started_at IS NULL)`,
+		(transcriptionJobTimeout + time.Minute).Seconds(), transcriptionSecondsPerSecond, transcriptionExtraCapSeconds,
 	); err != nil {
 		slog.Error("transcribe-worker: failed to reset stuck jobs", "error", err)
 	}
 
+	// Whisper yields the CPU to encodes, so a job started beside one waits for
+	// it with its deadline running. While this task encodes, leave the job to
+	// an idle task, or to this one on a later tick.
+	if encoders().busy() {
+		return
+	}
+
 	// Claim the next pending job
 	var videoID, fileKey, userID, shareToken, language string
-	var version, generation int
+	var version, duration, generation int
 	err := db.QueryRow(ctx,
 		`UPDATE videos SET transcript_status = 'processing', transcript_started_at = now(), updated_at = now()
 		 WHERE id = (
@@ -50,9 +80,9 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		     ORDER BY v.updated_at ASC LIMIT 1
 		     FOR UPDATE SKIP LOCKED
 		 )
-		 RETURNING id, file_key, media_version, user_id, share_token,
+		 RETURNING id, file_key, media_version, duration, user_id, share_token,
 		     COALESCE(transcription_language, (SELECT transcription_language FROM users WHERE id = videos.user_id), 'auto'), transcript_generation`,
-	).Scan(&videoID, &fileKey, &version, &userID, &shareToken, &language, &generation)
+	).Scan(&videoID, &fileKey, &version, &duration, &userID, &shareToken, &language, &generation)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("transcribe-worker: failed to claim job", "error", err)
@@ -61,7 +91,7 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	}
 
 	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
-	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, userID, shareToken, language, aiEnabled, generation)
+	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, duration, userID, shareToken, language, aiEnabled, generation)
 }
 
 func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, interval time.Duration, aiEnabled bool) {

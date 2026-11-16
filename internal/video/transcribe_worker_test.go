@@ -66,12 +66,12 @@ func TestProcessNextTranscription_NoJobs(t *testing.T) {
 
 	// Stuck job reset
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 	// Claim query returns no rows
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -90,12 +90,12 @@ func TestProcessNextTranscription_ResetsStuckJobs(t *testing.T) {
 
 	// Stuck job reset — should match 1 row
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// Claim query returns no rows (the reset job will be picked up next tick)
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -126,7 +126,7 @@ func TestProcessTranscription_HungJobFailsAtItsDeadline(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		processTranscription(context.Background(), db, hangingStorage{&mockStorage{}}, stubTranscriber{available: true},
-			"video-123", "recordings/u/v.webm", 0, "u", "tok", "auto", false)
+			"video-123", "recordings/u/v.webm", 0, 0, "u", "tok", "auto", false)
 		close(done)
 	}()
 
@@ -149,15 +149,81 @@ func TestProcessNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`transcript_started_at < now\(\) - make_interval\(secs => \$1\)`).
-		WithArgs((transcriptionJobTimeout + time.Minute).Seconds()).
+	mock.ExpectExec(`transcript_started_at < now\(\) - make_interval\(secs => \$1::float8 \+ LEAST\(GREATEST\(\$2::bigint \* duration, 0\), \$3::bigint\)\)`).
+		WithArgs((transcriptionJobTimeout + time.Minute).Seconds(), transcriptionSecondsPerSecond, transcriptionExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
+}
+
+// A fixed 30 minutes failed 10 minute recordings, and without a transcript MPD
+// never creates the patient's report. The deadline grows with the recording.
+func TestTranscriptionTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		duration int
+		want     time.Duration
+	}{
+		{0, 30 * time.Minute},
+		{-5, 30 * time.Minute},
+		{60, 34 * time.Minute},
+		{10 * 60, 70 * time.Minute},
+		{30 * 60, 150 * time.Minute},
+		{24 * 60 * 60, 30*time.Minute + 4*time.Hour},
+	} {
+		if got := transcriptionTimeout(tc.duration); got != tc.want {
+			t.Errorf("transcriptionTimeout(%d) = %v, want %v", tc.duration, got, tc.want)
+		}
+	}
+}
+
+// Whisper yields the CPU to encodes, so a job claimed beside one would spend
+// its deadline waiting. While this task encodes, the job stays pending for an
+// idle task.
+func TestProcessNextTranscription_LeavesJobsWhileEncoding(t *testing.T) {
+	holdEncoderSlots(t, 1)
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// The stuck-job reset still runs; the claim does not.
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+
+	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// holdEncoderSlots takes every slot of a fresh gate of the given size for the
+// rest of the test, as running encodes would.
+func holdEncoderSlots(t *testing.T, limit int) {
+	t.Helper()
+	prev := ffmpegEncoders.Load()
+	slots := newEncoderSlots(limit)
+	ffmpegEncoders.Store(slots)
+	var releases []func()
+	for range limit {
+		release, err := slots.acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+		ffmpegEncoders.Store(prev)
+	})
 }

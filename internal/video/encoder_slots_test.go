@@ -99,3 +99,20 @@ func TestEncoderSlots_ClampsNonPositiveLimits(t *testing.T) {
 		release()
 	}
 }
+
+func TestEncoderSlots_Busy(t *testing.T) {
+	slots := newEncoderSlots(2)
+	first, _ := slots.acquire(context.Background())
+	if slots.busy() {
+		t.Error("busy with a slot free")
+	}
+	second, _ := slots.acquire(context.Background())
+	if !slots.busy() {
+		t.Error("not busy with every slot taken")
+	}
+	second()
+	first()
+	if slots.busy() {
+		t.Error("busy after every slot was returned")
+	}
+}
