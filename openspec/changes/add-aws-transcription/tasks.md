@@ -11,6 +11,7 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run the Go and infrastructure checks.
-- [ ] 3.2 Run the provider against staging AWS with synthetic speech and confirm the caption segments and that nothing remains in `transcribe/` or in the job list.
-- [ ] 3.3 Deploy to staging with `transcriptionProvider=aws` and transcribe a synthetic recording end to end.
+- [x] 3.1 Run the Go and infrastructure checks.
+- [x] 3.2 Run the provider against staging AWS with synthetic speech and confirm the caption segments and that nothing remains in `transcribe/` or in the job list. 10.6 minutes came back as 149 segments in 25 seconds; only Transcribe's empty write-check file remained.
+- [x] 3.3 Deploy to staging with `transcriptionProvider=aws` and transcribe a synthetic recording end to end. A 20-minute recording took 25.6 seconds from claim to published transcript.
+- [ ] 3.4 After review and merge, release to production with `transcriptionProvider=aws` and read `transcribe: completed` against `transcribe: starting` for the first real recordings.
