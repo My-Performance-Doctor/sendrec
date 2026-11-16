@@ -227,3 +227,46 @@ func holdEncoderSlots(t *testing.T, limit int) {
 		ffmpegEncoders.Store(prev)
 	})
 }
+
+// A deploy or scale-in stops the task mid-job. The job goes straight back to
+// the queue instead of waiting out a deadline that grows with the recording,
+// and the stopping worker claims nothing more.
+func TestRequeueInFlightTranscription(t *testing.T) {
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscription.Store(nil)
+	})
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	inFlightTranscription.Store(&transcriptionJob{videoID: "video-123", generation: 4})
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1.*transcript_status = 'processing' AND transcript_generation = \$2`).
+		WithArgs("video-123", 4).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	RequeueInFlightTranscription(context.Background(), mock)
+	// No reset and no claim once stopping.
+	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestRequeueInFlightTranscription_NothingRunning(t *testing.T) {
+	t.Cleanup(func() { transcriptionStopping.Store(false) })
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	RequeueInFlightTranscription(context.Background(), mock)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

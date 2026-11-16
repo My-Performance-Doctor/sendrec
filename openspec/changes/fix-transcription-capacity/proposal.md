@@ -16,6 +16,7 @@ When both ran on one task, Whisper overran the fixed 30-minute transcription dea
 - The transcription deadline grows with the recording. It is 30 minutes plus four times the recording's length, and the added time is capped at 4 hours. The stuck-job reset gives each row the same deadline, so it does not start a long recording a second time while the recording is still inside its time.
 - Local Whisper runs at the lowest CPU priority (`nice -n 19`). An encode, and the HTTP server, take the CPU first.
 - A worker claims a transcription only when no encode is running on its task. A job claimed beside an encode would spend its deadline waiting.
+- A task that is shutting down, as in a deploy or a scale-in, puts its running transcription back in the queue and claims nothing more. Otherwise the job would wait out its whole deadline, now longer, before another task could start it.
 
 Non-goals:
 

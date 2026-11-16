@@ -34,3 +34,25 @@ func TestTranscriptionResetFollowsTheRecording(t *testing.T) {
 		}
 	}
 }
+
+func TestRequeueInFlightTranscriptionAgainstTheDatabase(t *testing.T) {
+	pool := accountDB(t)
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscription.Store(nil)
+	})
+	id := seedReadyVideoNamed(t, pool, "recordings/u/running.mp4", "running")
+	mustExecDB(t, pool, `UPDATE videos SET transcript_status = 'processing', transcript_generation = 3, transcript_started_at = now() WHERE id = $1`, id)
+	inFlightTranscription.Store(&transcriptionJob{videoID: id, generation: 3})
+
+	RequeueInFlightTranscription(context.Background(), pool)
+
+	var status string
+	var generation int
+	if err := pool.QueryRow(context.Background(), `SELECT transcript_status, transcript_generation FROM videos WHERE id = $1`, id).Scan(&status, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || generation != 4 {
+		t.Errorf("after requeue: status %q generation %d, want pending and 4", status, generation)
+	}
+}

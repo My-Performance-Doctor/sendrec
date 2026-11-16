@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -48,7 +49,45 @@ func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string)
 	return err
 }
 
+// transcriptionJob is a claimed job, as the claim returned it.
+type transcriptionJob struct {
+	videoID    string
+	generation int
+}
+
+// inFlightTranscription is the job this process is running, if any.
+// transcriptionStopping stops the worker claiming once shutdown has begun.
+var (
+	inFlightTranscription atomic.Pointer[transcriptionJob]
+	transcriptionStopping atomic.Bool
+)
+
+// RequeueInFlightTranscription hands this process's running job back to the
+// queue at shutdown, as during a deploy or a scale-in. Without it the job
+// waits out its whole deadline, which grows with the recording, before
+// another task may start it. The generation bump discards any result this
+// process still writes. The worker claims nothing after this.
+func RequeueInFlightTranscription(ctx context.Context, db database.DBTX) {
+	transcriptionStopping.Store(true)
+	job := inFlightTranscription.Load()
+	if job == nil {
+		return
+	}
+	if _, err := db.Exec(ctx,
+		`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation + 1, transcript_started_at = NULL, updated_at = now()
+		 WHERE id = $1 AND transcript_status = 'processing' AND transcript_generation = $2`,
+		job.videoID, job.generation,
+	); err != nil {
+		slog.Error("transcribe-worker: failed to requeue the running job at shutdown", "video_id", job.videoID, "error", err)
+		return
+	}
+	slog.Info("transcribe-worker: requeued the running job at shutdown", "video_id", job.videoID)
+}
+
 func processNextTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, aiEnabled bool) {
+	if transcriptionStopping.Load() {
+		return
+	}
 	// Requeue jobs whose worker died. A live job gives up at its deadline,
 	// which grows with the recording, so anything a minute past it belongs to
 	// nobody.
@@ -91,6 +130,8 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	}
 
 	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
+	inFlightTranscription.Store(&transcriptionJob{videoID: videoID, generation: generation})
+	defer inFlightTranscription.Store(nil)
 	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, duration, userID, shareToken, language, aiEnabled, generation)
 }
 

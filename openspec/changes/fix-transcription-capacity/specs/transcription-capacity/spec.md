@@ -25,3 +25,10 @@ Local Whisper SHALL run at the lowest CPU priority when `nice` is available. A t
 #### Scenario: Pending transcript while a task encodes
 - **WHEN** a transcription is pending and this task's encoder slots are all in use
 - **THEN** this task's worker leaves the job pending for an idle task, or for itself after the encode ends
+
+### Requirement: A stopping task hands back its transcription
+When a task receives its shutdown signal, it SHALL put its running transcription back in the queue with a new generation and SHALL claim no further job.
+
+#### Scenario: Deploy during a transcript
+- **WHEN** a task is stopped while it transcribes a recording
+- **THEN** the job is pending again at once, another task can start it, and any late result from the stopped task is discarded
