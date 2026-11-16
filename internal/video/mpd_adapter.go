@@ -77,12 +77,42 @@ func (a *MPDAdapter) metadata(ctx context.Context, db database.DBTX, id string) 
  WHERE s.video_id=$1 AND s.tenant_id=$2 AND EXISTS(SELECT 1 FROM mpd_managed_workspaces w WHERE w.organization_id=$3 AND w.tenant_id=s.tenant_id) AND (v.organization_id=$3 OR s.deleted_at IS NOT NULL)`, id, a.cfg.TenantID, a.cfg.WorkspaceID).
 		Scan(&m.VideoID, &m.OwnerStaffID, &m.TenantID, &m.MediaVersion, &m.Status, &m.Published, &m.PublishedAt, &m.PasswordProtected, &share)
 	if err == nil && m.Published && m.Status != "deleted" {
-		watch := WatchLink(a.h.baseURL, share)
-		embed := a.h.baseURL + "/embed/" + share
-		m.WatchURL = &watch
-		m.EmbedURL = &embed
+		m.WatchURL, m.EmbedURL = a.links(share)
 	}
 	return m, err
+}
+
+// links are a published video's watch and embed links on the current BASE_URL.
+func (a *MPDAdapter) links(share string) (*string, *string) {
+	watch := WatchLink(a.h.baseURL, share)
+	embed := a.h.baseURL + "/embed/" + share
+	return &watch, &embed
+}
+
+// currentLinks gives a stored publication receipt the links the current BASE_URL
+// serves, so a retry stored before a hostname change still names the origin mpd-api
+// accepts. The links derive from the share token; every other field is returned as
+// stored, and the stored receipt is not changed.
+func (a *MPDAdapter) currentLinks(ctx context.Context, db database.DBTX, id string, receipt []byte) ([]byte, error) {
+	var m MPDMetadata
+	if err := json.Unmarshal(receipt, &m); err != nil {
+		return nil, err
+	}
+	if m.WatchURL == nil && m.EmbedURL == nil {
+		return receipt, nil
+	}
+	var share string
+	if err := db.QueryRow(ctx, `SELECT share_token FROM videos WHERE id=$1`, id).Scan(&share); err != nil {
+		return nil, err
+	}
+	watch, embed := a.links(share)
+	if m.WatchURL != nil {
+		m.WatchURL = watch
+	}
+	if m.EmbedURL != nil {
+		m.EmbedURL = embed
+	}
+	return json.Marshal(m)
 }
 func (a *MPDAdapter) Metadata(w http.ResponseWriter, r *http.Request) {
 	m, err := a.metadata(r.Context(), a.h.db, chi.URLParam(r, "videoId"))
@@ -217,8 +247,14 @@ func (a *MPDAdapter) fenced(w http.ResponseWriter, r *http.Request, operation st
 			httputil.WriteError(w, 409, "idempotency conflict")
 			return
 		}
+		if operation == "publication" {
+			receipt, err = a.currentLinks(r.Context(), tx, id, receipt)
+		}
 		// Advancing the work fence never reapplies the original side effect.
-		if _, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET work_version=$2 WHERE video_id=$1`, id, work); err == nil {
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET work_version=$2 WHERE video_id=$1`, id, work)
+		}
+		if err == nil {
 			err = tx.Commit(r.Context())
 		}
 		if err != nil {
