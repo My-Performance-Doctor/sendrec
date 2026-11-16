@@ -115,7 +115,7 @@ public class SendRecStack extends Stack {
             .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
             .encryption(BucketEncryption.S3_MANAGED)
             .versioned(config.production())
-            .lifecycleRules(List.of(recordingsLifecycle(config.production())))
+            .lifecycleRules(List.of(recordingsLifecycle(config.production()), transcriptionLifecycle()))
             .enforceSsl(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
@@ -314,7 +314,20 @@ public class SendRecStack extends Stack {
     environment.put("REGISTRATION_ENABLED", Boolean.toString(options.bootstrap));
     environment.put("API_DOCS_ENABLED", "true");
     environment.put("TRANSCRIPTION_ENABLED", "true");
-    environment.put("TRANSCRIPTION_PROVIDER", "local");
+    String transcriptionProvider = transcriptionProvider();
+    environment.put("TRANSCRIPTION_PROVIDER", transcriptionProvider);
+    if ("aws".equals(transcriptionProvider)) {
+      // Amazon Transcribe reads the staged audio and writes its output with the task role's own
+      // bucket access, so the role only needs to run, read and delete its jobs.
+      environment.put("TRANSCRIPTION_LANGUAGE_CODE", "en-AU");
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .actions(List.of("transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob",
+                  "transcribe:DeleteTranscriptionJob"))
+              .resources(List.of("arn:" + getPartition() + ":transcribe:" + getRegion() + ":" + getAccount()
+                  + ":transcription-job/sendrec-*"))
+              .build());
+    }
     environment.put("WHISPER_MODEL_PATH", "/tmp/models/ggml-small.bin");
     environment.put("WHISPER_MODEL_URL", WHISPER_MODEL_URL);
     environment.put("WHISPER_MODEL_SHA256", WHISPER_MODEL_SHA256);
@@ -553,6 +566,28 @@ public class SendRecStack extends Stack {
    * noncurrent expiry waits on MPD's clinical retention policy and must be at least the RDS
    * point-in-time window, so a restored database never points at expired media.
    */
+  /**
+   * Amazon Transcribe's audio and output live under `transcribe/` only while a job runs. A task that
+   * stops mid-job leaves them behind, and production keeps deleted objects as noncurrent versions, so
+   * both expire after a day.
+   */
+  static LifecycleRule transcriptionLifecycle() {
+    return LifecycleRule.builder()
+        .id("ExpireTranscriptionStaging")
+        .prefix("transcribe/")
+        .expiration(Duration.days(1))
+        .noncurrentVersionExpiration(Duration.days(1))
+        .build();
+  }
+
+  /** `transcriptionProvider`: local Whisper by default, or aws for Amazon Transcribe. */
+  private String transcriptionProvider() {
+    Object value = getNode().tryGetContext("transcriptionProvider");
+    if (value == null || "local".equals(value.toString())) return "local";
+    if ("aws".equals(value.toString())) return "aws";
+    throw new IllegalArgumentException("transcriptionProvider must be local or aws");
+  }
+
   static LifecycleRule recordingsLifecycle(boolean production) {
     LifecycleRule.Builder rule = LifecycleRule.builder()
         .id(production ? "AbortIncompleteUploads" : "ExpireOldVersions")

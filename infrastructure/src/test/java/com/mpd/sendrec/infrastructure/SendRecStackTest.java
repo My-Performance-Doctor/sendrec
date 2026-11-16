@@ -44,7 +44,8 @@ class SendRecStackTest {
         "BucketEncryption", Match.anyValue())))));
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Match.absent()));
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "ExpireOldVersions", "Status", "Enabled",
-        "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
+        "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
+        Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1))))));
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec",
         "EngineVersion", "18.6", "AllowMajorVersionUpgrade", true, "BackupRetentionPeriod", 7)))));
@@ -93,10 +94,11 @@ class SendRecStackTest {
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
-    // Versioning on and nothing expires; only abandoned multipart uploads are cleaned up.
+    // Versioning on and no recording expires; only abandoned multipart uploads and transcription staging are cleaned up.
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
         "LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "AbortIncompleteUploads", "Status", "Enabled",
-            "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
+            "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
+            Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1))))));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();
@@ -270,6 +272,28 @@ class SendRecStackTest {
     Template.fromStack(production(Map.of("productionDatabaseSize", "micro")))
         .hasResourceProperties("AWS::CloudWatch::Alarm", Map.of("MetricName", "FreeableMemory", "Threshold", 64.0 * 1024 * 1024));
     assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
+  }
+
+  @Test void transcriptionProviderIsLocalUnlessAwsIsChosen() {
+    for (SendRecStack local : List.of(stack(Map.of()), production(Map.of()))) {
+      Template template = Template.fromStack(local);
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+          "Environment", Match.arrayWith(List.of(Map.of("Name", "TRANSCRIPTION_PROVIDER", "Value", "local")))))))));
+      assertFalse(template.toJSON().toString().contains("transcribe:"), "no Transcribe permissions without the aws provider");
+    }
+    for (SendRecStack aws : List.of(stack(Map.of("transcriptionProvider", "aws")), production(Map.of("transcriptionProvider", "aws")))) {
+      Template template = Template.fromStack(aws);
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+          "Environment", Match.arrayWith(List.of(Map.of("Name", "TRANSCRIPTION_PROVIDER", "Value", "aws"),
+              Map.of("Name", "TRANSCRIPTION_LANGUAGE_CODE", "Value", "en-AU")))))))));
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", List.of("transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"),
+              "Effect", "Allow",
+              "Resource", Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
+                  Match.stringLikeRegexp(":transcription-job/sendrec-\\*$")))))))))))))));
+    }
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("transcriptionProvider", "openai")));
   }
 
   private SendRecStack production(Map<String, Object> context) {

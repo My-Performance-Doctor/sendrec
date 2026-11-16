@@ -6,8 +6,8 @@
 
 ## 2. Infrastructure
 
-- [ ] 2.1 Expire `transcribe/` objects and their noncurrent versions after one day in both environments.
-- [ ] 2.2 Add the `transcriptionProvider` context: environment and least-privilege Transcribe permissions for `aws`. Test both values.
+- [x] 2.1 Expire `transcribe/` objects and their noncurrent versions after one day in both environments.
+- [x] 2.2 Add the `transcriptionProvider` context: environment and least-privilege Transcribe permissions for `aws`. Test both values.
 
 ## 3. Verification
 
