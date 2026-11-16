@@ -101,10 +101,11 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		slog.Error("transcribe-worker: failed to reset stuck jobs", "error", err)
 	}
 
-	// Whisper yields the CPU to encodes, so a job started beside one waits for
-	// it with its deadline running. While this task encodes, leave the job to
-	// an idle task, or to this one on a later tick.
-	if encoders().busy() {
+	// Local Whisper yields the CPU to encodes, so a job started beside one
+	// waits for it with its deadline running. While this task encodes, leave
+	// the job to an idle task, or to this one on a later tick. A provider that
+	// runs off the task has nothing to wait for.
+	if _, local := transcriber.(*localWhisper); local && encoders().busy() {
 		return
 	}
 

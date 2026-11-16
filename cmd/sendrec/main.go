@@ -291,7 +291,7 @@ func main() {
 	video.StartCleanupLoop(cleanupCtx, db.Pool, store, 10*time.Minute)
 
 	if getEnv("TRANSCRIPTION_ENABLED", "false") == "true" {
-		transcriber, err := video.NewTranscriberFromEnv()
+		transcriber, err := video.NewTranscriberFromEnv(store)
 		if err != nil {
 			slog.Error("transcriber configuration invalid", "error", err)
 			os.Exit(1)

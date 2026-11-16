@@ -1,8 +1,8 @@
 ## 1. Provider
 
-- [ ] 1.1 Add the `aws` provider: upload, job, polling, caption segments, language selection and cleanup. Test it against a fake Transcribe API and in-memory storage.
-- [ ] 1.2 Build it from `TRANSCRIPTION_PROVIDER=aws` with the recordings bucket and region; test the factory.
-- [ ] 1.3 Skip the claim while encoding only for local Whisper; test both providers.
+- [x] 1.1 Add the `aws` provider: upload, job, polling, caption segments, language selection and cleanup. Test it against a fake Transcribe API and in-memory storage.
+- [x] 1.2 Build it from `TRANSCRIPTION_PROVIDER=aws` with the recordings bucket and region; test the factory.
+- [x] 1.3 Skip the claim while encoding only for local Whisper; test both providers.
 
 ## 2. Infrastructure
 
