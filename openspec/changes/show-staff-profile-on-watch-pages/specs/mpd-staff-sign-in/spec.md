@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Sign-in keeps the staff profile current
-SendRec SHALL copy the staff member's display name and photo from the access grant's optional profile on sign-in and on each grant refresh. SendRec SHALL NOT refuse sign-in or access because of the profile.
+SendRec SHALL copy the staff member's display name and photo from the access grant's optional profile on sign-in and when an API request refreshes the grant. SendRec SHALL NOT refuse sign-in or access because of the profile.
 
 #### Scenario: A name and a new photo
 - **WHEN** a grant's profile has a display name and a photo version that differs from the stored one
-- **THEN** the user's name becomes the display name, and SendRec stores the JPEG that it reads from `MPD_ACCESS_URL` plus `/photo` with the same bearer token
+- **THEN** the user's name becomes the display name, and SendRec stores the JPEG that it reads from `MPD_ACCESS_URL` plus `/photo` with the same bearer token, when the response's `ETag` is the quoted photo version
 
 #### Scenario: An unchanged photo
 - **WHEN** the profile's photo version equals the stored one
@@ -35,6 +35,10 @@ SendRec SHALL copy the staff member's display name and photo from the access gra
 - **WHEN** the photo read is slow or hangs
 - **THEN** sign-in and the request that refreshed the grant do not wait for it, and only one read per user runs at a time
 
+#### Scenario: A photo removed during its read
+- **WHEN** a grant with a null photo version arrives while a read of the earlier version is still running
+- **THEN** SendRec does not keep the photo from that read
+
 #### Scenario: A failed photo read
-- **WHEN** the photo read fails, or returns anything other than a JPEG of at most 64 KiB and 512 px a side
+- **WHEN** the photo read fails, returns anything other than a JPEG of at most 64 KiB and 512 px a side, or has an `ETag` other than the quoted photo version
 - **THEN** access continues, SendRec keeps the stored photo, and it reads that version again no sooner than five minutes later

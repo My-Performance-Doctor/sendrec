@@ -2,7 +2,7 @@
 
 - [x] 1.1 Accept an optional `profile` in the access grant. Drop a bad name or a profile with a bad photo version, without refusing access; test it.
 - [x] 1.2 Add `mpd_staff_photos` in a migration.
-- [x] 1.3 Apply the profile after sign-in creates the session and on each grant refresh: the name, then the photo off the request path only when its version changes, with a five-minute wait after a failed read; test each call site against a database.
+- [x] 1.3 Apply the profile after sign-in creates the session and on each grant refresh: the name, then the photo off the request path only when its version changes, with a five-minute wait after a failed read, a version check on the `ETag`, and a later grant winning over a read in progress; skip it inside the refresh transaction; test each call site against a database.
 
 ## 2. Watch page
 
