@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 )
 
@@ -268,5 +269,48 @@ func TestRequeueInFlightTranscription_NothingRunning(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// stopDuringClaim begins shutdown while the claim is in flight, after
+// RequeueInFlightTranscription has already looked and found nothing running.
+type stopDuringClaim struct{ pgxmock.PgxPoolIface }
+
+func (s stopDuringClaim) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	transcriptionStopping.Store(true)
+	return s.PgxPoolIface.QueryRow(ctx, sql, args...)
+}
+
+// A job claimed as the task begins to stop goes straight back to the queue,
+// instead of waiting out its deadline in the stuck-job reset.
+func TestProcessNextTranscription_RequeuesAJobClaimedDuringShutdown(t *testing.T) {
+	holdEncoderSlots(t, 0) // a fresh, idle gate
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscription.Store(nil)
+	})
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}).
+			AddRow("video-123", "recordings/v.webm", 1, 600, "user-1", "share", "auto", 3))
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1.*transcript_status = 'processing' AND transcript_generation = \$2`).
+		WithArgs("video-123", 3).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	processNextTranscription(context.Background(), stopDuringClaim{mock}, &mockStorage{}, stubTranscriber{available: true}, false)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+	if inFlightTranscription.Load() != nil {
+		t.Error("the requeued job is still marked as running")
 	}
 }

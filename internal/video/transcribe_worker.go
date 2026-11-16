@@ -132,6 +132,15 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
 	inFlightTranscription.Store(&transcriptionJob{videoID: videoID, generation: generation})
 	defer inFlightTranscription.Store(nil)
+	// Shutdown can begin during the claim, after RequeueInFlightTranscription
+	// found nothing running. Hand the job back now rather than leave it to the
+	// stuck-job reset, which waits out the whole deadline.
+	if transcriptionStopping.Load() {
+		requeueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		RequeueInFlightTranscription(requeueCtx, db)
+		return
+	}
 	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, duration, userID, shareToken, language, aiEnabled, generation)
 }
 
