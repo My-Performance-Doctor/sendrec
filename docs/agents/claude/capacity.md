@@ -24,6 +24,20 @@ At nice 19 the encode is barely slowed and Whisper effectively waits for it, so 
 
 Hosts vary about 2× (source generation took 317–668 s on identical tasks). Whisper's ggml threads wait at barriers, so CPU contention slows it far more than the encode. Staging logs show dense synthetic speech at about 2.4× even alone (90 s → 218 s).
 
+## Task size and Whisper settings (staging, 17 Nov 2026)
+
+Same 10-minute recording, encode beside Whisper at nice 19, Whisper `-t` = vCPUs (production hard-codes `-t 2`; ffmpeg is capped at 4 threads by `ffmpegThreadCap`):
+
+| Task | Encode | Whisper done |
+| --- | --- | --- |
+| 4 vCPU / 8 GB, fast host | 304 s | 624 s |
+| 4 vCPU / 8 GB, slower host | 555 s | 1172 s |
+| 8 vCPU / 16 GB | 362 s | 688 s |
+
+4 vCPU is about 1.9× faster than 2 vCPU on a like host; 8 vCPU adds nothing without lifting the thread caps. Whisper alone on one slow 2 vCPU host: default beam 1312 s, `-bs 1` greedy 1066 s (−19%), small-q5_1 1501 s (slower), q5_1 greedy 1158 s.
+
+Sydney on-demand (price list API, `AWS_PROFILE=mpd-staging aws pricing get-products --region us-east-1 --service-code AmazonECS`): x86 $0.04856 per vCPU-hour and $0.00532 per GB-hour, so a 2 vCPU / 4 GB task is about $86 a month. Amazon Transcribe batch in Sydney: $0.0001 per second. `mpd-prod` cannot call the pricing API.
+
 ## Fast paths
 
 ```bash
@@ -34,7 +48,7 @@ aws logs start-query --log-group-name /ecs/sendrec-staging --start-time $(( $(da
 aws ecs describe-services --cluster sendrec-staging-cluster --services sendrec-staging-service --query 'services[0].networkConfiguration'
 aws ecs run-task --cluster sendrec-staging-cluster --task-definition sendrec-staging:<n> --launch-type FARGATE --started-by capacity-bench \
   --network-configuration 'awsvpcConfiguration={subnets=[...],securityGroups=[...],assignPublicIp=DISABLED}' \
-  --overrides "$(python3 -c 'import json,sys;print(json.dumps({"containerOverrides":[{"name":"sendrec","command":["sh","-c",open(sys.argv[1]).read()],"environment":[{"name":"MODE","value":"nice"},{"name":"DUR","value":"600"}]}]}))' docs/agents/claude/scripts/capacity-bench.sh)"
+  --overrides "$(python3 -c 'import json,sys;print(json.dumps({"cpu":"4096","memory":"8192","containerOverrides":[{"name":"sendrec","cpu":4096,"memory":8192,"command":["sh","-c",open(sys.argv[1]).read()],"environment":[{"name":"MODE","value":"nice"},{"name":"DUR","value":"600"},{"name":"WT","value":"4"}]}]}))' docs/agents/claude/scripts/capacity-bench.sh)"
 # Results: aws logs filter-log-events --log-group-name /ecs/sendrec-staging --filter-pattern '"BENCH"'
 ```
 
