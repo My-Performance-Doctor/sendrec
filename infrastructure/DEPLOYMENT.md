@@ -13,7 +13,7 @@ Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies mig
 2. Only then replace the application tasks.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
-Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 500, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
+Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
 
 ## Deployed revision and state
 
