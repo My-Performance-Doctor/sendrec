@@ -167,9 +167,20 @@ class SendRecStackTest {
   // Alarm math metrics are emitted in a fixed order, so an unchanged alarm does not
   // show up as modified on every deploy.
   @Test void alarmMetricsKeepAFixedOrder() {
-    String alarms = Template.fromStack(production(Map.of())).findResources("AWS::CloudWatch::Alarm").toString();
-    int desired = alarms.indexOf("Id=desired"), signal = alarms.indexOf("Id=signal");
-    assertTrue(desired >= 0 && signal > desired, "desired must precede signal in each alarm's metrics");
+    Map<String, Map<String, Object>> alarms = Template.fromStack(production(Map.of())).findResources("AWS::CloudWatch::Alarm");
+    int checked = 0;
+    for (var alarm : alarms.entrySet()) {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> properties = (Map<String, Object>) alarm.getValue().get("Properties");
+      Object metrics = properties.get("Metrics");
+      if (!(metrics instanceof List<?> list)) continue;
+      List<Object> ids = new java.util.ArrayList<>();
+      for (Object metric : list) ids.add(((Map<?, ?>) metric).get("Id"));
+      if (!ids.contains("desired")) continue;
+      assertTrue(ids.indexOf("desired") < ids.indexOf("signal"), alarm.getKey() + " lists signal before desired: " + ids);
+      checked++;
+    }
+    assertTrue(checked >= 5, "expected the application alarms' metric math, checked " + checked);
   }
 
   @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
