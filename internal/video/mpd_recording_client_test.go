@@ -335,7 +335,7 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			redeemed := call("POST", "/api/mpd/preview/redeem", redeemBody, "", 200)
 			previewToken := redeemed["previewToken"].(string)
 			// A preview opened on its own names the recording (MPD-515): its title, when it was made and whether patients can open it.
-			if redeemed["title"] != "Synthetic" || redeemed["recordedAt"] == nil || redeemed["published"] != false {
+			if redeemed["title"] != "Synthetic" || redeemed["recordedAt"] == nil || redeemed["published"] != false || redeemed["passwordProtected"] == nil {
 				t.Fatalf("redeem did not describe the recording: %v", redeemed)
 			}
 			call("POST", "/api/mpd/preview/redeem", redeemBody, "", 403)

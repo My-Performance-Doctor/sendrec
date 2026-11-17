@@ -42,7 +42,9 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 			t.Errorf("player script missing %q", want)
 		}
 	}
-	if strings.Contains(mpdPlayerJS, "innerHTML") {
-		t.Error("player script writes markup")
+	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "document.title"} {
+		if strings.Contains(mpdPlayerJS, sink) {
+			t.Errorf("player script uses %s; the title may name a patient and stays text in the page header", sink)
+		}
 	}
 }

@@ -118,9 +118,12 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 400, "invalid preview")
 		return
 	}
-	var id, sid string
+	var id, sid, title string
 	var version int
-	err := m.h.db.QueryRow(r.Context(), `UPDATE mpd_preview_handoffs SET used_at=now() WHERE token_hash=$1 AND nonce=$2 AND origin=$3 AND used_at IS NULL AND expires_at>now() RETURNING video_id,media_version,session_id`, tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin).Scan(&id, &version, &sid)
+	var recordedAt time.Time
+	// The title and recording date come back with the one-use handoff, so naming the recording adds
+	// no step that could fail after the handoff is spent.
+	err := m.h.db.QueryRow(r.Context(), `UPDATE mpd_preview_handoffs h SET used_at=now() FROM videos v WHERE v.id=h.video_id AND h.token_hash=$1 AND h.nonce=$2 AND h.origin=$3 AND h.used_at IS NULL AND h.expires_at>now() RETURNING h.video_id,h.media_version,h.session_id,v.title,v.created_at`, tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin).Scan(&id, &version, &sid, &title, &recordedAt)
 	if err != nil {
 		httputil.WriteError(w, 403, "preview expired")
 		return
@@ -135,14 +138,6 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 403, "preview changed")
 		return
 	}
-	// Named so a preview opened on its own reads as this recording, not a generic page. The title
-	// is the one the patient's watch page shows; SendRec holds no patient details.
-	var title string
-	var recordedAt time.Time
-	if err := m.h.db.QueryRow(r.Context(), `SELECT title,created_at FROM videos WHERE id=$1`, id).Scan(&title, &recordedAt); err != nil {
-		httputil.WriteError(w, 503, "preview unavailable")
-		return
-	}
 	proof := randomProof()
 	_, err = m.h.db.Exec(r.Context(), `INSERT INTO mpd_preview_sessions(token_hash,video_id,media_version,session_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')`, tokenDigest(proof), id, version, sid)
 	if err != nil {
@@ -150,7 +145,10 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title, "recordedAt": recordedAt.UTC(), "published": metadata.Published})
+	// Named so a preview opened on its own reads as this recording (MPD-515). The title is the one the
+	// patient's watch page shows and can name the patient, so the page puts it only in its own header.
+	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title, "recordedAt": recordedAt.UTC(),
+		"published": metadata.Published, "passwordProtected": metadata.PasswordProtected})
 }
 func (m *MPDMedia) preview(r *http.Request) (string, int, error) {
 	proof, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
