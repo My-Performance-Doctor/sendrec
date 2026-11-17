@@ -28,7 +28,7 @@ SendRec SHALL copy the staff member's display name and photo from the access gra
 - **THEN** the name and the photo do not change
 
 #### Scenario: A bad name
-- **WHEN** the profile's display name is not a string, is blank, has control characters or is over 100 characters
+- **WHEN** the profile's display name is not a string, is blank, has control or format characters such as U+202E, or is over 100 bytes
 - **THEN** access continues, the user keeps their current name, and SendRec still applies the photo
 
 #### Scenario: A bad photo version

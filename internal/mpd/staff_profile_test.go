@@ -45,7 +45,9 @@ func TestGrantProfile(t *testing.T) {
 		}
 		return *p
 	}
-	long := strings.Repeat("é", maxNameRunes)
+	// The limit counts bytes: 100 ASCII bytes fit, but 51 "é" (102 bytes) do not.
+	long := strings.Repeat("a", maxNameBytes)
+	wide := strings.Repeat("é", maxNameBytes/2+1)
 	for _, tc := range []struct {
 		profile, name, version string
 		dropped                bool
@@ -63,7 +65,11 @@ func TestGrantProfile(t *testing.T) {
 		{profile: `,"profile":{"displayName":"` + long + `","photoVersion":null}`, name: long, version: "<nil>"},
 		{profile: `,"profile":{"displayName":"` + long + `e","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":"   ","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":"` + wide + `","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":"Dr\nStaff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		// U+202E reverses the text after it, so "Dr ‮ffatS" would show as "Dr Staff".
+		{profile: `,"profile":{"displayName":"Dr ‮ffatS","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":"Dr​Staff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":5,"photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 	} {
 		got := decode(tc.profile)
@@ -131,6 +137,57 @@ func TestFetchPhotoAppliesTheOrientation(t *testing.T) {
 	}
 	if jpegOrientation(got) != 1 {
 		t.Error("the stored photo still carries an orientation")
+	}
+}
+
+// The JPEG format allows 0xFF fill bytes before a marker and standalone
+// markers with no length, so the EXIF reader steps over both.
+func TestJPEGOrientationSkipsFillAndStandaloneMarkers(t *testing.T) {
+	photo := jpegPhoto(t, 16, 16)
+	tiff := []byte{'M', 'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 8, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	exif := append([]byte{0xFF, 0xE1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}, payload...)
+	// SOI, a standalone TEM marker, fill bytes, then the EXIF segment.
+	padded := append(append(append(append([]byte{}, photo[:2]...), 0xFF, 0x01, 0xFF, 0xFF, 0xFF), exif...), photo[2:]...)
+	if got := jpegOrientation(padded); got != 8 {
+		t.Fatalf("orientation through fill bytes and TEM read as %d, want 8", got)
+	}
+	// Go's decoder refuses TEM, so the photo path is checked with fill bytes alone.
+	filled := append(append(append(append([]byte{}, photo[:2]...), 0xFF, 0xFF), exif...), photo[2:]...)
+	if got := jpegOrientation(filled); got != 8 || !isJPEG(filled) {
+		t.Fatalf("a padded JPEG read as orientation %d, decodable %v", got, isJPEG(filled))
+	}
+}
+
+// orient turns a 3x2 image whose pixels are a b c / d e f into what each EXIF
+// orientation displays.
+func TestOrient(t *testing.T) {
+	src := image.NewGray(image.Rect(0, 0, 3, 2))
+	for i, v := range []uint8{'a', 'b', 'c', 'd', 'e', 'f'} {
+		src.SetGray(i%3, i/3, color.Gray{Y: v})
+	}
+	for o, want := range map[int][]string{
+		1: {"abc", "def"},
+		2: {"cba", "fed"},
+		3: {"fed", "cba"},
+		4: {"def", "abc"},
+		5: {"ad", "be", "cf"},
+		6: {"da", "eb", "fc"},
+		7: {"fc", "eb", "da"},
+		8: {"cf", "be", "ad"},
+	} {
+		got := orient(src, o)
+		var rows []string
+		for y := got.Bounds().Min.Y; y < got.Bounds().Max.Y; y++ {
+			row := ""
+			for x := got.Bounds().Min.X; x < got.Bounds().Max.X; x++ {
+				row += string(rune(color.GrayModel.Convert(got.At(x, y)).(color.Gray).Y))
+			}
+			rows = append(rows, row)
+		}
+		if strings.Join(rows, "/") != strings.Join(want, "/") {
+			t.Errorf("orientation %d: got %v, want %v", o, rows, want)
+		}
 	}
 }
 

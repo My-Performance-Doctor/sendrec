@@ -42,7 +42,7 @@
             "displayName": {
               "anyOf": [
                 {
-                  "maxLength": 256,
+                  "maxLength": 100,
                   "type": "string"
                 },
                 {

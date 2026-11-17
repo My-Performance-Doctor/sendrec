@@ -14,12 +14,27 @@ func jpegOrientation(b []byte) int {
 	if len(b) < 4 || b[0] != 0xFF || b[1] != 0xD8 {
 		return 1
 	}
-	for i := 2; i+4 <= len(b); {
+	for i := 2; i+1 < len(b); {
 		if b[i] != 0xFF {
+			return 1
+		}
+		// Any number of 0xFF fill bytes may come before a marker.
+		for i+1 < len(b) && b[i+1] == 0xFF {
+			i++
+		}
+		if i+1 >= len(b) {
 			return 1
 		}
 		marker := b[i+1]
 		if marker == 0xD9 || marker == 0xDA { // end of image, or start of scan: no more metadata
+			return 1
+		}
+		// TEM and RST0 to RST7 stand alone, with no length.
+		if marker == 0x01 || marker >= 0xD0 && marker <= 0xD7 {
+			i += 2
+			continue
+		}
+		if i+4 > len(b) {
 			return 1
 		}
 		size := int(binary.BigEndian.Uint16(b[i+2 : i+4]))

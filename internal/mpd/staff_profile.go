@@ -25,9 +25,9 @@ const (
 	// Watch pages inline the photo, so it must stay small. mpd-api sends 128 px.
 	maxPhotoBytes = 64 << 10
 	maxPhotoSide  = 512
-	// A name longer than SendRec's user name limit, which sign-in applies too,
-	// keeps the current name.
-	maxNameRunes    = validate.MaxNameLength
+	// A name over SendRec's user name limit keeps the current name. Like
+	// validate.Name and sign-in, it counts bytes, not characters.
+	maxNameBytes    = validate.MaxNameLength
 	photoRetryAfter = 5 * time.Minute
 	// photoDBTimeout bounds each database step of a background fetch. The read
 	// itself is bounded by the handler's HTTP client, which times out at 5 s.
@@ -78,7 +78,7 @@ func parseProfile(raw json.RawMessage) *Profile {
 			warnProfile("mpd profile name ignored", "type")
 		} else if name != nil {
 			trimmed := strings.TrimSpace(*name)
-			if trimmed == "" || utf8.RuneCountInString(trimmed) > maxNameRunes || strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
+			if trimmed == "" || len(trimmed) > maxNameBytes || !utf8.ValidString(trimmed) || strings.IndexFunc(trimmed, hiddenRune) >= 0 {
 				warnProfile("mpd profile name ignored", "value")
 			} else {
 				p.DisplayName = &trimmed
@@ -127,6 +127,12 @@ func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Pro
 	if p.PhotoVersion != nil && !sameVersion(stored, p.PhotoVersion) && h.photos != nil {
 		h.photos.fetchLater(h, userID, token, *p.PhotoVersion)
 	}
+}
+
+// hiddenRune reports control characters and format characters (Cf), such as
+// U+202E, which reverses the text after it on a patient's page.
+func hiddenRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }
 
 func sameVersion(a, b *string) bool {
