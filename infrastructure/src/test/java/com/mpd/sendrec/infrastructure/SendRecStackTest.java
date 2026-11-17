@@ -222,6 +222,22 @@ class SendRecStackTest {
     return context;
   }
 
+  // Processing progress stays off unless a deploy names it, and only with the integration active,
+  // so it can follow mpd-api #559 into each environment.
+  @Test void processingProgressIsADeploySetting() {
+    String active = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(active.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    Map<String, Object> on = activation("https://staff.example.test");
+    on.put("mpdProcessingProgress", "true");
+    String enabled = Template.fromStack(stack(on)).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=true"));
+    assertFalse(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    Map<String, Object> bad = activation("https://staff.example.test");
+    bad.put("mpdProcessingProgress", "yes");
+    assertThrows(IllegalArgumentException.class, () -> stack(bad));
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "true")));
+  }
+
   @Test void approvedMpdClientsCanUploadStraightToTheBucket() {
     Template dormant = Template.fromStack(stack(Map.of()));
     assertFalse(dormant.findResources("AWS::S3::Bucket").toString().contains("staff.example.test"));

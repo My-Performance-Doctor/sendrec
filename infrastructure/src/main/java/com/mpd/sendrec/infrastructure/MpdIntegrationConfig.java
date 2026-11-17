@@ -15,10 +15,15 @@ final class MpdIntegrationConfig {
     environment.put("MPD_SERVICE_ENABLED", "false");
     environment.put("MPD_EVENTS_ENABLED", "false");
     environment.put("MPD_REQUIRE_PASSWORD", "true");
-    // Off until mpd-api accepts `processing` in production (add-mpd-processing-progress).
+    // `mpdProcessingProgress` turns on processing progress and per-step retry for MPD. It stays off
+    // until the matching mpd-api (#559, add-video-processing-progress) runs in the same environment.
+    boolean progress = processingProgress(scope);
     environment.put("MPD_PROCESSING_PROGRESS_ENABLED", "false");
     Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
-    if (activate == null || "false".equals(activate.toString())) return;
+    if (activate == null || "false".equals(activate.toString())) {
+      if (progress) throw new IllegalArgumentException("mpdProcessingProgress needs activateMpdIntegration=true");
+      return;
+    }
     if (!"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");
     String secretArn = required(scope, "mpdIntegrationSecretArn");
     if (!secretArn.matches("arn:aws:secretsmanager:ap-southeast-2:" + scope.getAccount() + ":secret:[A-Za-z0-9/_+=.@-]+"))
@@ -34,6 +39,14 @@ final class MpdIntegrationConfig {
     environment.put("MPD_IDENTITY_ENABLED", "true");
     environment.put("MPD_SERVICE_ENABLED", "true");
     environment.put("MPD_EVENTS_ENABLED", "true");
+    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", String.valueOf(progress));
+  }
+
+  private static boolean processingProgress(Stack scope) {
+    Object value = scope.getNode().tryGetContext("mpdProcessingProgress");
+    if (value == null || "false".equals(value.toString())) return false;
+    if ("true".equals(value.toString())) return true;
+    throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
   }
 
   /**
