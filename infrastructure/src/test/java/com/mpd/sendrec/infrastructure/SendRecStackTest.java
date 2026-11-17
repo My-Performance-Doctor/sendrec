@@ -235,12 +235,12 @@ class SendRecStackTest {
     assertFalse(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
     Map<String, Object> missing = activation("https://staff.example.test");
     missing.remove("mpdProcessingProgress");
-    assertThrows(IllegalArgumentException.class, () -> stack(missing));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(missing)).getMessage().contains("mpdProcessingProgress"));
     Map<String, Object> bad = activation("https://staff.example.test");
     bad.put("mpdProcessingProgress", "yes");
-    assertThrows(IllegalArgumentException.class, () -> stack(bad));
-    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "true")));
-    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "false", "mpdProcessingProgress", "true")));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(bad)).getMessage().contains("mpdProcessingProgress must be true or false"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "true"))).getMessage().contains("needs activateMpdIntegration"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "false", "mpdProcessingProgress", "true"))).getMessage().contains("needs activateMpdIntegration"));
     String dormant = Template.fromStack(stack(Map.of("activateMpdIntegration", "false", "mpdProcessingProgress", "false"))).findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(dormant.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
     // In a controlled release the application definition carries the value; the migration one does not need it.

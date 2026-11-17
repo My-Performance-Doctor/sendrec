@@ -57,16 +57,17 @@ Infrastructure provisioning remains a separate reviewed operation. Synthesize pr
 
 ## Integration configuration
 
-`MPD_IDENTITY_ENABLED`, `MPD_SERVICE_ENABLED` and `MPD_EVENTS_ENABLED` default to false in both environments. With the integration active, every synthesis must also pass `mpdProcessingProgress` (`true` or `false`); see the release gate in `infrastructure/DEPLOYMENT.md`. The stack injects no integration credentials while disabled. A separate activation supplies `activateMpdIntegration=true`, an existing target-account `mpdIntegrationSecretArn`, and these non-secret contexts:
+`MPD_IDENTITY_ENABLED`, `MPD_SERVICE_ENABLED` and `MPD_EVENTS_ENABLED` default to false in both environments. The stack injects no integration credentials while disabled. A separate activation supplies `activateMpdIntegration=true`, an existing target-account `mpdIntegrationSecretArn`, and these non-secret contexts:
 
 - `MPD_COGNITO_ISSUER`, `MPD_COGNITO_CLIENT_ID`, `MPD_ACCESS_URL`.
 - `MPD_WORKSPACE_ID`, `MPD_TENANT_ID`.
 - `MPD_ALLOWED_CLIENT_IDS` and `MPD_ALLOWED_ORIGINS`, exact comma-separated allowlists.
 - `MPD_EVENT_RECEIVER_URL` and `MPD_EVENT_KEY_ID`.
+- `mpdProcessingProgress`, `true` or `false`, required whenever the integration is active: pass the value the live task definition carries in `MPD_PROCESSING_PROGRESS_ENABLED` unless the release switches it.
 
 The referenced Secrets Manager JSON object supplies `MPD_COGNITO_CLIENT_SECRET`, `MPD_SESSION_ENCRYPTION_KEY`, `MPD_SERVICE_TOKEN_HASHES` and `MPD_EVENT_SIGNING_KEY`. Create or rotate those through the approved secret workflow. Do not pass values as CDK contexts. The service-token field contains SHA256 verifiers, not plaintext tokens. Keep production and staging client, workspace, token and signing-key references separate. Provision the approved managed workspace before enabling login. The application identity runbook covers the identity binding and explicit account links.
 
-`MPD_REQUIRE_PASSWORD=true` remains mandatory for the initial pilot. `MPD_PROCESSING_PROGRESS_ENABLED` stays `false` until mpd-api's `add-video-processing-progress` (mpd-api #559) is live in production, because an earlier mpd-api refuses the `processing` field on the metadata response and stops processing reports. Turn it on in staging first, then production, and record each switch in `infrastructure/DEPLOYMENT.md` (MPD-498). Controlled release tasks set `MPD_MANAGED_MODE=true`, `OPTIONAL_WORKERS_ENABLED=false`, `LEGACY_WEBHOOKS_ENABLED=false` and `AI_ENABLED=false`. Registrations and API documentation stay disabled.
+`MPD_REQUIRE_PASSWORD=true` remains mandatory for the initial pilot. `MPD_PROCESSING_PROGRESS_ENABLED` (the deploy setting `mpdProcessingProgress`) stays `false` in an environment until the mpd-api that environment calls runs `add-video-processing-progress` (mpd-api #559), because an earlier mpd-api refuses the `processing` field on the metadata response and stops processing reports. Staging talks only to staging mpd-api and production only to production mpd-api, so turn it on in staging once #559 is on staging, and in production once #559 is live in production; record each switch in `infrastructure/DEPLOYMENT.md` (MPD-498). Controlled release tasks set `MPD_MANAGED_MODE=true`, `OPTIONAL_WORKERS_ENABLED=false`, `LEGACY_WEBHOOKS_ENABLED=false` and `AI_ENABLED=false`. Registrations and API documentation stay disabled.
 
 ## Workers and monitoring
 
