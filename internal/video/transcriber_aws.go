@@ -248,7 +248,8 @@ func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTrans
 		if probeErr == nil {
 			return true, nil
 		}
-		exists = !(jobMissing(probeErr) && time.Since(firstAttempt) >= readAfterCreateGrace)
+		// A missing job is proof only once the read-after-create grace is over.
+		exists = !jobMissing(probeErr) || time.Since(firstAttempt) < readAfterCreateGrace
 		if attempt < a.startAttempts {
 			select {
 			case <-ctx.Done():
