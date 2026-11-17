@@ -100,9 +100,13 @@ public CustomDomain customDomain() {
 
 5. After merge, diff and deploy staging with the current approved access contexts. The diff should change the distribution's aliases and certificate, `BASE_URL`, and the recordings bucket's CORS origins, and nothing else.
 
-The hostname is committed config rather than a deploy context on purpose: a deploy that left it out would take the alias off the distribution, and every link already sent on the new hostname would fail. Production's hostname, `results.mpd.health`, is added to `ProductionConfig` with production's own deployment change.
+The hostname is committed config rather than a deploy context on purpose: a deploy that left it out would take the alias off the distribution, and every link already sent on the new hostname would fail.
 
-In the same window, deploy mpd-api with `SENDREC_ORIGIN` set to `https://results-staging.mpd.health` and its `sendrecCallbackUrl` set to `https://results-staging.mpd.health/api/auth/mpd/callback`. mpd-api refuses metadata whose `watchUrl` origin differs from `SENDREC_ORIGIN`, so sends fail closed until both are deployed. The Cognito client takes the callback from `sendrecCallbackUrl`; without it, staff sign-in to SendRec's own pages fails. Staff OS needs no change, because SendRec allow-lists its origin rather than comparing it with `BASE_URL`.
+Production commits its hostname, `results.mpd.health`, in `ProductionConfig`. Its certificate is the required deploy input `productionDomainCertificateArn`, like production's account and other values, so the public repository names no production account. A production deploy without it fails synthesis rather than dropping the alias.
+
+In the same window, deploy mpd-api with `SENDREC_ORIGIN` set to `https://results-staging.mpd.health` and its `sendrecCallbackUrl` set to `https://results-staging.mpd.health/api/auth/mpd/callback`. mpd-api refuses metadata whose `watchUrl` origin differs from `SENDREC_ORIGIN`, so sends fail closed until both are deployed. The Cognito client takes the callback from `sendrecCallbackUrl`; without it, staff sign-in to SendRec's own pages fails.
+
+Deploy Staff OS in the same window too, with its SendRec URL on the new hostname. Staff OS frames `/mpd-preview` from its configured SendRec URL, and the framed page redeems its handoff only from `BASE_URL`. A frame still on the CloudFront hostname answers `preview origin denied`. Staff OS's session and API calls need no change, because SendRec allow-lists the Staff OS origin rather than comparing it with `BASE_URL`.
 
 The CloudFront hostname keeps answering, so `/watch/{shareToken}` links sent earlier still open there, and the bucket's CORS rule keeps that origin for their captions. SendRec's own staff sign-in accepts only `BASE_URL` as its origin, so staff use the new hostname for SendRec's pages.
 

@@ -256,11 +256,32 @@ class SendRecStackTest {
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", StagingConfig.INSTANCE.vpcId(), "pl-123", "isolated-bucket", image, topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", StagingConfig.INSTANCE.recordingsBucketName(), image, topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, ""));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", StagingConfig.INSTANCE.vpcId(), "pl-123", "isolated-bucket", image, topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", StagingConfig.INSTANCE.recordingsBucketName(), image, topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, "", DOMAIN_CERTIFICATE));
     assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App()));
+  }
+
+  @Test void productionLinksUseResultsMpdHealthWithACertificateFromItsOwnAccount() {
+    Template template = Template.fromStack(production(Map.of()));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", List.of("results.mpd.health"),
+        "ViewerCertificate", Match.objectLike(Map.of("AcmCertificateArn", DOMAIN_CERTIFICATE))))));
+    template.hasOutput("BaseUrl", Map.of("Value", "https://results.mpd.health"));
+
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    for (String arn : List.of("", DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2"), DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111"))) {
+      assertThrows(IllegalArgumentException.class,
+          () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, PRODUCTION_TOPIC, arn), arn);
+    }
+    // Every other production input present: leaving out the certificate still fails, so no deploy drops the alias.
+    Map<String, Object> inputs = new java.util.HashMap<>(Map.of("productionAccount", "537421187871", "productionVpcId", "vpc-123",
+        "productionCloudFrontPrefixListId", "pl-123", "productionBucket", "isolated-bucket", "productionImage", image,
+        "productionAlertTopicArn", PRODUCTION_TOPIC));
+    assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App(AppProps.builder().context(inputs).build())));
+    inputs.put("productionDomainCertificateArn", DOMAIN_CERTIFICATE);
+    assertEquals("results.mpd.health", ProductionConfig.fromContext(new App(AppProps.builder().context(inputs).build())).customDomain().name());
   }
 
   @Test void productionDatabaseSizeIsMicroOrSmallAndStagingStaysMicro() {
@@ -277,7 +298,7 @@ class SendRecStackTest {
     IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
         "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
-        PRODUCTION_TOPIC);
+        PRODUCTION_TOPIC, DOMAIN_CERTIFICATE);
     return new SendRecStack(app, "Production", props, config, vpc);
   }
 
