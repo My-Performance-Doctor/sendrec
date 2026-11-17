@@ -135,16 +135,28 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 
 	slog.Info("transcribe: starting", "video_id", videoID, "language", language, "provider", transcriber.Name())
 
-	// Status writes run on a context that outlives the job's and the worker's:
-	// a job that ran out of time, or was cancelled at shutdown, still has to
-	// say so. The generation guard drops the write for a job handed back. BG-07.
+	// Status writes run on a context that outlives the job's: a job that ran
+	// out of time still has to say so. BG-07. A job that ended because the
+	// worker was stopped at shutdown writes nothing: it was handed back to the
+	// queue, or the stuck-job reset will take it.
+	workerCtx := ctx
 	statusCtx := func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		return context.WithTimeout(context.WithoutCancel(workerCtx), 5*time.Second)
+	}
+	stopped := func() bool {
+		if workerCtx.Err() == nil {
+			return false
+		}
+		slog.Info("transcribe: stopped at shutdown, leaving the job to the queue", "video_id", videoID)
+		return true
 	}
 	ctx, cancel := context.WithTimeout(ctx, transcriptionTimeout(duration))
 	defer cancel()
 
 	setFailed := func() {
+		if stopped() {
+			return
+		}
 		wctx, wcancel := statusCtx()
 		defer wcancel()
 		if _, err := db.Exec(wctx,
@@ -156,6 +168,9 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 	}
 
 	execStatus := func(sql string, args ...any) (any, error) {
+		if stopped() {
+			return nil, nil
+		}
 		wctx, wcancel := statusCtx()
 		defer wcancel()
 		return db.Exec(wctx, sql, args...)

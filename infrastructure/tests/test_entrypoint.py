@@ -80,6 +80,28 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(self.run_entrypoint(env).returncode, 0)
         self.assertEqual(Path(env["WHISPER_MODEL_PATH"]).read_bytes(), MODEL)
 
+    def test_provider_is_matched_trimmed_and_in_any_case(self):
+        self.fake_download()
+        env = self.model_env() | {"TRANSCRIPTION_PROVIDER": " AWS \n"}
+        self.assertEqual(self.run_entrypoint(env).returncode, 0)
+        self.assertEqual(Path(env["WHISPER_MODEL_PATH"]).read_bytes(), MODEL)
+
+    def test_aws_starts_without_the_fallback_model_when_it_cannot_be_fetched(self):
+        for options in [{"fail": True}, {"corrupt": True}]:
+            self.fake_download(**options)
+            result = self.run_entrypoint(self.model_env() | {"TRANSCRIPTION_PROVIDER": "aws"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("started", result.stdout)
+            self.assertIn("without the Whisper fallback", result.stderr)
+            self.assertFalse((self.root / "model.bin").exists())
+            self.assertEqual(list(self.root.glob("*.part.*")), [])
+
+    def test_aws_removes_a_corrupt_cached_model_and_starts(self):
+        (self.root / "model.bin").write_bytes(b"corrupt")
+        result = self.run_entrypoint(self.model_env() | {"TRANSCRIPTION_PROVIDER": "aws"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "model.bin").exists())
+
     def test_remote_only_provider_skips_the_model(self):
         self.fake_download(fail=True)
         env = self.model_env() | {"TRANSCRIPTION_PROVIDER": "openai"}

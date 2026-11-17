@@ -40,6 +40,9 @@ type fakeTranscribe struct {
 	readyAt time.Time
 	// startErr and getErr, when set, replace the throttling error.
 	startErr, getErr error
+	// missingAfterStart answers that many polls of a just-started job with
+	// the missing-job error, as a read that has not caught up would.
+	missingAfterStart int
 }
 
 // The real API's answers: throttling is retryable, a missing job is a
@@ -80,6 +83,10 @@ func (f *fakeTranscribe) GetTranscriptionJob(_ context.Context, in *transcribe.G
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.started == nil {
+		return nil, errJobNotFound
+	}
+	if f.missingAfterStart > 0 {
+		f.missingAfterStart--
 		return nil, errJobNotFound
 	}
 	if f.getErrs > 0 {

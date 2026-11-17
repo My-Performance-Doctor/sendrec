@@ -13,6 +13,11 @@ import (
 // any reason other than silence or the job's own end, transcribes the same
 // audio with local Whisper, so a patient's report never waits on a remote
 // outage. The remote attempt leaves Whisper a reserve of the job's deadline.
+//
+// Whisper starts at once even while the task encodes: it runs at the lowest
+// CPU priority, so it yields to the encode without spending the reserve on a
+// wait. A remote job abandoned while still running may complete during its
+// cleanup; whichever transcript arrives first is used.
 type fallbackTranscriber struct {
 	primary  Transcriber
 	fallback Transcriber
@@ -59,8 +64,15 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 	return f.runFallback(ctx, audioPath, language, err)
 }
 
-// runFallback runs Whisper once no encode holds this task's slot: Whisper
-// yields the CPU to encodes, so starting beside one spends the reserve waiting.
+type transcribeResult struct {
+	segments []TranscriptSegment
+	err      error
+}
+
+// runFallback runs Whisper. When the remote job was abandoned while running,
+// its late transcript races Whisper: the first transcript wins, and a Whisper
+// run that loses is cancelled. The remote job's output is deleted by its own
+// cleanup either way.
 func (f *fallbackTranscriber) runFallback(ctx context.Context, audioPath, language string, primaryErr error) ([]TranscriptSegment, error) {
 	if !f.fallbackAvailable() {
 		if primaryErr == nil {
@@ -68,42 +80,55 @@ func (f *fallbackTranscriber) runFallback(ctx context.Context, audioPath, langua
 		}
 		return nil, fmt.Errorf("%s: %w; no fallback available", f.primary.Name(), primaryErr)
 	}
-	if err := waitForEncoderSlot(ctx); err != nil {
-		return nil, err
+	var late <-chan []TranscriptSegment
+	var abandoned *abandonedJobError
+	if errors.As(primaryErr, &abandoned) {
+		late = abandoned.late
 	}
-	segments, err := f.fallback.Transcribe(ctx, audioPath, language)
-	if err != nil {
-		if primaryErr == nil {
-			return nil, fmt.Errorf("%s: %w", f.fallback.Name(), err)
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	whisper := make(chan transcribeResult, 1)
+	go func() {
+		segments, err := f.fallback.Transcribe(wctx, audioPath, language)
+		whisper <- transcribeResult{segments, err}
+	}()
+	var whisperErr error
+	for {
+		select {
+		case segments, ok := <-late:
+			late = nil
+			if !ok { // the job settled without a transcript
+				if whisper == nil {
+					return nil, f.bothFailed(primaryErr, whisperErr)
+				}
+				continue
+			}
+			cancel()
+			if whisper != nil {
+				<-whisper // let Whisper's own cleanup finish
+			}
+			slog.Info("transcribe: provider produced the transcript", "provider", f.primary.Name(), "late", true)
+			return segments, nil
+		case r := <-whisper:
+			whisper = nil
+			if r.err == nil {
+				slog.Info("transcribe: provider produced the transcript", "provider", f.fallback.Name())
+				return r.segments, nil
+			}
+			whisperErr = r.err
+			if late == nil {
+				return nil, f.bothFailed(primaryErr, whisperErr)
+			}
+			// Whisper failed; the abandoned job may still deliver.
 		}
-		return nil, fmt.Errorf("%s: %w; %s: %w", f.primary.Name(), primaryErr, f.fallback.Name(), err)
 	}
-	slog.Info("transcribe: provider produced the transcript", "provider", f.fallback.Name())
-	return segments, nil
 }
 
-// encoderWaitPoll is how often a waiting Whisper run checks the encoder slot.
-var encoderWaitPoll = 2 * time.Second
-
-// waitForEncoderSlot waits while every encoder slot on this task is taken,
-// for at most half of the time left, so Whisper keeps time to run.
-func waitForEncoderSlot(ctx context.Context) error {
-	if !encoders().busy() {
-		return nil
+func (f *fallbackTranscriber) bothFailed(primaryErr, whisperErr error) error {
+	if primaryErr == nil {
+		return fmt.Errorf("%s: %w", f.fallback.Name(), whisperErr)
 	}
-	limit := time.Now().Add(time.Hour)
-	if deadline, ok := ctx.Deadline(); ok {
-		limit = time.Now().Add(time.Until(deadline) / 2)
-	}
-	slog.Info("transcribe: waiting for the running encode before Whisper")
-	for encoders().busy() && time.Now().Before(limit) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(encoderWaitPoll):
-		}
-	}
-	return nil
+	return fmt.Errorf("%s: %w; %s: %w", f.primary.Name(), primaryErr, f.fallback.Name(), whisperErr)
 }
 
 // whisperReserve is the deadline kept back for local Whisper: five minutes
