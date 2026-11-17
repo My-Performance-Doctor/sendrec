@@ -57,7 +57,7 @@ Infrastructure provisioning remains a separate reviewed operation. Synthesize pr
 
 ## Integration configuration
 
-`MPD_IDENTITY_ENABLED`, `MPD_SERVICE_ENABLED` and `MPD_EVENTS_ENABLED` default to false in both environments. The stack injects no integration credentials while disabled. A separate activation supplies `activateMpdIntegration=true`, an existing target-account `mpdIntegrationSecretArn`, and these non-secret contexts:
+`MPD_IDENTITY_ENABLED`, `MPD_SERVICE_ENABLED` and `MPD_EVENTS_ENABLED` default to false in both environments. With the integration active, every synthesis must also pass `mpdProcessingProgress` (`true` or `false`); see the release gate in `infrastructure/DEPLOYMENT.md`. The stack injects no integration credentials while disabled. A separate activation supplies `activateMpdIntegration=true`, an existing target-account `mpdIntegrationSecretArn`, and these non-secret contexts:
 
 - `MPD_COGNITO_ISSUER`, `MPD_COGNITO_CLIENT_ID`, `MPD_ACCESS_URL`.
 - `MPD_WORKSPACE_ID`, `MPD_TENANT_ID`.

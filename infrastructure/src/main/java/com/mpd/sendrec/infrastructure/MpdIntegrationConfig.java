@@ -15,16 +15,16 @@ final class MpdIntegrationConfig {
     environment.put("MPD_SERVICE_ENABLED", "false");
     environment.put("MPD_EVENTS_ENABLED", "false");
     environment.put("MPD_REQUIRE_PASSWORD", "true");
-    // `mpdProcessingProgress` turns on processing progress and per-step retry for MPD. It stays off
-    // until the matching mpd-api (#559, add-video-processing-progress) runs in the same environment.
-    boolean progress = processingProgress(scope);
-    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", "false");
+    // `mpdProcessingProgress` adds processing (conversion and transcript state, with the conversion
+    // percent) to the MPD metadata response. Per-step retry is served whenever the integration is
+    // active, whatever this says. An active deploy must state it, true or false, so a deploy that
+    // leaves it out cannot quietly turn it off or change the application task definition.
     Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
-    if (activate == null || "false".equals(activate.toString())) {
-      if (progress) throw new IllegalArgumentException("mpdProcessingProgress needs activateMpdIntegration=true");
-      return;
-    }
-    if (!"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");
+    boolean active = activate != null && !"false".equals(activate.toString());
+    if (active && !"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");
+    boolean progress = processingProgress(scope, active);
+    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", String.valueOf(progress));
+    if (!active) return;
     String secretArn = required(scope, "mpdIntegrationSecretArn");
     if (!secretArn.matches("arn:aws:secretsmanager:ap-southeast-2:" + scope.getAccount() + ":secret:[A-Za-z0-9/_+=.@-]+"))
       throw new IllegalArgumentException("MPD integration secret must be explicitly supplied in the target account and region");
@@ -39,13 +39,18 @@ final class MpdIntegrationConfig {
     environment.put("MPD_IDENTITY_ENABLED", "true");
     environment.put("MPD_SERVICE_ENABLED", "true");
     environment.put("MPD_EVENTS_ENABLED", "true");
-    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", String.valueOf(progress));
   }
 
-  private static boolean processingProgress(Stack scope) {
+  private static boolean processingProgress(Stack scope, boolean active) {
     Object value = scope.getNode().tryGetContext("mpdProcessingProgress");
-    if (value == null || "false".equals(value.toString())) return false;
+    if (!active) {
+      if (value != null && !"false".equals(value.toString()))
+        throw new IllegalArgumentException("mpdProcessingProgress needs activateMpdIntegration=true");
+      return false;
+    }
+    if (value == null) throw new IllegalArgumentException("Missing activation setting mpdProcessingProgress (true or false)");
     if ("true".equals(value.toString())) return true;
+    if ("false".equals(value.toString())) return false;
     throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
   }
 
