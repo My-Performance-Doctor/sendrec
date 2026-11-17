@@ -855,7 +855,7 @@ var watchPageTemplate = template.Must(template.New("watch").Funcs(watchFuncs).Pa
         {{end}}
         <h1 class="video-title">{{.Title}}</h1>
         <div class="video-meta">
-            <span class="video-meta-avatar">{{.CreatorInitials}}</span>
+            {{if .CreatorPhoto}}<img class="video-meta-avatar" src="{{.CreatorPhoto}}" alt="" width="28" height="28">{{else}}<span class="video-meta-avatar">{{.CreatorInitials}}</span>{{end}}
             <span class="video-meta-name">{{.Creator}}</span>
             <span class="video-meta-sep">&middot;</span>
             <span>{{.Date}}</span>
@@ -1810,6 +1810,7 @@ type watchPageData struct {
 	VideoURL           string
 	Creator            string
 	CreatorInitials    string
+	CreatorPhoto       template.URL
 	Date               string
 	Nonce              string
 	ThumbnailURL       string
@@ -2293,11 +2294,15 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 		summaryStr = *summaryText
 	}
 	description := summaryStr
+	var creatorPhoto template.URL
+	creatorInitials := initials(creator)
 	if managed {
 		// A patient sees only the summary staff approved through mpd-api, never
 		// SendRec's own, and the page's description never carries it.
 		summaryStr, chapterList, summaryStatus = managedSummary(r.Context(), h.db, videoID)
 		description = ""
+		creatorPhoto = managedCreatorPhoto(r.Context(), h.db, ownerID)
+		creatorInitials = staffInitials(creator)
 	} else if chaptersJSON != nil {
 		_ = json.Unmarshal([]byte(*chaptersJSON), &chapterList)
 	}
@@ -2325,7 +2330,8 @@ func (h *Handler) WatchPage(w http.ResponseWriter, r *http.Request) {
 		Title:              title,
 		VideoURL:           videoURL,
 		Creator:            creator,
-		CreatorInitials:    initials(creator),
+		CreatorInitials:    creatorInitials,
+		CreatorPhoto:       creatorPhoto,
 		Date:               createdAt.Format("02/01/2006"),
 		Nonce:              nonce,
 		ThumbnailURL:       thumbnailURL,

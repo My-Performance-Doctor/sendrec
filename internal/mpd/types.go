@@ -28,6 +28,16 @@ type Grant struct {
 	TenantID      string       `json:"tenantId"`
 	Capabilities  Capabilities `json:"capabilities"`
 	ValidUntil    time.Time    `json:"validUntil"`
+	// Profile is read by decodeGrant and not stored with the session. It is
+	// nil from mpd-api builds that predate it.
+	Profile *Profile `json:"-"`
+}
+
+// Profile is how mpd-api names the staff member to patients. A nil field means
+// mpd-api has no value for it.
+type Profile struct {
+	DisplayName  *string `json:"displayName"`
+	PhotoVersion *string `json:"photoVersion"`
 }
 type Principal struct {
 	UserID, OrganizationID, StaffID, TenantID, SessionID string
@@ -73,6 +83,7 @@ type Handler struct {
 	idVerifier *oidc.IDTokenVerifier
 	provider   *oidc.Provider
 	oauth      oauth2.Config
+	photos     *photoFetcher // shared by copies of the handler
 }
 
 var ErrDenied = errors.New("MPD authorization denied")
@@ -81,7 +92,7 @@ var ErrLinkRequired = errors.New("explicit operator identity link required")
 var ErrCapacity = errors.New("managed workspace seat capacity reached")
 
 func NewHandler(ctx context.Context, db database.DBTX, cfg Config) (*Handler, error) {
-	h := &Handler{db: db, cfg: cfg, client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	h := &Handler{db: db, cfg: cfg, photos: newPhotoFetcher(), client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if !cfg.Enabled {
 		return h, nil
 	}

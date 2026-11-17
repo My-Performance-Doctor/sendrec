@@ -77,10 +77,10 @@ func (h *Handler) provision(ctx context.Context, id *Identity, g *Grant) (*Princ
 		}
 		name := strings.TrimSpace(id.Name)
 		if name == "" {
-			name = "MPD staff"
+			name = defaultStaffName
 		}
 		if len(name) > 100 {
-			name = "MPD staff"
+			name = defaultStaffName
 		}
 		if tx.QueryRow(ctx, `INSERT INTO users(email,password,name,email_verified,retention_days) VALUES($1,'',$2,true,0) RETURNING id`, id.Email, name).Scan(&user) != nil {
 			return nil, ErrUnavailable
@@ -192,6 +192,7 @@ func (h *Handler) validateSession(ctx context.Context, sid string) (*session, er
 	s.Grant = *g
 	s.GrantExpiry = g.ValidUntil
 	s.Capabilities = g.Capabilities
+	h.applyProfile(ctx, s.UserID, raw, g.Profile)
 	return s, nil
 }
 func (h *Handler) ValidateClassification(ctx context.Context, raw string) (*Principal, error) {
