@@ -28,11 +28,34 @@ type fakeTranscribe struct {
 	audio    string // the staged audio as Transcribe would have read it
 	deleted  []string
 	getCalls int
+	// startErrs fails that many starts; createdAnyway makes a failed start
+	// still create the job, as a lost response would.
+	startErrs     int
+	startCalls    int
+	createdAnyway bool
+	// getErrs fails that many polls of a started job, as throttling would.
+	getErrs int
+	// readyAt, when set, keeps the job running until then, whoever polls.
+	readyAt time.Time
 }
+
+// DeleteObjectVersions on the in-memory bucket, which keeps no versions.
+func (s *memStorage) DeleteObjectVersions(ctx context.Context, key string) error {
+	return s.DeleteObject(ctx, key)
+}
+
+var errSyntheticAWS = errors.New("synthetic ThrottlingException")
 
 func (f *fakeTranscribe) StartTranscriptionJob(_ context.Context, in *transcribe.StartTranscriptionJobInput, _ ...func(*transcribe.Options)) (*transcribe.StartTranscriptionJobOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.startCalls++
+	if f.startCalls <= f.startErrs {
+		if f.createdAnyway {
+			f.started = in
+		}
+		return nil, errSyntheticAWS
+	}
 	f.started = in
 	key := strings.TrimPrefix(aws.ToString(in.Media.MediaFileUri), "s3://recordings/")
 	f.storage.mu.Lock()
@@ -44,9 +67,20 @@ func (f *fakeTranscribe) StartTranscriptionJob(_ context.Context, in *transcribe
 func (f *fakeTranscribe) GetTranscriptionJob(_ context.Context, in *transcribe.GetTranscriptionJobInput, _ ...func(*transcribe.Options)) (*transcribe.GetTranscriptionJobOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.started == nil {
+		return nil, &types.NotFoundException{Message: aws.String("no such job")}
+	}
+	if f.getErrs > 0 {
+		f.getErrs--
+		return nil, errSyntheticAWS
+	}
 	f.getCalls++
 	job := &types.TranscriptionJob{TranscriptionJobName: in.TranscriptionJobName, TranscriptionJobStatus: types.TranscriptionJobStatusInProgress}
-	if f.getCalls > f.polls {
+	ready := f.getCalls > f.polls
+	if !f.readyAt.IsZero() {
+		ready = time.Now().After(f.readyAt)
+	}
+	if ready {
 		if f.fail != "" {
 			job.TranscriptionJobStatus = types.TranscriptionJobStatusFailed
 			job.FailureReason = aws.String(f.fail)
@@ -84,7 +118,7 @@ func newFakeAWSTranscriber(t *testing.T, output string) (*awsTranscriber, *fakeT
 	storage := newMemStorage(map[string]string{})
 	api := &fakeTranscribe{storage: storage, output: output, polls: 2}
 	tr := newAWSTranscriber(api, storage, "recordings", "")
-	tr.poll = time.Millisecond
+	tr.poll, tr.maxPoll, tr.settle = time.Millisecond, 4*time.Millisecond, time.Second
 	audio := filepath.Join(t.TempDir(), "audio.wav")
 	if err := os.WriteFile(audio, []byte("synthetic wav"), 0o600); err != nil {
 		t.Fatal(err)
@@ -188,7 +222,8 @@ func TestAWSTranscriberLanguage(t *testing.T) {
 		{"", "en-AU", false},
 		{"en", "en-AU", false},
 		{"en-GB", "en-GB", false},
-		{"de", "", true},
+		{"de", "de-DE", false},
+		{"bo", "", true},
 	} {
 		code, identify := tr.languageFor(tc.in)
 		if code != tc.code || identify != tc.identify {

@@ -31,10 +31,13 @@ type transcribeAPI interface {
 }
 
 // transcribeStorage is the part of the recordings bucket the provider uses.
+// DeleteObjectVersions removes every version and delete marker of a key, so
+// in the versioned production bucket no noncurrent copy of the patient's
+// audio or transcript is left for the lifecycle rule.
 type transcribeStorage interface {
 	UploadFile(ctx context.Context, key, filePath, contentType string) error
 	DownloadToFile(ctx context.Context, key, destPath string) error
-	DeleteObject(ctx context.Context, key string) error
+	DeleteObjectVersions(ctx context.Context, key string) error
 }
 
 // awsTranscriber runs Amazon Transcribe batch jobs on audio staged in the
@@ -45,13 +48,21 @@ type awsTranscriber struct {
 	bucket   string
 	language string        // used for "auto" and "en", e.g. en-AU
 	poll     time.Duration // how often a running job is checked
+	maxPoll  time.Duration // the longest wait between checks after errors
+	// settle bounds how long cleanup waits for a job that was still running
+	// when it was abandoned. Transcribe cannot cancel a job, so the job may
+	// still write its output; cleanup deletes it once it lands.
+	settle time.Duration
+	// startAttempts is how often a job start is tried before giving up.
+	startAttempts int
 }
 
 func newAWSTranscriber(api transcribeAPI, storage transcribeStorage, bucket, language string) *awsTranscriber {
 	if language == "" {
 		language = "en-AU"
 	}
-	return &awsTranscriber{api: api, storage: storage, bucket: bucket, language: language, poll: 3 * time.Second}
+	return &awsTranscriber{api: api, storage: storage, bucket: bucket, language: language,
+		poll: 3 * time.Second, maxPoll: 30 * time.Second, settle: 3 * time.Minute, startAttempts: 3}
 }
 
 func (a *awsTranscriber) Name() string { return "aws-transcribe" }
@@ -69,23 +80,11 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 	audioKey := transcribePrefix + job + ".wav"
 	outputKey := transcribePrefix + job + ".json"
 
-	// Cleanup runs on a context of its own: the job's may have run out, and the
-	// audio is the patient's.
-	started := false
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		for _, key := range []string{audioKey, outputKey} {
-			if err := a.storage.DeleteObject(cleanup, key); err != nil {
-				slog.Warn("transcribe: failed to delete temporary object", "key", key, "error", err)
-			}
-		}
-		if started {
-			if _, err := a.api.DeleteTranscriptionJob(cleanup, &transcribe.DeleteTranscriptionJobInput{TranscriptionJobName: aws.String(job)}); err != nil {
-				slog.Warn("transcribe: failed to delete job", "job", job, "error", err)
-			}
-		}
-	}()
+	// started is set before the start call: a job created behind a lost
+	// response still has to be deleted, and deleting one that never existed
+	// is harmless. finished records that the job reached a final state.
+	started, finished := false, false
+	defer func() { a.cleanup(ctx, job, audioKey, outputKey, started, finished) }()
 
 	if err := a.storage.UploadFile(ctx, audioKey, audioPath, "audio/wav"); err != nil {
 		return nil, fmt.Errorf("upload audio: %w", err)
@@ -102,12 +101,14 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 	} else {
 		input.LanguageCode = types.LanguageCode(code)
 	}
-	if _, err := a.api.StartTranscriptionJob(ctx, input); err != nil {
-		return nil, fmt.Errorf("start job: %w", err)
-	}
 	started = true
+	if err := a.start(ctx, input); err != nil {
+		return nil, err
+	}
 
-	if err := a.wait(ctx, job); err != nil {
+	err := a.wait(ctx, job)
+	finished = err == nil || errors.Is(err, errJobFailed)
+	if err != nil {
 		return nil, err
 	}
 
@@ -136,38 +137,135 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 	return segments, nil
 }
 
-// wait polls the job until it completes, fails or the context ends.
+// errJobFailed marks a job Transcribe itself reported as failed.
+var errJobFailed = errors.New("transcription job failed")
+
+// start starts the job, retrying on errors the SDK's own retries did not
+// absorb. A start whose response was lost may have created the job anyway, so
+// each failure first asks whether the job exists.
+func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTranscriptionJobInput) error {
+	var err error
+	for attempt := 1; attempt <= a.startAttempts; attempt++ {
+		if _, err = a.api.StartTranscriptionJob(ctx, input); err == nil {
+			return nil
+		}
+		if _, getErr := a.api.GetTranscriptionJob(ctx, &transcribe.GetTranscriptionJobInput{TranscriptionJobName: input.TranscriptionJobName}); getErr == nil {
+			return nil
+		}
+		slog.Warn("transcribe: start failed", "job", aws.ToString(input.TranscriptionJobName), "attempt", attempt, "error", err)
+		if attempt < a.startAttempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * a.poll):
+			}
+		}
+	}
+	return fmt.Errorf("start job: %w", err)
+}
+
+// wait polls the job until it completes, fails or the context ends. A failed
+// poll, such as throttling or a network error, is logged and retried with a
+// longer wait: only the job's deadline gives up on it.
 func (a *awsTranscriber) wait(ctx context.Context, job string) error {
-	ticker := time.NewTicker(a.poll)
-	defer ticker.Stop()
+	delay := a.poll
 	for {
 		got, err := a.api.GetTranscriptionJob(ctx, &transcribe.GetTranscriptionJobInput{TranscriptionJobName: aws.String(job)})
-		if err != nil {
-			return fmt.Errorf("get job: %w", err)
-		}
-		switch got.TranscriptionJob.TranscriptionJobStatus {
-		case types.TranscriptionJobStatusCompleted:
+		switch {
+		case err != nil:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			slog.Warn("transcribe: checking the job failed, retrying", "job", job, "error", err)
+			delay = min(delay*2, a.maxPoll)
+		case got.TranscriptionJob.TranscriptionJobStatus == types.TranscriptionJobStatusCompleted:
 			return nil
-		case types.TranscriptionJobStatusFailed:
-			return fmt.Errorf("job failed: %s", aws.ToString(got.TranscriptionJob.FailureReason))
+		case got.TranscriptionJob.TranscriptionJobStatus == types.TranscriptionJobStatusFailed:
+			return fmt.Errorf("%w: %s", errJobFailed, aws.ToString(got.TranscriptionJob.FailureReason))
+		default:
+			delay = a.poll
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-time.After(delay):
 		}
 	}
 }
 
+// cleanup deletes the patient's audio at once, then, for a job that was still
+// running, waits a bounded time for it to finish so its late output can be
+// deleted too, and finally deletes the output and the job. It runs on a
+// context of its own: the job's may have run out. A task that is stopping
+// waits only briefly; the transcribe/ lifecycle rule removes anything later.
+func (a *awsTranscriber) cleanup(ctx context.Context, job, audioKey, outputKey string, started, finished bool) {
+	settle := a.settle
+	if transcriptionStopping.Load() {
+		settle = min(settle, 5*time.Second)
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settle+5*time.Second)
+	defer cancel()
+	a.deleteKey(cctx, audioKey)
+	if started && !finished {
+		a.settleJob(cctx, job, settle)
+	}
+	a.deleteKey(cctx, outputKey)
+	if started {
+		if _, err := a.api.DeleteTranscriptionJob(cctx, &transcribe.DeleteTranscriptionJobInput{TranscriptionJobName: aws.String(job)}); err != nil {
+			slog.Warn("transcribe: failed to delete job", "job", job, "error", err)
+		}
+	}
+}
+
+// settleJob waits up to settle for an abandoned job to reach a final state.
+func (a *awsTranscriber) settleJob(ctx context.Context, job string, settle time.Duration) {
+	deadline := time.Now().Add(settle)
+	for time.Now().Before(deadline) {
+		got, err := a.api.GetTranscriptionJob(ctx, &transcribe.GetTranscriptionJobInput{TranscriptionJobName: aws.String(job)})
+		if err != nil {
+			var missing *types.NotFoundException
+			if errors.As(err, &missing) {
+				return
+			}
+		} else if s := got.TranscriptionJob.TranscriptionJobStatus; s == types.TranscriptionJobStatusCompleted || s == types.TranscriptionJobStatusFailed {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(a.poll):
+		}
+	}
+	slog.Warn("transcribe: abandoned job still running at cleanup; the lifecycle rule removes its output", "job", job)
+}
+
+func (a *awsTranscriber) deleteKey(ctx context.Context, key string) {
+	if err := a.storage.DeleteObjectVersions(ctx, key); err != nil {
+		slog.Warn("transcribe: failed to delete temporary object", "key", key, "error", err)
+	}
+}
+
+// transcribeLocales maps SendRec's two-letter language choices to the
+// Transcribe locale a user who picked them most likely means. A choice not
+// listed here is identified from the audio.
+var transcribeLocales = map[string]string{
+	"ar": "ar-SA", "da": "da-DK", "de": "de-DE", "es": "es-ES", "fr": "fr-FR",
+	"hi": "hi-IN", "it": "it-IT", "ja": "ja-JP", "ko": "ko-KR", "nl": "nl-NL",
+	"pt": "pt-BR", "ru": "ru-RU", "sv": "sv-SE", "tr": "tr-TR", "zh": "zh-CN",
+}
+
 // languageFor maps SendRec's language setting to Transcribe's. "auto" and
 // "en" use the configured locale, since MPD's Doctors speak Australian
-// English; a full locale is used as given; anything else is identified.
+// English; a full locale is used as given; a common language uses its usual
+// locale, so an explicit choice is kept; anything else is identified.
 func (a *awsTranscriber) languageFor(language string) (code string, identify bool) {
 	switch {
 	case language == "" || language == "auto" || language == "en":
 		return a.language, false
 	case strings.Contains(language, "-"):
 		return language, false
+	case transcribeLocales[language] != "":
+		return transcribeLocales[language], false
 	default:
 		return "", true
 	}

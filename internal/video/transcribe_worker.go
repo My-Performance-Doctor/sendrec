@@ -62,6 +62,36 @@ var (
 	transcriptionStopping atomic.Bool
 )
 
+// transcriptionCancel stops the transcription worker's context at shutdown.
+var transcriptionCancel atomic.Pointer[context.CancelFunc]
+
+// TranscriptionContext gives the transcription worker a context of its own,
+// which StopTranscription cancels at shutdown. The rest of the process keeps
+// running until main returns, so without it a provider's cleanup, such as
+// deleting a patient's staged audio, would never run before the task goes.
+func TranscriptionContext(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	transcriptionCancel.Store(&cancel)
+	return ctx
+}
+
+// StopTranscription cancels the worker's context and waits up to wait for the
+// running job, if any, to return and finish its cleanup. Call it after
+// RequeueInFlightTranscription, so the job is already back in the queue and
+// any result the stopped job still writes is discarded by its generation.
+func StopTranscription(wait time.Duration) {
+	if cancel := transcriptionCancel.Load(); cancel != nil {
+		(*cancel)()
+	}
+	deadline := time.Now().Add(wait)
+	for inFlightTranscription.Load() != nil && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if inFlightTranscription.Load() != nil {
+		slog.Warn("transcribe-worker: running job did not finish its cleanup before shutdown")
+	}
+}
+
 // RequeueInFlightTranscription hands this process's running job back to the
 // queue at shutdown, as during a deploy or a scale-in. Without it the job
 // waits out its whole deadline, which grows with the recording, before

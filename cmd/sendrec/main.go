@@ -296,7 +296,7 @@ func main() {
 			slog.Error("transcriber configuration invalid", "error", err)
 			os.Exit(1)
 		}
-		video.StartTranscriptionWorker(cleanupCtx, db.Pool, store, transcriber, 5*time.Second, aiEnabled)
+		video.StartTranscriptionWorker(video.TranscriptionContext(cleanupCtx), db.Pool, store, transcriber, 5*time.Second, aiEnabled)
 	}
 	video.StartSummaryWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
 	video.StartDocumentWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
@@ -340,6 +340,9 @@ func main() {
 	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
 	requeueCancel()
+	// Then stop the running transcript so its provider's cleanup deletes the
+	// staged audio and job before the task goes.
+	video.StopTranscription(12 * time.Second)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

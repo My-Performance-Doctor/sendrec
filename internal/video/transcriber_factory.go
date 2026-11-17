@@ -22,7 +22,8 @@ import (
 //     Reads TRANSCRIPTION_API_KEY, TRANSCRIPTION_MODEL.
 //   - "aws":         Amazon Transcribe batch jobs, staged in the recordings
 //     bucket (S3_BUCKET) in S3_REGION, with the task's own credentials.
-//     Reads TRANSCRIPTION_LANGUAGE_CODE (default en-AU).
+//     Reads TRANSCRIPTION_LANGUAGE_CODE (default en-AU). Falls back to local
+//     Whisper for a job Transcribe cannot finish.
 func NewTranscriberFromEnv(storage ObjectStorage) (Transcriber, error) {
 	provider := strings.ToLower(strings.TrimSpace(os.Getenv("TRANSCRIPTION_PROVIDER")))
 	switch provider {
@@ -61,7 +62,15 @@ func NewTranscriberFromEnv(storage ObjectStorage) (Transcriber, error) {
 		if err != nil {
 			return nil, fmt.Errorf("TRANSCRIPTION_PROVIDER=aws: load AWS config: %w", err)
 		}
-		return newAWSTranscriber(transcribe.NewFromConfig(cfg), storage, bucket, os.Getenv("TRANSCRIPTION_LANGUAGE_CODE")), nil
+		staged, ok := storage.(transcribeStorage)
+		if !ok {
+			return nil, fmt.Errorf("TRANSCRIPTION_PROVIDER=aws requires storage that can delete object versions")
+		}
+		// Local Whisper stays in the image as the fallback when Transcribe fails.
+		return &fallbackTranscriber{
+			primary:  newAWSTranscriber(transcribe.NewFromConfig(cfg), staged, bucket, os.Getenv("TRANSCRIPTION_LANGUAGE_CODE")),
+			fallback: newLocalWhisper(),
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown TRANSCRIPTION_PROVIDER %q (expected one of: local, openai, deepgram, aws)", provider)
 	}
