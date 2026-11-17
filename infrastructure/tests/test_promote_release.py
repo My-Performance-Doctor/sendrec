@@ -15,7 +15,7 @@ class PromotionTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.template = {'Resources': {}}
+        self.template = {'Resources': {'Service': {'Type': 'AWS::ECS::Service', 'Properties': {'DesiredCount': 2}}}}
         template = pathlib.Path(self.directory.name) / 'stack.json'
         template.write_text(json.dumps(self.template))
         config = {'templatePath': str(template), 'stack': 'SyntheticStage', 'desiredCount': 1, 'cluster': 'stage-cluster', 'service': 'stage-service',
@@ -117,6 +117,22 @@ class PromotionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             promote.validate(self.manifest, 'production', evidence)
         self.manifest['image'] = self.manifest['image'].split('@')[0]+':latest'
+        with self.assertRaises(ValueError):
+            promote.validate(self.manifest, 'staging')
+
+    def test_production_count_matches_its_template(self):
+        evidence = {k: self.manifest[k] for k in ('image','revision','infrastructureSha256')}
+        evidence.update(target='staging',verified=True)
+        promote.validate(self.manifest, 'production', evidence)
+        for bad in (0, 5, '2', True):
+            self.manifest['production']['desiredCount'] = bad
+            with self.assertRaises(ValueError):
+                promote.validate(self.manifest, 'production', evidence)
+        # A count the template does not state would be undone by the next stack deploy.
+        self.manifest['production']['desiredCount'] = 3
+        with self.assertRaisesRegex(ValueError, 'DesiredCount'):
+            promote.validate(self.manifest, 'production', evidence)
+        self.manifest['staging']['desiredCount'] = 2
         with self.assertRaises(ValueError):
             promote.validate(self.manifest, 'staging')
 
