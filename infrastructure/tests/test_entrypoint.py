@@ -96,6 +96,17 @@ class EntrypointTests(unittest.TestCase):
             self.assertFalse((self.root / "model.bin").exists())
             self.assertEqual(list(self.root.glob("*.part.*")), [])
 
+    def test_unwritable_model_directory(self):
+        self.fake_download()
+        (self.root / "blocker").write_text("a file where the model directory should be")
+        env = self.model_env() | {"WHISPER_MODEL_PATH": str(self.root / "blocker" / "model.bin")}
+        local = self.run_entrypoint(env)
+        self.assertNotEqual(local.returncode, 0)
+        self.assertNotIn("started", local.stdout)
+        aws = self.run_entrypoint(env | {"TRANSCRIPTION_PROVIDER": "aws"})
+        self.assertEqual(aws.returncode, 0, aws.stderr)
+        self.assertIn("without the Whisper fallback", aws.stderr)
+
     def test_aws_removes_a_corrupt_cached_model_and_starts(self):
         (self.root / "model.bin").write_bytes(b"corrupt")
         result = self.run_entrypoint(self.model_env() | {"TRANSCRIPTION_PROVIDER": "aws"})

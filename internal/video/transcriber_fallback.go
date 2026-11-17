@@ -12,7 +12,8 @@ import (
 // fallbackTranscriber tries a remote provider first and, when it fails for
 // any reason other than silence or the job's own end, transcribes the same
 // audio with local Whisper, so a patient's report never waits on a remote
-// outage. The remote attempt leaves Whisper a reserve of the job's deadline.
+// outage. The remote attempt gets transcribeBudget of the job's deadline and
+// Whisper the rest; without a fallback the remote attempt gets all of it.
 //
 // Whisper starts at once even while the task encodes: it runs at the lowest
 // CPU priority, so it yields to the encode without spending the reserve on a
@@ -40,10 +41,10 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 		slog.Warn("transcribe: provider unavailable, using the fallback", "provider", f.primary.Name())
 		return f.runFallback(ctx, audioPath, language, nil)
 	}
+	// Without a fallback, Transcribe has the whole deadline.
 	primaryCtx, cancel := ctx, context.CancelFunc(func() {})
-	if deadline, ok := ctx.Deadline(); ok {
-		reserve := min(whisperReserve(audioPath), time.Until(deadline)/2)
-		primaryCtx, cancel = context.WithDeadline(ctx, deadline.Add(-reserve))
+	if deadline, ok := ctx.Deadline(); ok && f.fallbackAvailable() {
+		primaryCtx, cancel = context.WithDeadline(ctx, time.Now().Add(transcribeBudget(audioPath, time.Until(deadline))))
 	}
 	segments, err := f.primary.Transcribe(primaryCtx, audioPath, language)
 	cancel()
@@ -58,6 +59,18 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 	}
 	if !f.fallbackAvailable() {
 		slog.Warn("transcribe: provider failed and the fallback is unavailable", "provider", f.primary.Name(), "error", err)
+		// An abandoned job may still deliver during its cleanup.
+		var abandoned *abandonedJobError
+		if errors.As(err, &abandoned) {
+			select {
+			case segments, ok := <-abandoned.late:
+				if ok {
+					slog.Info("transcribe: provider produced the transcript", "provider", f.primary.Name(), "late", true)
+					return segments, nil
+				}
+			case <-ctx.Done():
+			}
+		}
 		return nil, err
 	}
 	slog.Warn("transcribe: provider failed, falling back", "provider", f.primary.Name(), "fallback", f.fallback.Name(), "error", err)
@@ -131,13 +144,17 @@ func (f *fallbackTranscriber) bothFailed(primaryErr, whisperErr error) error {
 	return fmt.Errorf("%s: %w; %s: %w", f.primary.Name(), primaryErr, f.fallback.Name(), whisperErr)
 }
 
-// whisperReserve is the deadline kept back for local Whisper: five minutes
-// plus three times the audio's length, read from the 16 kHz mono 16-bit WAV
-// the worker extracts (32,000 bytes a second).
-func whisperReserve(audioPath string) time.Duration {
-	reserve := 5 * time.Minute
+// transcribeBudget is the share of the remaining deadline the remote attempt
+// gets: ten minutes plus half the audio's length, and never more than half.
+// Transcribe finishes a 20-minute recording in under a minute, so this is
+// ample. Whisper keeps the rest, about 20 minutes plus 3.5 times the length of
+// the 30 minutes plus 4 times it, which covers dense speech on a slow host
+// beside an encode at nice 19. The length is read from the 16 kHz mono 16-bit
+// WAV the worker extracts (32,000 bytes a second).
+func transcribeBudget(audioPath string, remaining time.Duration) time.Duration {
+	budget := 10 * time.Minute
 	if info, err := os.Stat(audioPath); err == nil {
-		reserve += time.Duration(3*info.Size()/32000) * time.Second
+		budget += time.Duration(info.Size()/32000/2) * time.Second
 	}
-	return reserve
+	return min(budget, remaining/2)
 }

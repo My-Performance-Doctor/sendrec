@@ -57,6 +57,9 @@ func TestAWSTranscriberUsesAJobCreatedBehindAFailedStart(t *testing.T) {
 // exists there is nothing to delete; when a lost response created one, it is
 // deleted.
 func TestAWSTranscriberGivesUpOnAStartThatKeepsFailing(t *testing.T) {
+	prev := readAfterCreateGrace
+	readAfterCreateGrace = 0 // a missing job proves there is none
+	t.Cleanup(func() { readAfterCreateGrace = prev })
 	for _, created := range []bool{false, true} {
 		tr, api, storage, audio := newFakeAWSTranscriber(t, transcribeFixture)
 		api.startErrs = 99
@@ -217,16 +220,16 @@ func TestFallbackTranscriber(t *testing.T) {
 	t.Run("a failed remote job falls back to Whisper", func(t *testing.T) {
 		primary := &stubTranscribeResult{name: "aws-transcribe", err: errSyntheticAWS}
 		fallback := &stubTranscribeResult{name: "local-whisper", segments: whisper}
+		start := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 		defer cancel()
 		got, err := (&fallbackTranscriber{primary, fallback}).Transcribe(ctx, audio, "auto")
 		if err != nil || len(got) != 1 || got[0].Text != "from whisper" {
 			t.Fatalf("got %v, %v", got, err)
 		}
-		// The remote attempt leaves Whisper 5 min plus 3x the audio's minute.
-		deadline, _ := ctx.Deadline()
-		if reserve := deadline.Sub(primary.deadline); reserve < 8*time.Minute-time.Second || reserve > 8*time.Minute+time.Second {
-			t.Errorf("reserve = %v, want 8 min", reserve)
+		// The remote attempt gets 10 min plus half the audio's minute.
+		if budget := primary.deadline.Sub(start); budget < 10*time.Minute+29*time.Second || budget > 10*time.Minute+31*time.Second {
+			t.Errorf("remote budget = %v, want 10.5 min", budget)
 		}
 	})
 	t.Run("silence is an answer", func(t *testing.T) {

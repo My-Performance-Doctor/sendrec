@@ -111,12 +111,14 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 		input.LanguageCode = types.LanguageCode(code)
 	}
 	exists = true
-	ok, err := a.start(ctx, input)
+	// startedAt is the first start attempt: the read-after-create grace runs
+	// from there, for the start's probes, the wait and the settle alike.
+	startedAt = time.Now()
+	ok, err := a.start(ctx, input, startedAt)
 	exists = ok
 	if err != nil {
 		return nil, err
 	}
-	startedAt = time.Now()
 
 	err = a.wait(ctx, job, startedAt)
 	finished = err == nil || errors.Is(err, errJobFailed)
@@ -220,9 +222,11 @@ func logAccessDenied(job string, err error) {
 
 // start starts the job, retrying errors that may clear. A start whose response
 // was lost may have created the job anyway, so each failure first asks whether
-// the job exists. It reports whether a job may exist: false only when the
-// last probe proved there is none.
-func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTranscriptionJobInput) (bool, error) {
+// the job exists, and a ConflictException says an earlier attempt created
+// it. It reports whether a job may exist: false when the start was refused
+// outright (access, validation), which creates no job, or when a probe past
+// the read-after-create grace finds none.
+func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTranscriptionJobInput, firstAttempt time.Time) (bool, error) {
 	job := aws.ToString(input.TranscriptionJobName)
 	exists := true
 	var err error
@@ -230,16 +234,21 @@ func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTrans
 		if _, err = a.api.StartTranscriptionJob(ctx, input); err == nil {
 			return true, nil
 		}
+		var conflict *types.ConflictException
+		if errors.As(err, &conflict) {
+			return true, nil // an earlier attempt's lost response created it
+		}
+		logAccessDenied(job, err)
+		slog.Warn("transcribe: start failed", "job", job, "attempt", attempt, "error", err)
+		if !retryableTranscribeError(err) {
+			// Refused outright: no job was created, so nothing to settle.
+			return false, fmt.Errorf("start job: %w", err)
+		}
 		_, probeErr := a.api.GetTranscriptionJob(ctx, &transcribe.GetTranscriptionJobInput{TranscriptionJobName: input.TranscriptionJobName})
 		if probeErr == nil {
 			return true, nil
 		}
-		exists = !jobMissing(probeErr)
-		logAccessDenied(job, err)
-		slog.Warn("transcribe: start failed", "job", job, "attempt", attempt, "error", err)
-		if !retryableTranscribeError(err) {
-			break
-		}
+		exists = !(jobMissing(probeErr) && time.Since(firstAttempt) >= readAfterCreateGrace)
 		if attempt < a.startAttempts {
 			select {
 			case <-ctx.Done():
@@ -316,10 +325,9 @@ func (a *awsTranscriber) cleanup(ctx context.Context, job, audioKey, outputKey s
 			}
 		}
 	}
+	// late is only made for a job that exists and did not finish, so this
+	// branch never has one to close.
 	if !exists || finished {
-		if late != nil {
-			close(late)
-		}
 		fctx, cancel := context.WithTimeout(base, 15*time.Second)
 		defer cancel()
 		finish(fctx)

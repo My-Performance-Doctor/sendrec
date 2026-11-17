@@ -50,7 +50,10 @@ fetch_model() {
     fi
     return 0
   fi
-  mkdir -p "$(dirname "$WHISPER_MODEL_PATH")"
+  if ! mkdir -p "$(dirname "$WHISPER_MODEL_PATH")"; then
+    echo "Transcription model directory could not be created" >&2
+    return 1
+  fi
   model_part="${WHISPER_MODEL_PATH}.part.$$"
   trap 'rm -f "$model_part"' EXIT HUP INT TERM
   echo "Downloading pinned transcription model"
@@ -64,7 +67,11 @@ fetch_model() {
     rm -f "$model_part"; trap - EXIT HUP INT TERM
     return 1
   fi
-  mv "$model_part" "$WHISPER_MODEL_PATH"
+  if ! mv "$model_part" "$WHISPER_MODEL_PATH"; then
+    echo "Transcription model could not be moved into place" >&2
+    rm -f "$model_part"; trap - EXIT HUP INT TERM
+    return 1
+  fi
   trap - EXIT HUP INT TERM
 }
 provider=$(printf '%s' "${TRANSCRIPTION_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
