@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/database"
 )
 
@@ -17,9 +18,22 @@ func TestEncodeLeaseFollowsTheDeadline(t *testing.T) {
 	pool := accountDB(t)
 	ctx := context.Background()
 	id, _, _ := seedManagedLifecycle(t, pool, "ready")
+	for _, d := range []int{0, 600, 10 * 3600} {
+		mustExec(t, pool, `UPDATE videos SET duration=$2, encode_started_at=now()-make_interval(secs => $3::float8) WHERE id=$1`, id, d, (encodeTimeout(d) + 30*time.Second).Seconds())
+		if lease, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible); err != nil || lease != nil {
+			t.Fatalf("duration %d: took a lease inside encodeTimeout plus a minute: lease %v, err %v", d, lease, err)
+		}
+		mustExec(t, pool, `UPDATE videos SET encode_started_at=now()-make_interval(secs => $2::float8) WHERE id=$1`, id, (encodeTimeout(d) + 90*time.Second).Seconds())
+		lease, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+		if err != nil || lease == nil {
+			t.Fatalf("duration %d: expired lease not taken over: lease %v, err %v", d, lease, err)
+		}
+		lease.release(ctx, pool)
+	}
+	mustExec(t, pool, `UPDATE videos SET duration=60 WHERE id=$1`, id)
 	claim := func() bool {
 		t.Helper()
-		lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+		lease, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,6 +77,10 @@ func TestEncodeLeaseFollowsTheDeadline(t *testing.T) {
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND encode_started_at IS NULL`, id) {
 		t.Fatal("the holder's release kept the lease")
 	}
+	recordTranscodeFailure(ctx, pool, id, "synthetic.webm", errors.New("late failure"), held)
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND transcode_attempts=1`, id) {
+		t.Fatal("a failure from a conversion that no longer holds the lease was counted")
+	}
 }
 
 // Publishing a conversion releases its lease.
@@ -101,7 +119,7 @@ func TestEditReleasesALosingConversionsLease(t *testing.T) {
 	if edited == key {
 		t.Fatal("the edit did not switch the file")
 	}
-	lease, _, _, err := claimEncode(ctx, pool, videoID, edited, transcodeEligible)
+	lease, _, err := claimEncode(ctx, pool, videoID, edited, transcodeEligible)
 	if err != nil || lease == nil {
 		t.Fatalf("the edited file's conversion could not claim at once: lease %v, err %v", lease, err)
 	}
@@ -117,7 +135,7 @@ func TestEditReleasesALosingConversionsLease(t *testing.T) {
 func TestClaimRefusesAReplacedFile(t *testing.T) {
 	pool := accountDB(t)
 	id, _, _ := seedManagedLifecycle(t, pool, "ready")
-	lease, _, _, err := claimEncode(context.Background(), pool, id, "replaced.webm", transcodeEligible)
+	lease, _, err := claimEncode(context.Background(), pool, id, "replaced.webm", transcodeEligible)
 	if err != nil || lease != nil {
 		t.Fatalf("claimed a file the row no longer points at: lease %v, err %v", lease, err)
 	}
@@ -130,7 +148,7 @@ func TestShutdownReleasesOnlyItsOwnLeases(t *testing.T) {
 	pool := accountDB(t)
 	ctx := context.Background()
 	mine, _, _ := seedManagedLifecycle(t, pool, "ready")
-	lease, _, _, err := claimEncode(ctx, pool, mine, "synthetic.webm", transcodeEligible)
+	lease, _, err := claimEncode(ctx, pool, mine, "synthetic.webm", transcodeEligible)
 	if err != nil || lease == nil {
 		t.Fatalf("claim: lease %v, err %v", lease, err)
 	}
@@ -138,7 +156,7 @@ func TestShutdownReleasesOnlyItsOwnLeases(t *testing.T) {
 	other := mustID(t, pool, `INSERT INTO videos(user_id,organization_id,title,file_key,share_token,status,duration,content_type,encode_started_at)
 		SELECT user_id,organization_id,'Other','other.webm','other','ready',60,'video/webm',now() FROM videos WHERE id=$1 RETURNING id`, mine)
 
-	ReleaseInFlightEncodes(ctx, pool)
+	releaseInFlightEncodes(ctx, pool, func(id string) bool { return id == mine || id == other })
 
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND encode_started_at IS NULL`, mine) {
 		t.Fatal("this task's lease was not handed back")
@@ -146,7 +164,7 @@ func TestShutdownReleasesOnlyItsOwnLeases(t *testing.T) {
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND encode_started_at IS NOT NULL`, other) {
 		t.Fatal("another task's lease was freed")
 	}
-	if again, _, _, err := claimEncode(ctx, pool, mine, "synthetic.webm", transcodeEligible); err != nil || again != nil {
+	if again, _, err := claimEncode(ctx, pool, mine, "synthetic.webm", transcodeEligible); err != nil || again != nil {
 		t.Fatalf("a stopping task claimed again: lease %v, err %v", again, err)
 	}
 }
@@ -229,7 +247,7 @@ func TestMissedPublishDuringAnEditReleasesTheLease(t *testing.T) {
 	}
 	// The edit fails and falls back to 'ready' on the same file.
 	mustExec(t, pool, `UPDATE videos SET status='ready' WHERE id=$1`, id)
-	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	lease, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
 	if err != nil || lease == nil {
 		t.Fatalf("the next conversion could not claim at once: lease %v, err %v", lease, err)
 	}
@@ -242,7 +260,7 @@ func TestStaleHolderLeavesANewerLeaseAlone(t *testing.T) {
 	pool := accountDB(t)
 	ctx := context.Background()
 	id, _, _ := seedManagedLifecycle(t, pool, "ready")
-	stale, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	stale, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
 	if err != nil || stale == nil {
 		t.Fatalf("claim: lease %v, err %v", stale, err)
 	}
@@ -263,37 +281,39 @@ func TestClaimWithAHugeDuration(t *testing.T) {
 	ctx := context.Background()
 	id, _, _ := seedManagedLifecycle(t, pool, "ready")
 	mustExec(t, pool, `UPDATE videos SET duration=2147483647 WHERE id=$1`, id)
-	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	lease, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
 	if err != nil || lease == nil {
 		t.Fatalf("claim with a huge duration: lease %v, err %v", lease, err)
 	}
 	inFlightEncodes.Delete(lease)
-	if again, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible); err != nil || again != nil {
+	if again, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible); err != nil || again != nil {
 		t.Fatalf("second claim beside a live lease: lease %v, err %v", again, err)
 	}
 }
 
-// Shutdown hands leases back after the HTTP drain: the transcript hand-back,
-// which runs first, does not stop claims, so a finalize served during the
-// drain still converts, and its lease is released by ReleaseInFlightEncodes.
-func TestShutdownReleasesClaimsMadeDuringTheDrain(t *testing.T) {
-	t.Cleanup(func() {
-		encodesStopping.Store(false)
-		transcriptionStopping.Store(false)
-	})
-	pool := accountDB(t)
-	ctx := context.Background()
-	id, _, _ := seedManagedLifecycle(t, pool, "ready")
-
-	RequeueInFlightTranscription(ctx, pool)
-	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
-	if err != nil || lease == nil {
-		t.Fatalf("a finalize during the drain could not claim: lease %v, err %v", lease, err)
+// A release that fails keeps the lease tracked, so the conversion's deferred
+// release can try again.
+func TestFailedReleaseCanBeRetried(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer mock.Close()
+	lease := &encodeLease{videoID: "video-1", startedAt: time.Now()}
+	inFlightEncodes.Store(lease, struct{}{})
+	t.Cleanup(func() { inFlightEncodes.Delete(lease) })
+	mock.ExpectExec(`UPDATE videos SET encode_started_at = NULL`).WithArgs("video-1", lease.startedAt).WillReturnError(errors.New("connection reset"))
+	mock.ExpectExec(`UPDATE videos SET encode_started_at = NULL`).WithArgs("video-1", lease.startedAt).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	ReleaseInFlightEncodes(ctx, pool)
-
-	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND encode_started_at IS NULL`, id) {
-		t.Fatal("the drain's claim was not handed back")
+	lease.release(context.Background(), mock)
+	if _, tracked := inFlightEncodes.Load(lease); !tracked {
+		t.Fatal("a failed release stopped tracking the lease")
+	}
+	lease.done(context.Background(), mock)
+	if _, tracked := inFlightEncodes.Load(lease); tracked {
+		t.Fatal("the retried release left the lease tracked")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
 	}
 }

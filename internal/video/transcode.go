@@ -58,13 +58,17 @@ const perJobTimeout = 10 * time.Minute
 // deadline, so a bogus duration cannot hold an encoder slot for hours.
 const encodeExtraCapSeconds = 110 * 60
 
+// encodeSecondsPerSecond is how much deadline each second of recording adds to
+// an encode. claimEncode applies it in SQL to the row's duration.
+const encodeSecondsPerSecond = 2
+
 // encodeTimeout is perJobTimeout plus twice the recording's length: H.264 runs
 // at about real time on a hard 1080p source with four CPUs, so this leaves
 // room for smaller hosts. Every encode uses it, and resetStuckProcessing
 // applies the same allowance to rows held in processing. A zero duration, as
 // for a recording not yet probed, gives the base alone.
 func encodeTimeout(durationSeconds int) time.Duration {
-	extra := min(max(2*durationSeconds, 0), encodeExtraCapSeconds)
+	extra := min(max(encodeSecondsPerSecond*durationSeconds, 0), encodeExtraCapSeconds)
 	return perJobTimeout + time.Duration(extra)*time.Second
 }
 
@@ -107,10 +111,10 @@ const (
 // The budget belongs to the file the job converted, fileKey. If the video has
 // moved on to another file, or was deleted, nothing is counted: an edit's
 // output must not inherit the failures of the file it replaced. #328.
-// held, when given, is the failing conversion's claimed lease time: the attempt
-// counts only while no other conversion holds a newer lease on the row. The
-// lease itself is left to the conversion's release.
-func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, fileKey string, cause error, held ...time.Time) {
+// held is the failing conversion's claimed lease time: the attempt counts only
+// while that conversion still holds the lease, never against a file another
+// conversion has since claimed. The lease itself is left to the release.
+func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, fileKey string, cause error, held time.Time) {
 	permanent := isPermanentFFmpegError(cause)
 
 	// The cause carries raw ffmpeg output, so it can hold arbitrary bytes, and
@@ -129,10 +133,6 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, file
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
-	var claimed *time.Time
-	if len(held) > 0 {
-		claimed = &held[0]
-	}
 	var attempts int
 	err := db.QueryRow(ctx,
 		`UPDATE videos
@@ -140,12 +140,12 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, file
 		     transcode_error = $2,
 		     updated_at = now()
 		 WHERE id = $1 AND file_key = $5 AND status != 'deleted'
-		   AND ($6::timestamptz IS NULL OR encode_started_at IS NULL OR encode_started_at = $6)
+		   AND encode_started_at = $6
 		 RETURNING transcode_attempts`,
-		videoID, msg, permanent, maxTranscodeAttempts, fileKey, claimed,
+		videoID, msg, permanent, maxTranscodeAttempts, fileKey, held,
 	).Scan(&attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		slog.Info("transcode: video moved on from the failed file or another conversion holds it, not counting it", "video_id", videoID, "key", fileKey, "error", cause)
+		slog.Info("transcode: video moved on from the failed file or this conversion no longer holds it, not counting it", "video_id", videoID, "key", fileKey, "error", cause)
 		return
 	}
 	if err != nil {
@@ -208,7 +208,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	// The claim checks the file is still this WebM, its status and the attempt
 	// budget in one statement; the worker query filters on most of these too,
 	// but job enqueues reach us directly.
-	lease, _, duration, err := claimEncode(ctx, db, videoID, fileKey, transcodeEligible)
+	lease, duration, err := claimEncode(ctx, db, videoID, fileKey, transcodeEligible)
 	if err != nil {
 		slog.Error("transcode: failed to claim", "video_id", videoID, "error", err)
 		return

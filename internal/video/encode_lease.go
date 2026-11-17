@@ -20,6 +20,9 @@ const (
 	transcodeEligible = "content_type = 'video/webm'"
 )
 
+// releaseTimeout bounds each lease release, within any shorter parent deadline.
+const releaseTimeout = 2 * time.Second
+
 // encodeLease is one conversion's hold on a video's encode lease. The sweep on
 // each task picked any video older than 5 minutes and repeated encodes still
 // running, three at once for one production recording; the lease stops that.
@@ -32,41 +35,46 @@ const (
 type encodeLease struct {
 	videoID   string
 	startedAt time.Time
-	once      sync.Once
+	mu        sync.Mutex
+	released  bool
 }
 
 // inFlightEncodes holds this process's leases so a stopping task can hand them
-// back. encodesStopping stops the process claiming once they are handed back.
+// back. encodesStopping stops the process claiming once shutdown has begun.
 var (
 	inFlightEncodes sync.Map
 	encodesStopping atomic.Bool
 )
 
 // claimEncode takes the video's encode lease for a conversion of fileKey and
-// returns the row's attempts and duration. It returns nil when the row no
-// longer points at fileKey, is not ready, no longer needs this conversion, has
-// used its attempts, or another conversion holds a lease younger than its
-// deadline plus a minute. A dead task's lease still runs out, so the sweep
-// recovers its video. The interval is encodeTimeout's, computed in SQL from the
-// row's own duration: perJobTimeout plus twice the length, the extra capped.
-func claimEncode(ctx context.Context, db database.DBTX, videoID, fileKey, eligible string) (*encodeLease, int, int, error) {
+// returns the row's duration. It returns nil when the row no longer points at
+// fileKey, is not ready, no longer needs this conversion, has used its
+// attempts, or another conversion holds a lease younger than its deadline plus
+// a minute. A dead task's lease still runs out, so the sweep recovers its
+// video.
+//
+// The deadline is encodeTimeout's: the claim runs before the duration is known
+// to Go, so it applies the same constants to the row's own duration.
+func claimEncode(ctx context.Context, db database.DBTX, videoID, fileKey, eligible string) (*encodeLease, int, error) {
 	if encodesStopping.Load() {
-		return nil, 0, 0, nil
+		return nil, 0, nil
 	}
 	var startedAt time.Time
-	var attempts, duration int
+	var duration int
 	err := db.QueryRow(ctx,
 		`UPDATE videos SET encode_started_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready' AND `+eligible+` AND transcode_attempts < $3
-		   AND (encode_started_at IS NULL OR encode_started_at < now() - make_interval(secs => $4::float8 + LEAST(GREATEST(2 * duration::bigint, 0), $5::bigint)))
-		 RETURNING encode_started_at, transcode_attempts, duration`,
-		videoID, fileKey, maxTranscodeAttempts, (perJobTimeout+time.Minute).Seconds(), encodeExtraCapSeconds,
-	).Scan(&startedAt, &attempts, &duration)
+		   AND (encode_started_at IS NULL OR encode_started_at < now() - make_interval(secs =>
+		        $4::float8 + LEAST(GREATEST($5::bigint * duration::bigint, 0), $6::bigint)))
+		 RETURNING encode_started_at, duration`,
+		videoID, fileKey, maxTranscodeAttempts,
+		(perJobTimeout+time.Minute).Seconds(), encodeSecondsPerSecond, encodeExtraCapSeconds,
+	).Scan(&startedAt, &duration)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, 0, 0, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 	lease := &encodeLease{videoID: videoID, startedAt: startedAt}
 	inFlightEncodes.Store(lease, struct{}{})
@@ -74,14 +82,18 @@ func claimEncode(ctx context.Context, db database.DBTX, videoID, fileKey, eligib
 	// nothing to hand back.
 	if encodesStopping.Load() {
 		lease.done(ctx, db)
-		return nil, 0, 0, nil
+		return nil, 0, nil
 	}
-	return lease, attempts, duration, nil
+	return lease, duration, nil
 }
 
 // logClaimRefused says why a conversion did not start. It reads the row only
-// when the claim was refused.
+// when the claim was refused, and not at all once the task is stopping.
 func logClaimRefused(ctx context.Context, db database.DBTX, job, videoID, fileKey string) {
+	if encodesStopping.Load() {
+		slog.Info(job+": skipped, task stopping", "video_id", videoID)
+		return
+	}
 	var status, contentType string
 	var sameFile, normalized, leased bool
 	var attempts int
@@ -89,48 +101,69 @@ func logClaimRefused(ctx context.Context, db database.DBTX, job, videoID, fileKe
 		`SELECT status, file_key = $2, ios_normalized, content_type, transcode_attempts, encode_started_at IS NOT NULL FROM videos WHERE id = $1`,
 		videoID, fileKey,
 	).Scan(&status, &sameFile, &normalized, &contentType, &attempts, &leased); err != nil {
-		slog.Info(job+": skipped, video gone", "video_id", videoID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Info(job+": skipped, video gone", "video_id", videoID)
+			return
+		}
+		slog.Warn(job+": skipped, could not read why", "video_id", videoID, "error", err)
+		return
+	}
+	if sameFile && attempts >= maxTranscodeAttempts {
+		slog.Warn(job+": skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
 		return
 	}
 	slog.Info(job+": skipped", "video_id", videoID, "status", status, "same_file", sameFile,
 		"ios_normalized", normalized, "content_type", contentType, "attempts", attempts, "leased", leased)
 }
 
-// release frees the lease if this conversion still holds it, within ctx's
-// deadline. It runs once; later calls do nothing.
+// release frees the lease if this conversion still holds it. Each try has its
+// own short timeout within ctx's deadline. A failed try leaves the lease
+// tracked, so a later release (the conversion's deferred done) tries again.
 func (l *encodeLease) release(ctx context.Context, db database.DBTX) {
-	l.once.Do(func() {
-		inFlightEncodes.Delete(l)
-		if _, err := db.Exec(ctx,
-			`UPDATE videos SET encode_started_at = NULL WHERE id = $1 AND encode_started_at = $2`,
-			l.videoID, l.startedAt,
-		); err != nil {
-			slog.Error("encode: failed to release lease", "video_id", l.videoID, "error", err)
-		}
-	})
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, releaseTimeout)
+	defer cancel()
+	if _, err := db.Exec(ctx,
+		`UPDATE videos SET encode_started_at = NULL WHERE id = $1 AND encode_started_at = $2`,
+		l.videoID, l.startedAt,
+	); err != nil {
+		slog.Error("encode: failed to release lease", "video_id", l.videoID, "error", err)
+		return
+	}
+	l.released = true
+	inFlightEncodes.Delete(l)
 }
 
 // done releases the lease at the end of a conversion, on a context of its own:
 // the job's may have run out, which is the commonest reason to be here.
 func (l *encodeLease) done(ctx context.Context, db database.DBTX) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	l.release(ctx, db)
+	l.release(context.WithoutCancel(ctx), db)
 }
 
 // ReleaseInFlightEncodes hands this process's encode leases back at shutdown,
-// as during a deploy or a scale-in, and stops it claiming more. Call it after
-// the HTTP server has drained, so a finalize served during the drain still
-// claims and is handed back here. Without it a stopped task's video waits out
-// the whole encode deadline before another task may convert it. The stopping
-// task's own output, if it still finishes, loses nothing: unique output keys
-// and the file-key compare-and-swap decide.
+// as during a deploy or a scale-in, and stops it claiming more. Without it a
+// stopped task's video waits out the whole encode deadline before another task
+// may convert it. The stopping task's own output, if it still finishes, loses
+// nothing: unique output keys and the file-key compare-and-swap decide.
 func ReleaseInFlightEncodes(ctx context.Context, db database.DBTX) {
+	releaseInFlightEncodes(ctx, db, nil)
+}
+
+// releaseInFlightEncodes releases the tracked leases that only accepts, or all
+// of them when only is nil. Tests pass their own videos.
+func releaseInFlightEncodes(ctx context.Context, db database.DBTX, only func(videoID string) bool) {
 	encodesStopping.Store(true)
 	n := 0
 	inFlightEncodes.Range(func(key, _ any) bool {
-		key.(*encodeLease).release(ctx, db)
-		n++
+		lease := key.(*encodeLease)
+		if only == nil || only(lease.videoID) {
+			lease.release(ctx, db)
+			n++
+		}
 		return true
 	})
 	if n > 0 {

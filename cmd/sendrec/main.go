@@ -339,18 +339,13 @@ func main() {
 	// before it kills the task.
 	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
+	video.ReleaseInFlightEncodes(requeueCtx, db.Pool)
 	requeueCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	shutdownErr := httpServer.Shutdown(shutdownCtx)
-	// After the drain, so a finalize served during it still claims and is
-	// handed back here.
-	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	video.ReleaseInFlightEncodes(releaseCtx, db.Pool)
-	releaseCancel()
-	if shutdownErr != nil {
-		log.Fatalf("shutdown failed: %v", shutdownErr)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("shutdown failed: %v", err)
 	}
 	slog.Info("shutdown complete")
 }

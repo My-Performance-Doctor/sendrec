@@ -170,7 +170,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	// The claim checks the file, its status, the attempt budget and whether it
 	// still needs converting in one statement; the worker query filters on most
 	// of these too, but job enqueues reach us directly.
-	lease, _, duration, err := claimEncode(ctx, db, videoID, fileKey, normalizeEligible)
+	lease, duration, err := claimEncode(ctx, db, videoID, fileKey, normalizeEligible)
 	if err != nil {
 		slog.Error("normalize: failed to claim", "video_id", videoID, "error", err)
 		return
