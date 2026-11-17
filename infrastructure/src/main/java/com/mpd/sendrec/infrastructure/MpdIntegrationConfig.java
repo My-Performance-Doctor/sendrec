@@ -15,6 +15,8 @@ final class MpdIntegrationConfig {
     environment.put("MPD_SERVICE_ENABLED", "false");
     environment.put("MPD_EVENTS_ENABLED", "false");
     environment.put("MPD_REQUIRE_PASSWORD", "true");
+    // Off until mpd-api accepts `processing` in production (add-mpd-processing-progress).
+    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", "false");
     Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
     if (activate == null || "false".equals(activate.toString())) return;
     if (!"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");

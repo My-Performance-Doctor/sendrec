@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -40,8 +39,7 @@ var transcodeToMP4 = func(ctx context.Context, inputPath, outputPath, audioFilte
 	}
 	defer release()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runFFmpeg(ctx, args)
 	if err != nil {
 		return fmt.Errorf("ffmpeg transcode: %w: %s", err, string(output))
 	}
@@ -218,6 +216,8 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 		return
 	}
 	defer lease.done(ctx, db)
+	// Staff OS shows the percent through the MPD integration (add-mpd-processing-progress).
+	ctx = withEncodeProgress(ctx, conversionReporter(ctx, db, videoID, fileKey, duration, time.Now))
 
 	slog.Info("transcode: starting", "video_id", videoID, "audio_filter", audioFilter)
 

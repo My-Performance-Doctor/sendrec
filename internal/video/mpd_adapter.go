@@ -29,6 +29,10 @@ type MPDServiceConfig struct {
 	// Hex SHA-256 verifiers, current and optionally previous during rotation.
 	TokenHashes     []string
 	RequirePassword bool
+	// ProcessingProgress puts `processing` on the metadata response. Off by
+	// default: mpd-api before its add-video-processing-progress refuses a
+	// metadata field it does not know (add-mpd-processing-progress).
+	ProcessingProgress bool
 }
 
 type MPDMetadata struct {
@@ -42,6 +46,9 @@ type MPDMetadata struct {
 	PasswordProtected bool       `json:"passwordProtected"`
 	WatchURL          *string    `json:"watchUrl"`
 	EmbedURL          *string    `json:"embedUrl"`
+	// Only on the metadata read, and only while ProcessingProgress is on;
+	// stored mutation receipts never carry it.
+	Processing *MPDProcessing `json:"processing,omitempty"`
 }
 
 type MPDAdapter struct {
@@ -135,6 +142,11 @@ func (a *MPDAdapter) Metadata(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httputil.WriteError(w, 404, "recording unavailable")
 		return
+	}
+	if a.cfg.ProcessingProgress && m.Status != "deleted" {
+		if row, err := a.processingRow(r.Context(), a.h.db, m.VideoID); err == nil {
+			m.Processing = processingOf(row)
+		}
 	}
 	httputil.WriteJSON(w, 200, m)
 }

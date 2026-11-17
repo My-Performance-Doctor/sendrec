@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
 )
@@ -158,8 +159,7 @@ var transcodeToIOSCompatible = func(ctx context.Context, inputPath, outputPath, 
 	}
 	defer release()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runFFmpeg(ctx, args)
 	if err != nil {
 		return fmt.Errorf("ffmpeg normalize: %w: %s", err, string(output))
 	}
@@ -180,6 +180,8 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		return
 	}
 	defer lease.done(ctx, db)
+	// Staff OS shows the percent through the MPD integration (add-mpd-processing-progress).
+	ctx = withEncodeProgress(ctx, conversionReporter(ctx, db, videoID, fileKey, duration, time.Now))
 
 	slog.Info("normalize: starting", "video_id", videoID, "audio_filter", audioFilter)
 
