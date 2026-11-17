@@ -334,6 +334,10 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			redeemBody := fmt.Sprintf(`{"handoff":%q,"nonce":"synthetic-preview-nonce","parentOrigin":%q}`, preview["handoff"], server.URL)
 			redeemed := call("POST", "/api/mpd/preview/redeem", redeemBody, "", 200)
 			previewToken := redeemed["previewToken"].(string)
+			// A preview opened on its own names the recording (MPD-515): its title, when it was made and whether patients can open it.
+			if redeemed["title"] != "Synthetic" || redeemed["recordedAt"] == nil || redeemed["published"] != false {
+				t.Fatalf("redeem did not describe the recording: %v", redeemed)
+			}
 			call("POST", "/api/mpd/preview/redeem", redeemBody, "", 403)
 			previewMedia := call("GET", "/api/mpd/preview/media", "", previewToken, 200)
 			response, err := server.Client().Get(previewMedia["videoUrl"].(string))
