@@ -102,6 +102,45 @@ func TestMPDAdapterWorkFenceAndImmutableReceipt(t *testing.T) {
 	if err := db.QueryRow(context.Background(), `SELECT published FROM mpd_video_state WHERE video_id=$1`, id).Scan(&published); err != nil || published {
 		t.Fatal("receipt replay republished", err)
 	}
+	// After a hostname change, a replay keeps the receipt's state but names the links
+	// on the new BASE_URL, the only origin mpd-api accepts, and mutates nothing.
+	a.h.baseURL = "https://results.example.test"
+	w = adapterRequest(a, id, "publication", `{"mediaVersion":1,"published":true}`, "34", "publish")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	var replayed MPDMetadata
+	if err := json.Unmarshal(w.Body.Bytes(), &replayed); err != nil || replayed.WatchURL == nil || replayed.EmbedURL == nil {
+		t.Fatal("invalid replay", w.Body.String())
+	}
+	if want := "https://results.example.test/" + share; *replayed.WatchURL != want {
+		t.Fatalf("replayed watchUrl %q, want %q", *replayed.WatchURL, want)
+	}
+	if want := "https://results.example.test/embed/" + share; *replayed.EmbedURL != want {
+		t.Fatalf("replayed embedUrl %q, want %q", *replayed.EmbedURL, want)
+	}
+	if !replayed.Published || replayed.PublishedAt == nil || !replayed.PublishedAt.Equal(*metadata.PublishedAt) || replayed.MediaVersion != metadata.MediaVersion {
+		t.Fatal("replay changed the receipt's state", w.Body.String())
+	}
+	var stored string
+	if err := db.QueryRow(context.Background(), `SELECT s.published::text||' '||r.response::text FROM mpd_video_state s JOIN mpd_adapter_receipts r ON r.video_id=s.video_id AND r.operation='publication' AND r.effect_key='publish' WHERE s.video_id=$1`, id).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(stored, "false ") || !strings.Contains(stored, "https://sendrec.example.test/"+share) || strings.Contains(stored, "results.example.test") {
+		t.Fatal("hostname replay mutated the video or its receipt", stored)
+	}
+	// A receipt names its own token. Once the video's token is replaced, its replay is
+	// refused like a stale worker, not given the replacement link, and the fence holds.
+	replacement := "replacementtok01"
+	mustExec(t, db, `UPDATE videos SET share_token=$2 WHERE id=$1`, id, replacement)
+	w = adapterRequest(a, id, "publication", `{"mediaVersion":1,"published":true}`, "35", "publish")
+	if w.Code != 409 || strings.Contains(w.Body.String(), replacement) {
+		t.Fatalf("replay after token replacement => %d %s", w.Code, w.Body.String())
+	}
+	var fence int64
+	if err := db.QueryRow(context.Background(), `SELECT work_version FROM mpd_video_state WHERE video_id=$1`, id).Scan(&fence); err != nil || fence != 34 {
+		t.Fatal("refused replay moved the work fence", fence, err)
+	}
 }
 func TestMPDAdapterScopeCredentialAndPublicationPolicy(t *testing.T) {
 	_, _, a, id, _ := seedManagedAdapter(t)
