@@ -105,11 +105,16 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 		OutputBucketName:     aws.String(a.bucket),
 		OutputKey:            aws.String(outputKey),
 	}
+	// The worker logs SendRec's setting ("auto" for most recordings); log what
+	// Transcribe is actually told, the configured locale or "identify".
+	given := "identify"
 	if code, identify := a.languageFor(language); identify {
 		input.IdentifyLanguage = aws.Bool(true)
 	} else {
 		input.LanguageCode = types.LanguageCode(code)
+		given = code
 	}
+	slog.Info("transcribe: job language", "video_id", transcriptionVideo(ctx), "job", job, "requested", language, "transcribe_language", given)
 	exists = true
 	// startedAt is the first start attempt: the read-after-create grace runs
 	// from there, for the start's probes, the wait and the settle alike.

@@ -218,7 +218,7 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		return
 	}
 
-	segments, err := transcriber.Transcribe(ctx, tmpAudioPath, language)
+	segments, err := transcriber.Transcribe(withTranscriptionVideo(ctx, videoID), tmpAudioPath, language)
 	if err != nil {
 		if errors.Is(err, ErrNoAudio) {
 			slog.Info("transcribe: provider reported no speech", "video_id", videoID)
@@ -297,4 +297,17 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 			slog.Error("transcribe: failed to enqueue summary", "video_id", videoID, "error", err)
 		}
 	}
+}
+
+// transcriptionVideoKey carries the video being transcribed, so a provider's
+// log lines join the worker's, which name the video and not the provider's job.
+type transcriptionVideoKey struct{}
+
+func withTranscriptionVideo(ctx context.Context, videoID string) context.Context {
+	return context.WithValue(ctx, transcriptionVideoKey{}, videoID)
+}
+
+func transcriptionVideo(ctx context.Context) string {
+	id, _ := ctx.Value(transcriptionVideoKey{}).(string)
+	return id
 }
