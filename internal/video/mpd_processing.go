@@ -128,7 +128,9 @@ func (a *MPDAdapter) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Step {
 	case "conversion":
-		if conversionStep(row).State != "failed" {
+		// A failed webcam composite is restarted from SendRec's app; MPD's
+		// screen recordings never make one.
+		if row.status == "processing" || conversionStep(row).State != "failed" {
 			notFailed()
 			return
 		}

@@ -88,3 +88,15 @@ func TestMPDRetryRestartsOnlyAFailedStep(t *testing.T) {
 		t.Fatalf("transcript status %q (%v)", status, err)
 	}
 }
+
+func TestMPDRetryLeavesAFailedWebcamCompositeToTheApp(t *testing.T) {
+	db, _, a, id, _ := seedManagedAdapter(t)
+	mustExec(t, db, `UPDATE videos SET status='processing', content_type='video/webm', transcode_attempts=$2 WHERE id=$1`, id, maxTranscodeAttempts)
+	if w := retryRequest(a, id, `{"step":"conversion","mediaVersion":1}`); w.Code != 409 && w.Code != 404 {
+		t.Fatalf("composite retry => %d %s", w.Code, w.Body.String())
+	}
+	var attempts int
+	if err := db.QueryRow(context.Background(), `SELECT transcode_attempts FROM videos WHERE id=$1`, id).Scan(&attempts); err != nil || attempts != maxTranscodeAttempts {
+		t.Fatalf("attempts %d (%v)", attempts, err)
+	}
+}

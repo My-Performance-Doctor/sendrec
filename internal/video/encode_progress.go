@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"os/exec"
 	"strconv"
@@ -48,13 +49,15 @@ func runFFmpeg(ctx context.Context, args []string) ([]byte, error) {
 		return stderr.Bytes(), err
 	}
 	scanProgress(stdout, report)
+	// A scanner that stopped early must not leave ffmpeg blocked on a full pipe.
+	_, _ = io.Copy(io.Discard, stdout)
 	err = cmd.Wait()
 	return stderr.Bytes(), err
 }
 
 // scanProgress reads ffmpeg's `key=value` progress lines. `out_time_us` and,
 // despite its name, `out_time_ms` are both microseconds.
-func scanProgress(r interface{ Read([]byte) (int, error) }, report func(int64)) {
+func scanProgress(r io.Reader, report func(int64)) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		key, value, ok := strings.Cut(scanner.Text(), "=")
