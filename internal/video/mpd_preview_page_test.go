@@ -37,7 +37,7 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 			t.Errorf("preview page missing %q", want)
 		}
 	}
-	for _, want := range []string{"describe(redeemed)", "forget();status('Access ended", "if(player.getAttribute('src'))status('Private staff preview", "getElementById('mpd-title').textContent=v.title", "window.parent===window)meta.classList.add('shown')"} {
+	for _, want := range []string{"if(player.getAttribute('src')){describe(redeemed);status('Private staff preview", "forget();status('Access ended", "The patient link has expired", "getElementById('mpd-title').textContent=v.title", "window.parent===window)meta.classList.add('shown')"} {
 		if !strings.Contains(mpdPlayerJS, want) {
 			t.Errorf("player script missing %q", want)
 		}

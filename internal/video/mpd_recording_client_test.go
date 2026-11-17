@@ -338,6 +338,9 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			if redeemed["title"] != "Synthetic" || redeemed["recordedAt"] == nil || redeemed["published"] != false {
 				t.Fatalf("redeem did not describe the recording: %v", redeemed)
 			}
+			if redeemed["linkExpired"] != false || redeemed["emailGate"] != false {
+				t.Fatalf("redeem misread the link's gate: %v", redeemed)
+			}
 			if _, ok := redeemed["passwordProtected"].(bool); !ok {
 				t.Fatalf("redeem did not describe the recording: %v", redeemed)
 			}

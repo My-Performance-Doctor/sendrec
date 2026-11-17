@@ -21,7 +21,7 @@ None.
 
 ## Impact
 
-`internal/video/mpd_player.go` and a test. No API, database, script or setting changes. SendRec's own detail page gets a preview that fits too. Staff OS transcript times still open the watch page; letting Staff OS move the framed preview to a time by message is a possible follow-up, not part of this change.
+`internal/video/mpd_player.go` (page, styles and script), `internal/video/mpd_preview.go` (the redeem returns the recording's title, recording date, publication, code, email-gate and expiry state, read in the statement that spends the one-use handoff) and their tests. The redeem response now carries the title, which can name the patient; only the page header shows it. No database, migration or setting changes.
 
 ## Approval and delivery
 
