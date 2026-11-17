@@ -25,6 +25,13 @@ Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the
 
 Proved on staging 17 Nov 2026: at 2 running tasks, a stack update removing the service's DesiredCount (11:39:24 to 11:40:02 UTC) left the service at 2/2; the live template now carries no count. (Run and recorded by the release coordinator for `require-production-task-count`.)
 
+### Processing progress switches
+
+| Environment | Switched | Revision | Check |
+|---|---|---|---|
+| Staging | on, 17 Nov 2026 15:49:41 UTC (`sendrec-staging:31`) | `f6796f72`, staging mpd-api `957874e1` with #559 | Passed 15:58 to 16:15 UTC in Staff OS on app-staging, synthetic patient: the Outbox bar showed Preparing video 42% to 90%, then Writing summary, then Ready to send; a forced transcript failure showed Retry transcript, and the retry (202) finished the take (MPD-498) |
+| Production | off | `cef3b004` | switches after mpd-api `957874e1` is live in production, in a grant |
+
 ## Deployed revision and state
 
 - Deployment source: `9ffd8e7935dedb9c25eaba1a159fc9015933e5bf` on `feat/add-aws-staging-deployment-apply`. Later handoff changes are documentation only. [Implementation PR #2](https://github.com/My-Performance-Doctor/sendrec/pull/2) remains for human review and merge.
