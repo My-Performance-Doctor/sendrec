@@ -244,7 +244,7 @@ func TestNativeCallbackAndHandoffReplay(t *testing.T) {
 	}
 	assertName := func(want string) {
 		t.Helper()
-		photoFetches.wg.Wait()
+		h.photos.wg.Wait()
 		var got string
 		var photo *string
 		if e := db.QueryRow(ctx, `SELECT u.name,p.version FROM users u LEFT JOIN mpd_staff_photos p ON p.user_id=u.id WHERE u.email='native@example.test'`).Scan(&got, &photo); e != nil || got != want || photo == nil || *photo != "v1" {

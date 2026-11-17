@@ -231,7 +231,7 @@ func writeMPDUnavailablePage(w http.ResponseWriter, r *http.Request, status int)
 // page's own access check.
 func managedCreatorPhoto(ctx context.Context, db database.DBTX, userID string) template.URL {
 	var jpeg []byte
-	if err := db.QueryRow(ctx, `SELECT jpeg FROM mpd_staff_photos WHERE user_id=$1`, userID).Scan(&jpeg); err != nil {
+	if err := db.QueryRow(ctx, `SELECT jpeg FROM mpd_staff_photos WHERE user_id=$1 AND jpeg IS NOT NULL`, userID).Scan(&jpeg); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("mpd: staff photo unavailable", "error", err)
 		}

@@ -27,7 +27,12 @@ const (
 	// mpd-api allows 100-character first and last names, plus "Dr".
 	maxNameRunes    = 256
 	photoRetryAfter = 5 * time.Minute
-	photoTimeout    = 15 * time.Second
+	// photoDBTimeout bounds each database step of a background fetch. The read
+	// itself is bounded by the handler's HTTP client, which times out at 5 s.
+	photoDBTimeout = 10 * time.Second
+	// defaultStaffName is what sign-in gives a staff member without a name,
+	// and what a departed staff member's name goes back to.
+	defaultStaffName = "MPD staff"
 )
 
 var photoVersionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -44,7 +49,9 @@ func warnProfile(message, reason string) {
 
 // parseProfile reads the grant's profile and never fails the grant. A missing
 // or bad name is dropped, which keeps the last one. A missing or bad photo
-// version drops the whole profile, because a null one removes the photo.
+// version drops the whole profile, because a null one removes the photo. A
+// profile whose name and photo are both explicitly null is what mpd-api sends
+// for a staff member it no longer has, so it marks the staff member departed.
 func parseProfile(raw json.RawMessage) *Profile {
 	if len(raw) == 0 {
 		return nil
@@ -67,7 +74,9 @@ func parseProfile(raw json.RawMessage) *Profile {
 		var name *string
 		if json.Unmarshal(v, &name) != nil {
 			warnProfile("mpd profile name ignored", "type")
-		} else if name != nil {
+		} else if name == nil {
+			p.Departed = version == nil
+		} else {
 			trimmed := strings.TrimSpace(*name)
 			if trimmed == "" || utf8.RuneCountInString(trimmed) > maxNameRunes || strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
 				warnProfile("mpd profile name ignored", "value")
@@ -83,95 +92,161 @@ func parseProfile(raw json.RawMessage) *Profile {
 // SendRec user, so watch pages show who recorded. Sign-in and each grant
 // refresh call it. It writes only what changed, fetches a new photo off the
 // request path, and never fails the request. A profile without a name keeps
-// the last one. Refresh validates inside its own transaction, which a failed
-// write here would abort, so there the next request applies the profile.
+// the last one; a departed staff member's name goes back to the default.
+// Refresh validates inside its own transaction, which a failed write here
+// would abort, so there the next request applies the profile.
+//
+// The photo the latest grant names is kept in the database (want_version), so
+// every task agrees on it: a fetch stores its photo only while that is still
+// the wanted version, and a removal clears the stored photo at once.
 func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Profile) {
 	if _, inTx := h.db.(pgx.Tx); p == nil || inTx {
 		return
 	}
 	var name string
-	var version *string
-	if err := h.db.QueryRow(ctx, `SELECT u.name,p.version FROM users u LEFT JOIN mpd_staff_photos p ON p.user_id=u.id WHERE u.id=$1`, userID).Scan(&name, &version); err != nil {
+	var want, stored *string
+	if err := h.db.QueryRow(ctx, `SELECT u.name,p.want_version,p.version FROM users u LEFT JOIN mpd_staff_photos p ON p.user_id=u.id WHERE u.id=$1`, userID).Scan(&name, &want, &stored); err != nil {
 		slog.Warn("mpd profile not applied", "stage", "read", "error", err)
 		return
 	}
-	if p.DisplayName != nil && *p.DisplayName != name {
-		if _, err := h.db.Exec(ctx, `UPDATE users SET name=$2,updated_at=now() WHERE id=$1`, userID, *p.DisplayName); err != nil {
+	newName := ""
+	switch {
+	case p.Departed && name != defaultStaffName:
+		newName = defaultStaffName
+	case p.DisplayName != nil && *p.DisplayName != name:
+		newName = *p.DisplayName
+	}
+	if newName != "" {
+		if _, err := h.db.Exec(ctx, `UPDATE users SET name=$2,updated_at=now() WHERE id=$1`, userID, newName); err != nil {
 			slog.Warn("mpd profile not applied", "stage", "name", "error", err)
 		}
 	}
-	if p.PhotoVersion == nil {
-		photoFetches.want.Delete(userID)
-	} else {
-		photoFetches.want.Store(userID, *p.PhotoVersion)
-	}
-	if sameVersion(version, p.PhotoVersion) {
-		return
-	}
-	if p.PhotoVersion == nil {
-		if _, err := h.db.Exec(ctx, `DELETE FROM mpd_staff_photos WHERE user_id=$1`, userID); err != nil {
-			slog.Warn("mpd profile not applied", "stage", "photo_remove", "error", err)
+	if !sameVersion(want, p.PhotoVersion) || p.PhotoVersion == nil && stored != nil {
+		if err := h.db.QueryRow(ctx, `INSERT INTO mpd_staff_photos(user_id,want_version) VALUES($1,$2)
+			ON CONFLICT(user_id) DO UPDATE SET want_version=EXCLUDED.want_version,
+			  version=CASE WHEN EXCLUDED.want_version IS NULL THEN NULL ELSE mpd_staff_photos.version END,
+			  jpeg=CASE WHEN EXCLUDED.want_version IS NULL THEN NULL ELSE mpd_staff_photos.jpeg END,
+			  updated_at=now()
+			RETURNING version`, userID, p.PhotoVersion).Scan(&stored); err != nil {
+			slog.Warn("mpd profile not applied", "stage", "photo_want", "error", err)
+			return
 		}
-		return
 	}
-	h.fetchPhotoLater(userID, token, *p.PhotoVersion)
+	if p.PhotoVersion != nil && !sameVersion(stored, p.PhotoVersion) && h.photos != nil {
+		h.photos.fetchLater(h, userID, token)
+	}
 }
 
 func sameVersion(a, b *string) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
-// photoFetches keeps photo fetches off the request path: one at a time per
-// user, and a version that failed waits photoRetryAfter before the next try.
-// It lives outside Handler because Refresh copies the handler.
-var photoFetches struct {
-	busy   sync.Map // user ID → struct{}
-	failed sync.Map // user ID → photoFailure
-	want   sync.Map // user ID → the version the latest grant names; absent for none
+// photoFetcher keeps photo fetches off the request path: one at a time per
+// user in this process, and a version that failed waits photoRetryAfter
+// before the next try, or is not tried again after a 4xx. The database holds
+// the wanted version, so this only coordinates fetches within one task.
+// Handler holds it by pointer because Refresh copies the handler.
+type photoFetcher struct {
+	mu     sync.Mutex
+	busy   map[string]bool
+	again  map[string]bool   // a grant asked for a photo while a fetch ran
+	tokens map[string]string // the latest token that read a grant
+	failed map[string]photoFailure
 	wg     sync.WaitGroup
 }
 
 type photoFailure struct {
 	version string
 	at      time.Time
+	final   bool // a 4xx: mpd-api will not give this version
 }
 
-func (h *Handler) fetchPhotoLater(userID, token, version string) {
-	if f, ok := photoFetches.failed.Load(userID); ok && f.(photoFailure).version == version && time.Since(f.(photoFailure).at) < photoRetryAfter {
+func newPhotoFetcher() *photoFetcher {
+	return &photoFetcher{busy: map[string]bool{}, again: map[string]bool{}, tokens: map[string]string{}, failed: map[string]photoFailure{}}
+}
+
+// photoStatusError is a photo read that mpd-api answered with a status other
+// than 200.
+type photoStatusError struct{ status int }
+
+func (e *photoStatusError) Error() string { return fmt.Sprintf("photo status %d", e.status) }
+
+func (f *photoFetcher) fetchLater(h *Handler, userID, token string) {
+	f.mu.Lock()
+	f.tokens[userID] = token
+	if f.busy[userID] {
+		f.again[userID] = true
+		f.mu.Unlock()
 		return
 	}
-	if _, busy := photoFetches.busy.LoadOrStore(userID, struct{}{}); busy {
-		return
-	}
-	photoFetches.wg.Add(1)
+	f.busy[userID] = true
+	f.mu.Unlock()
+	f.wg.Add(1)
 	go func() {
-		defer photoFetches.wg.Done()
-		defer photoFetches.busy.Delete(userID)
-		ctx, cancel := context.WithTimeout(context.Background(), photoTimeout)
-		defer cancel()
-		photo, err := h.fetchPhoto(ctx, token, version)
-		if err == nil {
-			_, err = h.db.Exec(ctx, `INSERT INTO mpd_staff_photos(user_id,version,jpeg) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET version=EXCLUDED.version,jpeg=EXCLUDED.jpeg,updated_at=now()`, userID, version, photo)
-		}
-		// A grant that changed or removed the photo during the read wins. If it
-		// deleted the row before this store, this removes the store; if after,
-		// its own delete does.
-		if w, ok := photoFetches.want.Load(userID); err == nil && (!ok || w.(string) != version) {
-			_, err = h.db.Exec(ctx, `DELETE FROM mpd_staff_photos WHERE user_id=$1 AND version=$2`, userID, version)
-		}
-		if err != nil {
-			photoFetches.failed.Store(userID, photoFailure{version: version, at: time.Now()})
-			slog.Warn("mpd profile not applied", "stage", "photo", "error", err)
+		defer f.wg.Done()
+		f.run(h, userID)
+	}()
+}
+
+// run fetches the wanted version until the stored photo matches it, the
+// wanted version has failed, or the photo is no longer wanted. It reads the
+// wanted version again after each attempt, so a version a grant names while
+// a fetch runs is fetched next rather than dropped.
+func (f *photoFetcher) run(h *Handler, userID string) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), photoDBTimeout)
+		var want, stored *string
+		err := h.db.QueryRow(ctx, `SELECT want_version,version FROM mpd_staff_photos WHERE user_id=$1`, userID).Scan(&want, &stored)
+		cancel()
+		f.mu.Lock()
+		again := f.again[userID]
+		delete(f.again, userID)
+		token := f.tokens[userID]
+		fail, failed := f.failed[userID]
+		done := err != nil || want == nil || sameVersion(want, stored) ||
+			failed && fail.version == *want && (fail.final || time.Since(fail.at) < photoRetryAfter)
+		if done && !again {
+			delete(f.busy, userID)
+			f.mu.Unlock()
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("mpd profile not applied", "stage", "photo_read", "error", err)
+			}
 			return
 		}
-		photoFetches.failed.Delete(userID)
-	}()
+		f.mu.Unlock()
+		if done {
+			continue // a grant arrived during the read: read the wanted version again
+		}
+		version := *want
+		photo, err := h.fetchPhoto(context.Background(), token, version)
+		if err == nil {
+			ctx, cancel = context.WithTimeout(context.Background(), photoDBTimeout)
+			_, err = h.db.Exec(ctx, `UPDATE mpd_staff_photos SET version=$2,jpeg=$3,updated_at=now() WHERE user_id=$1 AND want_version=$2`, userID, version, photo)
+			cancel()
+		}
+		var status *photoStatusError
+		final := errors.As(err, &status) && status.status >= 400 && status.status < 500
+		f.mu.Lock()
+		if err != nil {
+			f.failed[userID] = photoFailure{version: version, at: time.Now(), final: final}
+		} else {
+			delete(f.failed, userID)
+		}
+		f.mu.Unlock()
+		switch {
+		case final:
+			warnProfile("mpd staff photo refused; not retried for this version", fmt.Sprintf("status %d", status.status))
+		case err != nil:
+			slog.Warn("mpd profile not applied", "stage", "photo", "error", err)
+		}
+	}
 }
 
 // fetchPhoto reads the staff member's photo from `{access URL}/photo` with the
 // token that read the grant. It accepts only a small JPEG whose ETag names the
 // version the grant gave, so a lagging read cannot store an old photo under a
-// new version.
+// new version, and re-encodes it so no EXIF or other metadata segment reaches
+// a patient's page. The handler's HTTP client bounds the read at 5 s.
 func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.cfg.AccessURL, "/")+"/photo", nil)
 	if err != nil {
@@ -184,7 +259,7 @@ func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("photo status %d", resp.StatusCode)
+		return nil, &photoStatusError{status: resp.StatusCode}
 	}
 	if resp.Header.Get("ETag") != `"`+version+`"` {
 		return nil, errors.New("photo is not the version the grant names")
@@ -200,8 +275,16 @@ func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte
 	if err != nil || size.Width > maxPhotoSide || size.Height > maxPhotoSide {
 		return nil, errors.New("photo is not a JPEG of at most 512 px")
 	}
-	if _, err = jpeg.Decode(bytes.NewReader(body)); err != nil {
+	img, err := jpeg.Decode(bytes.NewReader(body))
+	if err != nil {
 		return nil, errors.New("photo is not a JPEG of at most 512 px")
 	}
-	return body, nil
+	var clean bytes.Buffer
+	if err = jpeg.Encode(&clean, img, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, err
+	}
+	if clean.Len() > maxPhotoBytes {
+		return nil, errors.New("photo larger than 64 KiB after re-encoding")
+	}
+	return clean.Bytes(), nil
 }

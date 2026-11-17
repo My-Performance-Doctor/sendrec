@@ -38,6 +38,9 @@ type Grant struct {
 type Profile struct {
 	DisplayName  *string `json:"displayName"`
 	PhotoVersion *string `json:"photoVersion"`
+	// Departed marks a profile whose name and photo are both null, which
+	// mpd-api sends for a staff member it no longer has. It is not stored.
+	Departed bool `json:"-"`
 }
 type Principal struct {
 	UserID, OrganizationID, StaffID, TenantID, SessionID string
@@ -83,6 +86,7 @@ type Handler struct {
 	idVerifier *oidc.IDTokenVerifier
 	provider   *oidc.Provider
 	oauth      oauth2.Config
+	photos     *photoFetcher // shared by copies of the handler
 }
 
 var ErrDenied = errors.New("MPD authorization denied")
@@ -91,7 +95,7 @@ var ErrLinkRequired = errors.New("explicit operator identity link required")
 var ErrCapacity = errors.New("managed workspace seat capacity reached")
 
 func NewHandler(ctx context.Context, db database.DBTX, cfg Config) (*Handler, error) {
-	h := &Handler{db: db, cfg: cfg, client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	h := &Handler{db: db, cfg: cfg, photos: newPhotoFetcher(), client: &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if !cfg.Enabled {
 		return h, nil
 	}

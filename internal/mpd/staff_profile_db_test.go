@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,9 +75,12 @@ func newProfileFixture(t *testing.T) *profileFixture {
 	return f
 }
 
-func (f *profileFixture) read(t *testing.T) (string, *string, []byte) {
+func (f *profileFixture) read(t *testing.T, others ...*Handler) (string, *string, []byte) {
 	t.Helper()
-	photoFetches.wg.Wait()
+	f.h.photos.wg.Wait()
+	for _, o := range others {
+		o.photos.wg.Wait()
+	}
 	var name string
 	var version *string
 	var stored []byte
@@ -96,7 +100,7 @@ func TestApplyProfileKeepsNameAndPhotoCurrent(t *testing.T) {
 	name, first, second := "Dr Synthetic Staff", "v1", "v2"
 	f.h.applyProfile(ctx, f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &first})
 	got, version, stored := f.read(t)
-	if got != name || version == nil || *version != first || !bytes.Equal(stored, f.photo) {
+	if got != name || version == nil || *version != first || !isJPEG(stored) {
 		t.Fatalf("profile not applied: %q %v", got, version)
 	}
 	f.h.applyProfile(ctx, f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &first})
@@ -114,7 +118,9 @@ func TestApplyProfileKeepsNameAndPhotoCurrent(t *testing.T) {
 		t.Fatalf("after a failure: version %s, %d fetches", *version, f.fetches.Load())
 	}
 	f.status.Store(http.StatusOK)
-	photoFetches.failed.Store(f.p.UserID, photoFailure{version: second, at: time.Now().Add(-photoRetryAfter)})
+	f.h.photos.mu.Lock()
+	f.h.photos.failed[f.p.UserID] = photoFailure{version: second, at: time.Now().Add(-photoRetryAfter)}
+	f.h.photos.mu.Unlock()
 	f.h.applyProfile(ctx, f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &second})
 	if _, version, _ = f.read(t); *version != second {
 		t.Fatal("the photo was not retried after the wait")
@@ -171,6 +177,7 @@ func TestApplyProfileRemovalWinsOverAFetchInFlight(t *testing.T) {
 	f.hang = make(chan struct{})
 	version := "v1"
 	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	f.inFlight(t, 1)
 	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{})
 	close(f.hang)
 	if _, stored, _ := f.read(t); stored != nil || f.fetches.Load() != 1 {
@@ -194,5 +201,103 @@ func TestApplyProfileSkipsTheRefreshTransaction(t *testing.T) {
 	}
 	if got, stored, _ := f.read(t); got != "MPD staff" || stored != nil || f.fetches.Load() != 0 {
 		t.Fatalf("the profile was applied inside the refresh transaction: %q %v %d", got, stored, f.fetches.Load())
+	}
+}
+
+// inFlight waits until n photo reads have reached the mpd-api stand-in, so a
+// test changes the wanted version while a read is really running.
+func (f *profileFixture) inFlight(t *testing.T, n int32) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); f.fetches.Load() < n; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("photo read %d never started", n)
+		}
+	}
+}
+
+func isJPEG(b []byte) bool {
+	_, err := jpeg.Decode(bytes.NewReader(b))
+	return len(b) > 0 && err == nil
+}
+
+// otherTask is a second task's handler: the same database and mpd-api with
+// its own fetcher, as two ECS tasks have.
+func (f *profileFixture) otherTask() *Handler {
+	o := *f.h
+	o.photos = newPhotoFetcher()
+	return &o
+}
+
+func TestApplyProfileRemovalOnAnotherTaskWinsOverAFetchInFlight(t *testing.T) {
+	f := newProfileFixture(t)
+	f.hang = make(chan struct{})
+	other := f.otherTask()
+	version := "v1"
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	f.inFlight(t, 1)
+	other.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{})
+	close(f.hang)
+	if _, stored, _ := f.read(t, other); stored != nil || f.fetches.Load() != 1 {
+		t.Fatalf("a photo removed on another task during its read came back: %v, %d fetches", stored, f.fetches.Load())
+	}
+}
+
+func TestApplyProfileNewerVersionOnAnotherTaskWins(t *testing.T) {
+	f := newProfileFixture(t)
+	f.hang = make(chan struct{})
+	other := f.otherTask()
+	first, second := "v1", "v2"
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &first})
+	f.inFlight(t, 1)
+	other.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &second})
+	f.version.Store(second)
+	close(f.hang)
+	if _, version, stored := f.read(t, other); version == nil || *version != second || !isJPEG(stored) {
+		t.Fatalf("the newer version did not end up stored: %v", version)
+	}
+}
+
+func TestApplyProfileFetchesANewerVersionAfterTheBusyFetch(t *testing.T) {
+	f := newProfileFixture(t)
+	f.hang = make(chan struct{})
+	first, second := "v1", "v2"
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &first})
+	f.inFlight(t, 1)
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &second})
+	f.version.Store(second)
+	close(f.hang)
+	if _, version, stored := f.read(t); version == nil || *version != second || !isJPEG(stored) || f.fetches.Load() != 2 {
+		t.Fatalf("a version named during a fetch was dropped: %v, %d fetches", version, f.fetches.Load())
+	}
+}
+
+func TestApplyProfileStopsRetryingARefusedVersion(t *testing.T) {
+	f := newProfileFixture(t)
+	version := "v1"
+	f.status.Store(http.StatusNotFound)
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	f.read(t)
+	f.h.photos.mu.Lock()
+	refused := f.h.photos.failed[f.p.UserID]
+	refused.at = time.Now().Add(-2 * photoRetryAfter)
+	f.h.photos.failed[f.p.UserID] = refused
+	f.h.photos.mu.Unlock()
+	f.status.Store(http.StatusOK)
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	if _, stored, _ := f.read(t); stored != nil || f.fetches.Load() != 1 || !refused.final {
+		t.Fatalf("a 404 for a version was retried: %v, %d fetches, final %v", stored, f.fetches.Load(), refused.final)
+	}
+}
+
+func TestApplyProfileClearsADepartedStaffMember(t *testing.T) {
+	f := newProfileFixture(t)
+	name, version := "Dr Synthetic Staff", "v1"
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &version})
+	if got, stored, _ := f.read(t); got != name || stored == nil {
+		t.Fatalf("profile not applied: %q %v", got, stored)
+	}
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{Departed: true})
+	if got, stored, photo := f.read(t); got != defaultStaffName || stored != nil || photo != nil {
+		t.Fatalf("a departed staff member kept %q and photo %v", got, stored)
 	}
 }

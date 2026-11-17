@@ -3,6 +3,7 @@ package mpd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -74,6 +75,11 @@ func TestGrantProfile(t *testing.T) {
 		if got == nil || str(got.DisplayName) != tc.name || str(got.PhotoVersion) != tc.version {
 			t.Errorf("%s: got %+v", tc.profile, got)
 		}
+		// Only an explicitly null name beside a null photo marks a staff member
+		// mpd-api no longer has.
+		if departed := tc.profile == `,"profile":{"displayName":null,"photoVersion":null}`; got != nil && got.Departed != departed {
+			t.Errorf("%s: departed %v", tc.profile, got.Departed)
+		}
 	}
 }
 
@@ -91,7 +97,7 @@ func TestFetchPhotoAcceptsOnlyASmallJPEG(t *testing.T) {
 	h := &Handler{cfg: Config{AccessURL: srv.URL + "/api/v1/staff/video-access"}, client: srv.Client()}
 
 	got, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1")
-	if err != nil || !bytes.Equal(got, photo) {
+	if err != nil || !isJPEG(got) {
 		t.Fatalf("photo not read: %v", err)
 	}
 	if auth != "Bearer synthetic-token" || path != "/api/v1/staff/video-access/photo" {
@@ -114,5 +120,36 @@ func TestFetchPhotoAcceptsOnlyASmallJPEG(t *testing.T) {
 		if _, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1"); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	status, body, etag = http.StatusForbidden, nil, `"v1"`
+	var refused *photoStatusError
+	if _, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1"); !errors.As(err, &refused) || refused.status != http.StatusForbidden {
+		t.Errorf("a 403 did not report its status: %v", err)
+	}
+}
+
+// A photo's EXIF block can carry location and device details. The stored photo
+// is re-encoded, so no metadata segment reaches a patient's page.
+func TestFetchPhotoDropsMetadata(t *testing.T) {
+	photo := jpegPhoto(t, 128, 128)
+	secret := "GPS 51.5N 0.1W synthetic camera"
+	payload := append([]byte("Exif\x00\x00"), []byte(secret)...)
+	segment := append([]byte{0xFF, 0xE1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}, payload...)
+	tagged := append(append(append([]byte{}, photo[:2]...), segment...), photo[2:]...)
+	if !bytes.Contains(tagged, []byte(secret)) || !isJPEG(tagged) {
+		t.Fatal("test photo lacks its EXIF block")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(tagged)
+	}))
+	defer srv.Close()
+	h := &Handler{cfg: Config{AccessURL: srv.URL + "/video-access"}, client: srv.Client()}
+	got, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1")
+	if err != nil || !isJPEG(got) {
+		t.Fatalf("photo not read: %v", err)
+	}
+	if bytes.Contains(got, []byte("Exif")) || bytes.Contains(got, []byte(secret)) || bytes.Contains(got, []byte{0xFF, 0xE1}) {
+		t.Fatal("the EXIF block reached the stored photo")
 	}
 }
