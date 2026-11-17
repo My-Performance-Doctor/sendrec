@@ -4,6 +4,17 @@ Verified on 2026-10-07 through 15:21 UTC using synthetic identities, speech and 
 
 The operator approved the proposal, authorized apply, requested an alternative to external DNS and authorized this machine for synthetic owner setup. CloudFront supplies its managed HTTPS hostname through a private VPC origin. The pending custom-domain certificate is unused and does not block this deployment.
 
+
+## Release gate: migration 000079 before any release that includes #38 (MPD-498)
+
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. The first release of main that includes PR #38 (`add-mpd-processing-progress`) must run migration 000079 (`videos.conversion_percent`) first, in staging and then in production:
+
+1. Run the release's migration task (`promote-release.py`, or the migration task definition for production) and confirm it exits 0 and reports migration 79 before the application tasks are replaced.
+2. Only then replace the application tasks.
+3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
+
+Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 500, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
+
 ## Deployed revision and state
 
 - Deployment source: `9ffd8e7935dedb9c25eaba1a159fc9015933e5bf` on `feat/add-aws-staging-deployment-apply`. Later handoff changes are documentation only. [Implementation PR #2](https://github.com/My-Performance-Doctor/sendrec/pull/2) remains for human review and merge.

@@ -252,7 +252,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
 	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
 		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true,
-		     transcode_attempts = 0, transcode_error = NULL, conversion_percent = NULL, updated_at = now()
+		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
@@ -263,6 +263,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		return
 	}
 
+	clearConversionPercent(ctx, db, videoID)
 	slog.Info("normalize: completed", "video_id", videoID, "new_size", newFileSize)
 }
 

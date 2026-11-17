@@ -100,3 +100,15 @@ func conversionReporter(ctx context.Context, db database.DBTX, videoID, fileKey 
 		}
 	}
 }
+
+// clearConversionPercent forgets a published conversion's percent, so a later
+// conversion of the same video starts from none. Apart from the publish on
+// purpose: a database without migration 000079 then only logs here, and the
+// conversion itself still publishes.
+func clearConversionPercent(ctx context.Context, db database.DBTX, videoID string) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if _, err := db.Exec(writeCtx, `UPDATE videos SET conversion_percent = NULL WHERE id = $1`, videoID); err != nil {
+		slog.Warn("conversion progress: could not clear", "video_id", videoID, "error", err)
+	}
+}

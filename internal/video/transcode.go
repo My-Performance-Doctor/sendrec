@@ -269,7 +269,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 	switched, err := publishConversion(ctx, db, storage, "transcode", videoID, fileKey, newFileKey, tmpOutputPath,
 		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true,
-		     transcode_attempts = 0, transcode_error = NULL, conversion_percent = NULL, updated_at = now()
+		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
@@ -280,6 +280,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 		return
 	}
 
+	clearConversionPercent(ctx, db, videoID)
 	slog.Info("transcode: completed", "video_id", videoID, "new_key", newFileKey, "size", newFileSize)
 }
 
