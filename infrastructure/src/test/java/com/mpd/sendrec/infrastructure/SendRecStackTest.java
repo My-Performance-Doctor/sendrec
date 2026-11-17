@@ -45,7 +45,8 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Match.absent()));
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "ExpireOldVersions", "Status", "Enabled",
         "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
-        Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1))))));
+        Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1)),
+            Map.of("Id", "RemoveTranscriptionDeleteMarkers", "Status", "Enabled", "Prefix", "transcribe/", "ExpiredObjectDeleteMarker", true)))));
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec",
         "EngineVersion", "18.6", "AllowMajorVersionUpgrade", true, "BackupRetentionPeriod", 7)))));
@@ -98,7 +99,8 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
         "LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "AbortIncompleteUploads", "Status", "Enabled",
             "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
-            Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1))))));
+            Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1)),
+            Map.of("Id", "RemoveTranscriptionDeleteMarkers", "Status", "Enabled", "Prefix", "transcribe/", "ExpiredObjectDeleteMarker", true)))));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();
@@ -307,12 +309,26 @@ class SendRecStackTest {
       template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
           "Environment", Match.arrayWith(List.of(Map.of("Name", "TRANSCRIPTION_PROVIDER", "Value", "aws"),
               Map.of("Name", "TRANSCRIPTION_LANGUAGE_CODE", "Value", "en-AU")))))))));
+      var jobs = Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
+          Match.stringLikeRegexp(":transcription-job/sendrec-\\*$")))))));
+      // A job may only be started with its output under transcribe/ in the recordings bucket.
       template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
           "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
-              "Action", List.of("transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"),
-              "Effect", "Allow",
-              "Resource", Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
-                  Match.stringLikeRegexp(":transcription-job/sendrec-\\*$")))))))))))))));
+              "Action", "transcribe:StartTranscriptionJob", "Effect", "Allow", "Resource", jobs,
+              "Condition", Map.of(
+                  "StringEquals", Map.of("transcribe:OutputBucketName", Match.objectLike(Map.of("Ref", Match.stringLikeRegexp("^Recordings")))),
+                  "StringLike", Map.of("transcribe:OutputKey", "transcribe/*"))))))))));
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", List.of("transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"),
+              "Effect", "Allow", "Resource", jobs))))))));
+      // Object calls an AWS service makes for the role are denied outside transcribe/.
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", List.of("s3:GetObject*", "s3:PutObject*"), "Effect", "Deny",
+              "NotResource", Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
+                  Match.stringLikeRegexp("/transcribe/\\*$"))))))),
+              "Condition", Map.of("Bool", Map.of("aws:ViaAWSService", "true"))))))))));
     }
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("transcriptionProvider", "openai")));
   }

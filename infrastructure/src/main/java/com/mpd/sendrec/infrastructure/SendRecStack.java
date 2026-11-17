@@ -115,7 +115,8 @@ public class SendRecStack extends Stack {
             .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
             .encryption(BucketEncryption.S3_MANAGED)
             .versioned(config.production())
-            .lifecycleRules(List.of(recordingsLifecycle(config.production()), transcriptionLifecycle()))
+            .lifecycleRules(List.of(recordingsLifecycle(config.production()), transcriptionLifecycle(),
+                transcriptionDeleteMarkers()))
             .enforceSsl(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
@@ -318,14 +319,31 @@ public class SendRecStack extends Stack {
     environment.put("TRANSCRIPTION_PROVIDER", transcriptionProvider);
     if ("aws".equals(transcriptionProvider)) {
       // Amazon Transcribe reads the staged audio and writes its output with the task role's own
-      // bucket access, so the role only needs to run, read and delete its jobs.
+      // bucket access (forward access sessions). A job may only write under transcribe/, and any
+      // object call an AWS service makes for the role outside transcribe/ is denied, so a job can
+      // neither read a recording nor overwrite a published caption.
       environment.put("TRANSCRIPTION_LANGUAGE_CODE", "en-AU");
+      String jobs = "arn:" + getPartition() + ":transcribe:" + getRegion() + ":" + getAccount()
+          + ":transcription-job/sendrec-*";
       taskDefinition.getTaskRole().addToPrincipalPolicy(
           software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
-              .actions(List.of("transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob",
-                  "transcribe:DeleteTranscriptionJob"))
-              .resources(List.of("arn:" + getPartition() + ":transcribe:" + getRegion() + ":" + getAccount()
-                  + ":transcription-job/sendrec-*"))
+              .actions(List.of("transcribe:StartTranscriptionJob"))
+              .resources(List.of(jobs))
+              .conditions(Map.of(
+                  "StringEquals", Map.of("transcribe:OutputBucketName", recordings.getBucketName()),
+                  "StringLike", Map.of("transcribe:OutputKey", "transcribe/*")))
+              .build());
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .actions(List.of("transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"))
+              .resources(List.of(jobs))
+              .build());
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .effect(software.amazon.awscdk.services.iam.Effect.DENY)
+              .actions(List.of("s3:GetObject*", "s3:PutObject*"))
+              .notResources(List.of(recordings.arnForObjects("transcribe/*")))
+              .conditions(Map.of("Bool", Map.of("aws:ViaAWSService", "true")))
               .build());
     }
     environment.put("WHISPER_MODEL_PATH", "/tmp/models/ggml-small.bin");
@@ -561,15 +579,9 @@ public class SendRecStack extends Stack {
   }
 
   /**
-   * Abandoned multipart uploads never keep their parts. Outside production, deleted or replaced
-   * media also stops living on as old versions after 30 days. Production keeps every version: its
-   * noncurrent expiry waits on MPD's clinical retention policy and must be at least the RDS
-   * point-in-time window, so a restored database never points at expired media.
-   */
-  /**
-   * Amazon Transcribe's audio and output live under `transcribe/` only while a job runs. A task that
-   * stops mid-job leaves them behind, and production keeps deleted objects as noncurrent versions, so
-   * both expire after a day.
+   * Amazon Transcribe's audio and output live under `transcribe/` only while a job runs. The
+   * provider deletes every version of both when a job ends; a task that stops mid-job can leave them
+   * behind, so current and noncurrent copies expire after a day.
    */
   static LifecycleRule transcriptionLifecycle() {
     return LifecycleRule.builder()
@@ -577,6 +589,18 @@ public class SendRecStack extends Stack {
         .prefix("transcribe/")
         .expiration(Duration.days(1))
         .noncurrentVersionExpiration(Duration.days(1))
+        .build();
+  }
+
+  /**
+   * Delete markers left once a staged object's versions have expired. S3 does not accept this in the
+   * same rule as a dated expiration, so it is a rule of its own.
+   */
+  static LifecycleRule transcriptionDeleteMarkers() {
+    return LifecycleRule.builder()
+        .id("RemoveTranscriptionDeleteMarkers")
+        .prefix("transcribe/")
+        .expiredObjectDeleteMarker(true)
         .build();
   }
 
@@ -588,6 +612,12 @@ public class SendRecStack extends Stack {
     throw new IllegalArgumentException("transcriptionProvider must be local or aws");
   }
 
+  /**
+   * Abandoned multipart uploads never keep their parts. Outside production, deleted or replaced
+   * media also stops living on as old versions after 30 days. Production keeps every version: its
+   * noncurrent expiry waits on MPD's clinical retention policy and must be at least the RDS
+   * point-in-time window, so a restored database never points at expired media.
+   */
   static LifecycleRule recordingsLifecycle(boolean production) {
     LifecycleRule.Builder rule = LifecycleRule.builder()
         .id(production ? "AbortIncompleteUploads" : "ExpireOldVersions")
