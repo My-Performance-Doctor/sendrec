@@ -2,7 +2,7 @@
 
 SendRec owns staff recording, uploads, media processing and captions. mpd-api owns patient claims, clinical reports, timeline entries and watched status. No patient association belongs in a SendRec request.
 
-The three integration switches default to false. Production preparation starts with zero application tasks. Jeff is reviewing mpd-api PR 211 separately; this implementation does not require or perform its merge. Human review, matching staging configuration and production rollout approval remain separate steps.
+The three integration switches default to false. Jeff is reviewing mpd-api PR 211 separately; this implementation does not require or perform its merge. Human review, matching staging configuration and production rollout approval remain separate steps.
 
 ## Identity and recording API
 

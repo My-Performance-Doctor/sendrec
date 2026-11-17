@@ -16,12 +16,12 @@ Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies mig
 | 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos`, once #31 is merged |
 
 1. Deploy a change that moves only the migration task definition to the release image, with the application task definition unchanged, then run that migration task definition once with `aws ecs run-task` (`promote-release.py` cannot run against this intermediate stack, because the application definition still names the old image). Confirm it exits 0 and reports the newest migration (81 once #31 is on main) before the application tasks are replaced.
-2. Only then replace the application tasks.
+2. Only then deploy the full template, which replaces the application tasks, and then run `promote-release.py`, whose migration rerun is a no-op. Promote's rollback target is the application definition live when it starts, which is already the new one, so rolling back the release means redeploying the previous template at the same task count.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
 Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`.
 
-Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the count the service should run. 0 is refused: the production stack has run since 13 November, so 0 could only stop it. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs.
+Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the count the service should run. 0 is refused: the production stack has run since 13 November, so 0 could only stop it. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs. Production's live template has carried `DesiredCount: 2` since the 17 November release (MPD-510), which deployed an assembly patched to hold the count.
 
 ## Deployed revision and state
 
