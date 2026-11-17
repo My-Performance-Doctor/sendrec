@@ -7,7 +7,7 @@ import (
 
 func TestNewTranscriberFromEnv_DefaultsToLocal(t *testing.T) {
 	t.Setenv("TRANSCRIPTION_PROVIDER", "")
-	tr, err := NewTranscriberFromEnv()
+	tr, err := NewTranscriberFromEnv(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestNewTranscriberFromEnv_DefaultsToLocal(t *testing.T) {
 func TestNewTranscriberFromEnv_OpenAIRequiresKey(t *testing.T) {
 	t.Setenv("TRANSCRIPTION_PROVIDER", "openai")
 	t.Setenv("TRANSCRIPTION_API_KEY", "")
-	_, err := NewTranscriberFromEnv()
+	_, err := NewTranscriberFromEnv(nil)
 	if err == nil {
 		t.Fatal("expected error when API key missing")
 	}
@@ -32,7 +32,7 @@ func TestNewTranscriberFromEnv_OpenAIWithKey(t *testing.T) {
 	t.Setenv("TRANSCRIPTION_PROVIDER", "openai")
 	t.Setenv("TRANSCRIPTION_API_KEY", "k")
 	t.Setenv("TRANSCRIPTION_MODEL", "whisper-large-v3")
-	tr, err := NewTranscriberFromEnv()
+	tr, err := NewTranscriberFromEnv(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestNewTranscriberFromEnv_OpenAIWithKey(t *testing.T) {
 func TestNewTranscriberFromEnv_DeepgramRequiresKey(t *testing.T) {
 	t.Setenv("TRANSCRIPTION_PROVIDER", "deepgram")
 	t.Setenv("TRANSCRIPTION_API_KEY", "")
-	_, err := NewTranscriberFromEnv()
+	_, err := NewTranscriberFromEnv(nil)
 	if err == nil {
 		t.Fatal("expected error when API key missing")
 	}
@@ -52,7 +52,7 @@ func TestNewTranscriberFromEnv_DeepgramRequiresKey(t *testing.T) {
 
 func TestNewTranscriberFromEnv_UnknownProvider(t *testing.T) {
 	t.Setenv("TRANSCRIPTION_PROVIDER", "magic")
-	_, err := NewTranscriberFromEnv()
+	_, err := NewTranscriberFromEnv(nil)
 	if err == nil {
 		t.Fatal("expected error on unknown provider")
 	}

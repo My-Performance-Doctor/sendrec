@@ -29,13 +29,10 @@ func buildTrimArgs(inputPath, outputPath, contentType string, startSeconds, endS
 			"-i", inputPath,
 			"-ss", fmt.Sprintf("%.3f", startSeconds),
 			"-to", fmt.Sprintf("%.3f", endSeconds),
-			"-c:v", "libx264",
-			"-profile:v", "high",
-			"-level:v", "5.1",
-			"-preset", "fast",
-			"-crf", "23",
+		)
+		args = append(args, playbackVideoArgs()...)
+		args = append(args,
 			"-vf", frame.filter(),
-			"-r", "60",
 			"-c:a", "aac",
 			"-movflags", "+faststart",
 		)
@@ -121,7 +118,7 @@ func replaceWithEdit(ctx context.Context, db database.DBTX, storage ObjectStorag
 	switched, err := switchFileKey(ctx, db,
 		`UPDATE videos SET file_key = $3, duration = $4, file_size = $5, status = 'ready',
 		     processing_started_at = NULL, processing_error = NULL,
-		     transcode_attempts = 0, transcode_error = NULL,
+		     transcode_attempts = 0, transcode_error = NULL, encode_started_at = NULL,
 		     capture_warning = CASE WHEN position($6 IN COALESCE(capture_warning, '')) > 0 THEN $6 END,
 		     media_version = media_version + 1, thumbnail_key = NULL, thumbnail_attempts = 0, thumbnail_retry_at = NULL,
 		     transcript_key = NULL, transcript_json = NULL, transcript_status = $7, transcript_started_at = NULL,

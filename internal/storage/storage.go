@@ -171,6 +171,47 @@ func (s *Storage) DeleteObject(ctx context.Context, key string) error {
 	return nil
 }
 
+// DeleteObjectVersions removes every version and delete marker of exactly
+// this key. In a versioned bucket a plain delete only adds a marker and keeps
+// the data as a noncurrent version; in an unversioned one the single "null"
+// version is listed and deleted the same way.
+func (s *Storage) DeleteObjectVersions(ctx context.Context, key string) error {
+	var keyMarker, versionMarker *string
+	for {
+		out, err := s.client.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{
+			Bucket:          aws.String(s.bucket),
+			Prefix:          aws.String(key),
+			KeyMarker:       keyMarker,
+			VersionIdMarker: versionMarker,
+		})
+		if err != nil {
+			return fmt.Errorf("list object versions: %w", err)
+		}
+		var ids []*string
+		for _, v := range out.Versions {
+			if aws.ToString(v.Key) == key {
+				ids = append(ids, v.VersionId)
+			}
+		}
+		for _, m := range out.DeleteMarkers {
+			if aws.ToString(m.Key) == key {
+				ids = append(ids, m.VersionId)
+			}
+		}
+		for _, id := range ids {
+			if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: aws.String(s.bucket), Key: aws.String(key), VersionId: id,
+			}); err != nil {
+				return fmt.Errorf("delete object version: %w", err)
+			}
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			return nil
+		}
+		keyMarker, versionMarker = out.NextKeyMarker, out.NextVersionIdMarker
+	}
+}
+
 func (s *Storage) uploadLimit() int64 {
 	return s.maxBytes
 }

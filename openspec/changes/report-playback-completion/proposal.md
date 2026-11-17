@@ -22,4 +22,4 @@ None.
 
 ## Impact
 
-Migration 000078, `internal/mpdevents`, the watch route and player script, producer fixtures and `docs/mpd`. mpd-api accepts the event in its #516; it works before this ships.
+Migration 000080, `internal/mpdevents`, the watch route and player script, producer fixtures and `docs/mpd`. mpd-api accepts the event in its #516; it works before this ships.
