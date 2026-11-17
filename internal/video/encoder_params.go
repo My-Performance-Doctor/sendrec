@@ -75,6 +75,25 @@ func x264MemoryParams() []string {
 	return []string{"-x264-params", "rc-lookahead=10:ref=1:bframes=0"}
 }
 
+// playbackVideoArgs are the H.264 settings of every playback encode: normalize,
+// WebM transcode, MP4 trim and webcam composite.
+//
+// -fpsmax keeps the source's frame rate and only caps it at 60. The -r 60 it
+// replaces doubled every 30 fps Staff OS recording, so x264 encoded each frame
+// twice. On a 1920x748 synthetic screen share, dropping it took 42% off the CPU
+// time, and veryfast another 30%, with a smaller file and the same SSIM against
+// the source (see openspec/changes/speed-up-playback-encodes).
+func playbackVideoArgs() []string {
+	return []string{
+		"-c:v", "libx264",
+		"-profile:v", "high",
+		"-level:v", "5.1",
+		"-preset", "veryfast",
+		"-crf", "23",
+		"-fpsmax", "60",
+	}
+}
+
 // appendEncoderBounds adds the output-side caps. Call it after the inputs and
 // before the output URL: ffmpeg binds an option to the file that follows it, so
 // anything after the output is parsed as trailing and discarded with a warning

@@ -38,6 +38,15 @@ Same 10-minute recording, encode beside Whisper at nice 19, Whisper `-t` = vCPUs
 
 Sydney on-demand (price list API, `AWS_PROFILE=mpd-staging aws pricing get-products --region us-east-1 --service-code AmazonECS`): x86 $0.04856 per vCPU-hour and $0.00532 per GB-hour, so a 2 vCPU / 4 GB task is about $86 a month. Amazon Transcribe batch in Sydney: $0.0001 per second. `mpd-prod` cannot call the pricing API.
 
+## First production recording (a Doctor's test take, 16 Nov 2026 15:29 UTC)
+
+- Upload was fine: `POST /api/videos` 15:29:17, finalize `PATCH` 15:30:03. Staff OS failed the take at 10 min (pre staff-os #458), and the user reported it as "failed to upload".
+- Three normalizes ran at once: finalize's, plus `normalizeExistingVideos` on both tasks, which picked any MP4 older than 5 min with `ios_normalized=false`. Whisper ran beside them on the pre-#33 image and was killed at 30 min (`signal: killed`). A manual retranscribe took 20 min alone, and the report followed at 16:37.
+- Fix: the `encode_started_at` lease (migration 78, `claimEncode`), plus `-fpsmax 60` and `-preset veryfast` (`playbackVideoArgs`). On a 2 vCPU staging task a 10-min encode went from 530 s to 208 s, with a 7.5% smaller file and the same SSIM locally (openspec `speed-up-playback-encodes`).
+- Amazon Transcribe batch, `en-AU`, in staging: a 10.6-min synthetic TTS monologue took **18 s** (Whisper small on 2 vCPU takes 10–36 min). The output has `audio_segments` of about 30 s and word `items`, so captions need splitting. Number formatting differs ("5.2" for "five point two"). The org has **no AI services opt-out policy** (`organizations list-policies --filter AISERVICES_OPT_OUT_POLICY`, mpd-management-admin), so enable one before any patient audio goes to Transcribe.
+- Accuracy, PriMock57 (CC BY 4.0, real UK doctors in mock consults; 10 doctor tracks, 92 min, human transcripts), WER after Whisper's English normalizer: Whisper small with the production model and flags (whisper.cpp v1.8.3, `-l auto`) **13.4%**; Transcribe `en-AU` **7.2%** (`en-GB` also 7.2%). Transcribe was better on all 10 and dropped about half as many 8+-letter words (2.5% vs 4.8%). Whisper dropped "allergic to amoxicillin" and wrote "amolions" and "loratidine"; Transcribe missed "Microgynon", and both missed "Implanon". Scorer: `scripts/asr-accuracy-score.py` (venv with `jiwer whisper-normalizer`; layout `data/*.wav|TextGrid`, `whisper/*.json`, `transcribe/*.json`). Audio from `media.githubusercontent.com/media/babylonhealth/primock57/main/audio/<id>_doctor.wav`, transcripts from `raw.githubusercontent.com/.../transcripts/<id>_doctor.TextGrid`. Build whisper.cpp v1.8.3 with `-DGGML_METAL=OFF` for CPU parity.
+- Production Staff OS bundle check: `curl https://app.mpd.health/` → `AuthenticatedApp-*.js`, then grep `Still processing` (#458 marker).
+
 ## Fast paths
 
 ```bash
@@ -53,3 +62,13 @@ aws ecs run-task --cluster sendrec-staging-cluster --task-definition sendrec-sta
 ```
 
 The entrypoint downloads the Whisper model, then `exec "$@"` runs the override; the app never starts. Busybox `nice` is in the Alpine runtime image and works as the `sendrec` user (`nice` prints 19).
+
+```bash
+# Production SendRec story for one video (text logs, not JSON): skip health/GETs
+AWS_PROFILE=mpd-prod aws logs start-query --log-group-name /ecs/sendrec-production --start-time $(( $(date +%s)-3*86400 )) --end-time $(date +%s) --limit 10000 \
+  --query-string 'fields @timestamp,@message | filter @message not like /GET \/api\/health|\/api\/ready/ | sort @timestamp asc'
+# mpd-api side: MpdApiApplication-MpdApiTaskDefApiContainerLogGroup708419DA-xJYDu1sCF30b, filter /sendrec|video_provider|video-recordings/
+# Encode old-vs-new on a 2 vCPU staging task: docs/agents/claude/scripts/encode-bench.sh (same run-task as capacity-bench, env DUR)
+```
+
+- SSO expired mid-session: `aws sso login --sso-session mpd --no-browser --use-device-code` in the background, then give the user the URL. The callback flow's link timed out before approval.
