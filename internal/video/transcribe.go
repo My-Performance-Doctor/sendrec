@@ -218,7 +218,7 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		return
 	}
 
-	segments, err := transcriber.Transcribe(ctx, tmpAudioPath, language)
+	segments, err := transcriber.Transcribe(withTranscriptionVideo(ctx, videoID), tmpAudioPath, language)
 	if err != nil {
 		if errors.Is(err, ErrNoAudio) {
 			slog.Info("transcribe: provider reported no speech", "video_id", videoID)

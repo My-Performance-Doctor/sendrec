@@ -1,8 +1,10 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -304,5 +306,33 @@ func TestNewTranscriberFromEnv_AWS(t *testing.T) {
 	}
 	if tr.Name() != "aws-transcribe" || !tr.Available() {
 		t.Errorf("name %q available %v", tr.Name(), tr.Available())
+	}
+}
+
+// The job's language line names the video and the locale Transcribe was given,
+// so an "auto" recording reads as en-AU, and it carries no audio key or URI.
+func TestAWSTranscriberLogsJobLanguage(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	tr, _, _, audio := newFakeAWSTranscriber(t, transcribeFixture)
+	ctx := withTranscriptionVideo(context.Background(), "video-123")
+	if _, err := tr.Transcribe(ctx, audio, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "transcribe: job language") {
+			line = l
+		}
+	}
+	for _, want := range []string{"video_id=video-123", "requested=auto", "transcribe_language=en-AU", "job=sendrec-"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("job language line %q missing %q", line, want)
+		}
+	}
+	if strings.Contains(line, "s3://") || strings.Contains(line, ".wav") {
+		t.Errorf("job language line %q names the audio", line)
 	}
 }
