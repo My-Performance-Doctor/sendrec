@@ -17,16 +17,21 @@ func (h *Handler) MPDPreviewPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	nonce := html.EscapeString(httputil.NonceFromContext(r.Context()))
-	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><style nonce="` + nonce + `">` + mpdPreviewCSS + `</style><body><h1>Staff preview</h1><p id="mpd-status">Checking access...</p><video id="player" controls playsinline crossorigin="anonymous"></video><script src="/api/mpd/player.js" defer></script></body></html>`))
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><style nonce="` + nonce + `">` + mpdPreviewCSS + `</style><body><header id="mpd-meta"><h1 id="mpd-title">Staff preview</h1><p id="mpd-detail"></p></header><p id="mpd-status">Checking access...</p><video id="player" controls playsinline crossorigin="anonymous"></video><script src="/api/mpd/player.js" defer></script></body></html>`))
 }
 
 // The preview fills its window, framed by Staff OS or opened in a tab, and letterboxes the recording. The status shows
 // on its own while access is checked or once it ends, and stays with screen readers while media is loaded.
 // The page's CSP blocks inline style attributes, so the styles carry the request's nonce.
+// Opened in its own tab, the page names the recording in a header above the video; framed in Staff OS, which names it
+// already, the header is only visually hidden (screen readers still get it) and the video fills the frame.
 const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff;font:14px/1.4 system-ui,sans-serif}` +
+	`body{display:flex;flex-direction:column}` +
+	`#mpd-meta{flex:none;padding:12px 16px;border-bottom:1px solid #333}` +
+	`#mpd-meta{max-height:30vh;overflow:hidden}#mpd-title{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}#mpd-detail{margin:2px 0 0;color:#bbb}` +
 	`#mpd-status{position:absolute;top:50%;right:16px;left:16px;margin:0;text-align:center;transform:translateY(-50%)}` +
-	`h1,body:has(video[src]) #mpd-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}` +
-	`video{display:block;width:100%;height:100%;object-fit:contain}video:not([src]){visibility:hidden}`
+	`#mpd-meta:not(.shown),body:has(video[src]) #mpd-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}` +
+	`video{display:block;flex:1;min-height:0;width:100%;object-fit:contain}video:not([src]){visibility:hidden}`
 
 const mpdPlayerJS = `(function(){
 'use strict';
@@ -34,7 +39,9 @@ var player=document.getElementById('player');if(!player)return;
 var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null;
 function managed(){return preview||player.dataset.mpdManaged==='true';}
 function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
-function stop(){player.pause();player.removeAttribute('src');player.load();status('Access ended. Sign in again and open a new preview.');if(timer)clearInterval(timer);}
+function forget(){var meta=document.getElementById('mpd-meta');if(!meta)return;meta.classList.remove('shown');document.getElementById('mpd-title').textContent='Staff preview';document.getElementById('mpd-detail').textContent='';}
+function describe(v){var meta=document.getElementById('mpd-meta');if(!meta||!v||typeof v.title!=='string'||!v.title)return;document.getElementById('mpd-title').textContent=v.title;var parts=[];var when=v.recordedAt?new Date(v.recordedAt):null;if(when&&!isNaN(when))parts.push('Recorded '+when.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}));if(typeof v.published==='boolean')parts.push(!v.published?'Patients can\'t open the link yet':v.linkExpired?'The patient link has expired':'Patients can open the link'+(v.passwordProtected?' with their code':'')+(v.emailGate?' after giving their email':''));document.getElementById('mpd-detail').textContent=parts.join(' \u00b7 ');if(window.parent===window)meta.classList.add('shown');}
+function stop(){player.pause();player.removeAttribute('src');player.load();forget();status('Access ended. Sign in again and open a new preview.');if(timer)clearInterval(timer);}
 function share(){if(player.dataset.shareToken)return player.dataset.shareToken;var parts=location.pathname.split('/');return parts.length===3?parts[2]:'';}
 async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',keepalive:body!==undefined});if(!response.ok)throw new Error('Access unavailable');if(response.status===204)return {};return response.json();}
 function endpoint(suffix){return preview?'/api/mpd/preview/'+suffix:'/api/watch/'+encodeURIComponent(share())+'/'+(suffix==='session'?'playback-session':suffix);}
@@ -43,7 +50,7 @@ async function renew(){if(!managed())return;if(renewing)return renewing;var toke
 async function start(){
  if(preview){var values=new URLSearchParams(location.hash.slice(1));history.replaceState(null,'',location.pathname);var body={handoff:values.get('handoff'),nonce:values.get('nonce'),parentOrigin:values.get('parentOrigin')};
   if(window.parent!==window && !body.handoff){body=await new Promise(function(resolve){var nonce=values.get('nonce'),origin=values.get('parentOrigin');function receive(event){if(event.origin!==origin||event.source!==window.parent||!event.data||event.data.nonce!==nonce||event.data.type!=='mpd-preview')return;window.removeEventListener('message',receive);resolve({handoff:event.data.handoff,nonce:nonce,parentOrigin:origin});}window.addEventListener('message',receive);window.parent.postMessage({type:'mpd-preview-ready',nonce:nonce},origin);});}
-  var redeemed=await request('/api/mpd/preview/redeem',body);proof=redeemed.previewToken;await renew();status('Private staff preview. This does not mark a patient report watched.');
+  var redeemed=await request('/api/mpd/preview/redeem',body);proof=redeemed.previewToken;await renew();if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
  }
  await activate();
 }

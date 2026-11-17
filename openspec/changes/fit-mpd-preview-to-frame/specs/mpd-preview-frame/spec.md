@@ -13,8 +13,23 @@ The `/mpd-preview` page SHALL fit its player to the window that shows it, keepin
 
 #### Scenario: Checking or lost access
 - **WHEN** access is still being checked, or the preview has stopped because access ended
-- **THEN** the status text shows on its own, without an empty player
+- **THEN** the status text shows on its own, without an empty player or any recording details
 
 #### Scenario: Styles under the page's CSP
 - **WHEN** the page is served
 - **THEN** its styles carry the request's CSP nonce and it has no inline style attribute
+
+### Requirement: A preview opened in its own tab names the recording
+Opened outside a frame, once its media has loaded, the `/mpd-preview` page SHALL show a header above the player with the recording's title, its recording date and whether patients can open its link, as the patient watch gate would decide. The title SHALL appear nowhere else, including the tab title, and the header SHALL be cleared when access ends.
+
+#### Scenario: Opened in its own tab
+- **WHEN** staff open the preview in a tab of its own and its media loads
+- **THEN** a header above the player shows the recording's title, its recording date and whether patients can open its link
+
+#### Scenario: Link no longer open to patients
+- **WHEN** the recording is unpublished or its link has expired
+- **THEN** the header says patients can't open the link yet, or that the patient link has expired
+
+#### Scenario: Framed by Staff OS
+- **WHEN** Staff OS frames the preview
+- **THEN** the header is only visually hidden, and the video fills the frame

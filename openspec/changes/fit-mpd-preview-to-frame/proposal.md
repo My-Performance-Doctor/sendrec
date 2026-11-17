@@ -6,7 +6,7 @@ Staff OS now plays SendRec recordings in a patient's Videos by framing `/mpd-pre
 
 - `/mpd-preview` carries its styles in a `<style>` element with the request's CSP nonce, and drops the blocked `style` attribute.
 - The player fills the page and letterboxes the recording on black, whether framed or opened in a tab.
-- The heading is visually hidden. The status shows on its own while access is checked or after it ends. While media is loaded it is visually hidden but still read by screen readers.
+- Framed, the heading is visually hidden. Opened in its own tab, a header above the player names the recording: its title, when it was recorded, and whether patients can open its link (MPD-515). It is cleared when access ends. The status shows on its own while access is checked or after it ends. While media is loaded it is visually hidden but still read by screen readers.
 - The handoff, redemption, media renewal, playback observations and framing policy are unchanged.
 
 ## Capabilities
@@ -21,7 +21,7 @@ None.
 
 ## Impact
 
-`internal/video/mpd_player.go` and a test. No API, database, script or setting changes. SendRec's own detail page gets a preview that fits too. Staff OS transcript times still open the watch page; letting Staff OS move the framed preview to a time by message is a possible follow-up, not part of this change.
+`internal/video/mpd_player.go` (page, styles and script), `internal/video/mpd_preview.go` (the redeem returns the recording's title, recording date, publication, code, email-gate and expiry state, read in the statement that spends the one-use handoff) and their tests. The redeem response now carries the title, which can name the patient; only the page header shows it. No database, migration or setting changes.
 
 ## Approval and delivery
 
