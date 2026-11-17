@@ -340,8 +340,12 @@ func main() {
 	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
 	requeueCancel()
+	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	video.ReleaseInFlightEncodes(releaseCtx, db.Pool)
+	releaseCancel()
 	// Then stop the running transcript so its provider's cleanup deletes the
-	// staged audio and job before the task goes.
+	// staged audio and job before the task goes. At most 5 + 5 + 12 s, then
+	// the 10 s HTTP drain, inside the 60 s stop timeout.
 	video.StopTranscription(12 * time.Second)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
