@@ -38,7 +38,7 @@ func (f *fallbackTranscriber) fallbackAvailable() bool {
 
 func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, language string) ([]TranscriptSegment, error) {
 	if !f.primary.Available() {
-		slog.Warn("transcribe: provider unavailable, using the fallback", "provider", f.primary.Name())
+		slog.Warn("transcribe: provider unavailable, using the fallback", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name())
 		return f.runFallback(ctx, audioPath, language, nil)
 	}
 	// Without a fallback, Transcribe has the whole deadline.
@@ -49,7 +49,7 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 	segments, err := f.primary.Transcribe(primaryCtx, audioPath, language)
 	cancel()
 	if err == nil {
-		slog.Info("transcribe: provider produced the transcript", "provider", f.primary.Name())
+		slog.Info("transcribe: provider produced the transcript", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name())
 		return segments, nil
 	}
 	// Silence is an answer, and a task that is stopping or out of time has
@@ -58,14 +58,14 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 		return nil, err
 	}
 	if !f.fallbackAvailable() {
-		slog.Warn("transcribe: provider failed and the fallback is unavailable", "provider", f.primary.Name(), "error", err)
+		slog.Warn("transcribe: provider failed and the fallback is unavailable", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name(), "error", err)
 		// An abandoned job may still deliver during its cleanup.
 		var abandoned *abandonedJobError
 		if errors.As(err, &abandoned) {
 			select {
 			case segments, ok := <-abandoned.late:
 				if ok {
-					slog.Info("transcribe: provider produced the transcript", "provider", f.primary.Name(), "late", true)
+					slog.Info("transcribe: provider produced the transcript", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name(), "late", true)
 					return segments, nil
 				}
 			case <-ctx.Done():
@@ -73,7 +73,7 @@ func (f *fallbackTranscriber) Transcribe(ctx context.Context, audioPath, languag
 		}
 		return nil, err
 	}
-	slog.Warn("transcribe: provider failed, falling back", "provider", f.primary.Name(), "fallback", f.fallback.Name(), "error", err)
+	slog.Warn("transcribe: provider failed, falling back", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name(), "fallback", f.fallback.Name(), "error", err)
 	return f.runFallback(ctx, audioPath, language, err)
 }
 
@@ -120,12 +120,12 @@ func (f *fallbackTranscriber) runFallback(ctx context.Context, audioPath, langua
 			if whisper != nil {
 				<-whisper // let Whisper's own cleanup finish
 			}
-			slog.Info("transcribe: provider produced the transcript", "provider", f.primary.Name(), "late", true)
+			slog.Info("transcribe: provider produced the transcript", "video_id", transcriptionVideo(ctx), "provider", f.primary.Name(), "late", true)
 			return segments, nil
 		case r := <-whisper:
 			whisper = nil
 			if r.err == nil {
-				slog.Info("transcribe: provider produced the transcript", "provider", f.fallback.Name())
+				slog.Info("transcribe: provider produced the transcript", "video_id", transcriptionVideo(ctx), "provider", f.fallback.Name())
 				return r.segments, nil
 			}
 			whisperErr = r.err

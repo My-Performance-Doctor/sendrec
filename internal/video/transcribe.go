@@ -298,3 +298,16 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 		}
 	}
 }
+
+// transcriptionVideoKey carries the video being transcribed, so a provider's
+// log lines join the worker's, which name the video and not the provider's job.
+type transcriptionVideoKey struct{}
+
+func withTranscriptionVideo(ctx context.Context, videoID string) context.Context {
+	return context.WithValue(ctx, transcriptionVideoKey{}, videoID)
+}
+
+func transcriptionVideo(ctx context.Context) string {
+	id, _ := ctx.Value(transcriptionVideoKey{}).(string)
+	return id
+}
