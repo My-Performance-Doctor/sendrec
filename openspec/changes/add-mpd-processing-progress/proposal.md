@@ -15,6 +15,7 @@ Staff OS shows a percentage only while a recording uploads. After that it says "
   - **Transcript:** takes the same path as the app's Retry transcript.
   - **Refusals:** a step that has not failed, or a media version that moved, answers 409 `step_not_failed`. An unknown video answers 404.
   - The route uses the integration's existing service authentication and tenant and workspace check.
+- **Behind a setting, off by default.** `MPD_PROCESSING_PROGRESS_ENABLED` (default `false`) decides whether the metadata response carries `processing`. mpd-api before #559 refuses metadata with a field it does not know, and refusing it stops report processing. So the field stays off until #559 is live in production, and turning the setting on is a separate, recorded step. Recording the percents and the retry route are not behind the setting: neither changes a response an older mpd-api reads.
 - Migration: `conversion_percent`, `transcript_percent` and `progress_updated_at` on `videos`, all nullable.
 
 ## Capabilities

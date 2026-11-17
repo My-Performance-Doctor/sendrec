@@ -1,7 +1,8 @@
 - [ ] 1 Migration: `videos.conversion_percent`, `transcript_percent` (SMALLINT, 0 to 100) and `progress_updated_at` (TIMESTAMP), nullable
 - [ ] 2 Transcode: run ffmpeg with `-progress pipe:1 -nostats`, parse `out_time_us`, write the percent at most every 2 seconds and only on a change; clear it on success
 - [ ] 3 Transcript: local whisper-cli progress into `transcript_percent`; Amazon Transcribe leaves it null
-- [ ] 4 `processing` on the MPD metadata response, with the state mapping and failure codes
+- [ ] 4 `processing` on the MPD metadata response, with the state mapping and failure codes, only while `MPD_PROCESSING_PROGRESS_ENABLED` is true (default false); CDK and env examples carry it off
+- [ ] 4a After mpd-api #559 is live in production: turn the setting on in staging, then production, and record each in `infrastructure/DEPLOYMENT.md`
 - [ ] 5 `POST /api/integrations/mpd/videos/{videoId}/retry`: conversion and transcript, 202, 409 `step_not_failed`, 404, idempotent while queued
 - [ ] 6 Tests: the progress parser, throttling, each state mapping, retry of each step, refusals, tenant and workspace isolation
 - [ ] 7 Staging: a 10-minute synthetic recording reports moving percents to done; a forced conversion failure and a forced transcript failure each recover through retry

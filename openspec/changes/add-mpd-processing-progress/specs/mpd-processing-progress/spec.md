@@ -1,7 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: The MPD integration reports processing progress
-`GET /api/integrations/mpd/videos/{videoId}` SHALL return `processing` with `conversion` and `transcript`, each carrying `state`, `percent` (a whole number from 0 to 100, or null) and `failure` (a short code, or null), and `updatedAt`. Conversion SHALL be `not_needed` for an upload that needs no conversion, `pending` before ffmpeg starts, `running` while it runs or waits for another attempt, `done` when the MP4 is published, and `failed` only when no attempt remains or the error is permanent. Transcript SHALL be `pending`, `running`, `done`, `no_audio` or `failed`. No raw error text SHALL be returned.
+While `MPD_PROCESSING_PROGRESS_ENABLED` is true, `GET /api/integrations/mpd/videos/{videoId}` SHALL return `processing` with `conversion` and `transcript`, each carrying `state`, `percent` (a whole number from 0 to 100, or null) and `failure` (a short code, or null), and `updatedAt`. Conversion SHALL be `not_needed` for an upload that needs no conversion, `pending` before ffmpeg starts, `running` while it runs or waits for another attempt, `done` when the MP4 is published, and `failed` only when no attempt remains or the error is permanent. Transcript SHALL be `pending`, `running`, `done`, `no_audio` or `failed`. No raw error text SHALL be returned.
+
+#### Scenario: The setting is off
+- **WHEN** `MPD_PROCESSING_PROGRESS_ENABLED` is unset or false
+- **THEN** the metadata response has exactly the fields it has today, and no `processing`
 
 #### Scenario: A conversion halfway through
 - **WHEN** ffmpeg has written 300 of a 600-second recording
