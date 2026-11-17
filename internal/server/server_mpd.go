@@ -63,5 +63,6 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 			s.videoHandler.MPDPlaybackSession(w, r, principal)
 		})
 		r.With(s.videoHandler.MPDPlaybackAccess).Post("/api/watch/{shareToken}/playback-start", s.videoHandler.MPDPlaybackStart)
+		r.With(s.videoHandler.MPDPlaybackAccess).Post("/api/watch/{shareToken}/playback-progress", s.videoHandler.MPDPlaybackProgress)
 	})
 }
