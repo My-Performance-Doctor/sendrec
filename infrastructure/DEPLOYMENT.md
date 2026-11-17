@@ -13,9 +13,9 @@ Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies mig
 |---|---|---|
 | 000079 | #38, `add-mpd-processing-progress` (MPD-498) | `videos.conversion_percent` |
 | 000080 | #32, `report-playback-completion` (MPD-460) | playback progress for the 80% event |
-| 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos`, once #31 is merged |
+| 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos` |
 
-1. Deploy a change that moves only the migration task definition to the release image, with the application task definition unchanged, then run that migration task definition once with `aws ecs run-task` (`promote-release.py` cannot run against this intermediate stack, because the application definition still names the old image). Confirm it exits 0 and reports the newest migration (81 once #31 is on main) before the application tasks are replaced.
+1. Deploy a change that moves only the migration task definition to the release image, with the application task definition unchanged, then run that migration task definition once with `aws ecs run-task` (`promote-release.py` cannot run against this intermediate stack, because the application definition still names the old image). Confirm it exits 0 and reports migration 81 before the application tasks are replaced.
 2. Only then deploy the full template, which replaces the application tasks, and then run `promote-release.py`, whose migration rerun is a no-op. Promote's rollback target is the application definition live when it starts, which is already the new one, so rolling back the release means redeploying the previous template at the same task count.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
