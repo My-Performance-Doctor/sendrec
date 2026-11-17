@@ -121,9 +121,11 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	// The source offer must stay a visible, recognisable link, not only markup:
 	// no .branding rule in the MPD CSS may hide it, and the link stays underlined.
 	underlined := false
-	for _, rule := range regexp.MustCompile(`\.branding[^{]*\{[^}]*\}`).FindAllString(mpdWatchCSS, -1) {
-		compact := strings.ReplaceAll(strings.ToLower(rule), " ", "")
-		for _, hidden := range []string{"display:none", "visibility:hidden", "opacity:0;", "opacity:0}", "font-size:0;", "font-size:0}", "font-size:0px", "color:transparent", "text-decoration:none"} {
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(mpdWatchCSS, "")
+	css = regexp.MustCompile(`\s+`).ReplaceAllString(strings.ToLower(css), "")
+	for _, rule := range regexp.MustCompile(`[^{}]*\.branding[^{}]*\{[^}]*\}`).FindAllString(css, -1) {
+		compact := strings.TrimSpace(rule)
+		for _, hidden := range []string{"display:none", "visibility:hidden", "opacity:0;", "opacity:0}", "opacity:0!", "font-size:0;", "font-size:0}", "font-size:0!", "font-size:0px", "{color:transparent", ";color:transparent", "text-decoration:none", "text-decoration-line:none"} {
 			if strings.Contains(compact, hidden) {
 				t.Errorf("mpdWatchCSS rule %q hides or disguises the source offer (%s)", rule, hidden)
 			}
