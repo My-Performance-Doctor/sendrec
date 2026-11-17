@@ -249,9 +249,13 @@ class SendRecStackTest {
     release.put("releaseImage", "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64));
     Template released = Template.fromStack(stack(release));
     released.resourceCountIs("AWS::ECS::TaskDefinition", 2);
-    long carrying = released.findResources("AWS::ECS::TaskDefinition").values().stream()
-        .filter(r -> r.toString().contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=true")).count();
-    assertEquals(1, carrying);
+    var definitions = released.findResources("AWS::ECS::TaskDefinition");
+    for (var entry : definitions.entrySet()) {
+      boolean migration = entry.getKey().startsWith("MigrationTaskDefinition");
+      boolean carries = entry.getValue().toString().contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=true");
+      assertEquals(!migration, carries, entry.getKey() + (migration ? " must not" : " must") + " carry the setting");
+    }
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "FALSE"))).getMessage().contains("must be true or false"));
   }
 
   @Test void approvedMpdClientsCanUploadStraightToTheBucket() {
