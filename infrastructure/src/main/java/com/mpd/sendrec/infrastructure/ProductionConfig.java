@@ -44,11 +44,20 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
    */
   public static int taskCount(Construct scope) {
     String value = required(scope, "productionTaskCount").trim();
+    Object raw = scope.getNode().tryGetContext("productionTaskCount");
     int count;
-    try {
-      count = Integer.parseInt(value);
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("productionTaskCount must be a whole number");
+    if (raw instanceof Number number) {
+      // cdk.json or -c parsed as JSON gives a number, such as 2 or 2.0.
+      double d = number.doubleValue();
+      if (d != Math.rint(d) || Double.isInfinite(d)) throw new IllegalArgumentException("productionTaskCount must be a whole number");
+      count = (int) d;
+      if (count != d) throw new IllegalArgumentException("productionTaskCount must be 1 to 4");
+    } else {
+      try {
+        count = Integer.parseInt(value);
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("productionTaskCount must be a whole number");
+      }
     }
     if (count < 1 || count > 4) throw new IllegalArgumentException("productionTaskCount must be 1 to 4");
     return count;

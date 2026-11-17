@@ -161,6 +161,14 @@ class SendRecStackTest {
       Template.fromStack(productionWithContext(Map.of("productionTaskCount", String.valueOf(count))))
           .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", count));
     }
+    // A numeric context value, as cdk.json or a JSON -c gives, works the same way.
+    for (Object numeric : List.<Object>of(2, 2.0)) {
+      Template.fromStack(productionWithContext(Map.of("productionTaskCount", numeric)))
+          .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2));
+    }
+    for (Object bad : List.<Object>of(2.5, 0, 5)) {
+      assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of("productionTaskCount", bad)), String.valueOf(bad));
+    }
     Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
   }
 
