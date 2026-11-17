@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
 )
@@ -134,19 +135,45 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 
 	slog.Info("transcribe: starting", "video_id", videoID, "language", language, "provider", transcriber.Name())
 
-	// The failure is recorded on the worker's context, not the job's: a job
-	// that ran out of time still has to say so. BG-07.
+	// Status writes run on a context that outlives the job's: a job that ran
+	// out of time still has to say so. BG-07. A job that ended because the
+	// worker was stopped at shutdown writes nothing: it was handed back to the
+	// queue, or the stuck-job reset will take it.
 	workerCtx := ctx
+	statusCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(workerCtx), 5*time.Second)
+	}
+	stopped := func() bool {
+		if workerCtx.Err() == nil {
+			return false
+		}
+		slog.Info("transcribe: stopped at shutdown, leaving the job to the queue", "video_id", videoID)
+		return true
+	}
 	ctx, cancel := context.WithTimeout(ctx, transcriptionTimeout(duration))
 	defer cancel()
 
 	setFailed := func() {
-		if _, err := db.Exec(workerCtx,
+		if stopped() {
+			return
+		}
+		wctx, wcancel := statusCtx()
+		defer wcancel()
+		if _, err := db.Exec(wctx,
 			`UPDATE videos SET transcript_status = 'failed', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
 			videoID, version, generation,
 		); err != nil {
 			slog.Error("transcribe: failed to set failed status", "video_id", videoID, "error", err)
 		}
+	}
+
+	execStatus := func(sql string, args ...any) (any, error) {
+		if stopped() {
+			return nil, nil
+		}
+		wctx, wcancel := statusCtx()
+		defer wcancel()
+		return db.Exec(wctx, sql, args...)
 	}
 
 	tmpVideo, err := os.CreateTemp("", "sendrec-transcribe-*.webm")
@@ -178,7 +205,7 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 	if err := extractAudioAt(ctx, tmpVideoPath, tmpAudioPath); err != nil {
 		if errors.Is(err, errNoAudio) {
 			slog.Info("transcribe: video has no audio stream", "video_id", videoID)
-			if _, dbErr := db.Exec(ctx,
+			if _, dbErr := execStatus(
 				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
 				videoID, version, generation,
 			); dbErr != nil {
@@ -195,7 +222,7 @@ func processTranscription(ctx context.Context, db database.DBTX, storage ObjectS
 	if err != nil {
 		if errors.Is(err, ErrNoAudio) {
 			slog.Info("transcribe: provider reported no speech", "video_id", videoID)
-			if _, dbErr := db.Exec(ctx,
+			if _, dbErr := execStatus(
 				`UPDATE videos SET transcript_status = 'no_audio', transcript_started_at = NULL, updated_at = now() WHERE id = $1 AND media_version = $2 AND ($3=0 OR transcript_generation=$3) AND status != 'deleted'`,
 				videoID, version, generation,
 			); dbErr != nil {

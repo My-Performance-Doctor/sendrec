@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
+	"github.com/sendrec/sendrec/internal/database"
 )
 
 type stubTranscriber struct {
@@ -183,27 +184,56 @@ func TestTranscriptionTimeout(t *testing.T) {
 	}
 }
 
-// Whisper yields the CPU to encodes, so a job claimed beside one would spend
-// its deadline waiting. While this task encodes, the job stays pending for an
-// idle task.
-func TestProcessNextTranscription_LeavesJobsWhileEncoding(t *testing.T) {
-	holdEncoderSlots(t, 1)
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
+// Local Whisper yields the CPU to encodes, so a job claimed beside one would
+// spend its deadline waiting: while this task encodes, the job stays pending
+// for an idle task. A provider that runs off the task claims it at once.
+func TestProcessNextTranscription_OnlyLocalWhisperWaitsForEncodes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		transcriber Transcriber
+		claims      int
+	}{
+		{"local whisper", newLocalWhisper(), 0},
+		{"off-task provider", stubTranscriber{available: true}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holdEncoderSlots(t, 1)
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+
+			// The stuck-job reset always runs.
+			mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+			if tc.claims > 0 {
+				mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).WillReturnError(pgx.ErrNoRows)
+			}
+			db := &countingDB{DBTX: mock}
+
+			processNextTranscription(context.Background(), db, &mockStorage{}, tc.transcriber, false)
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+			if db.queryRows != tc.claims {
+				t.Errorf("claims attempted = %d, want %d", db.queryRows, tc.claims)
+			}
+		})
 	}
-	defer mock.Close()
+}
 
-	// The stuck-job reset still runs; the claim does not.
-	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+// countingDB counts QueryRow calls, which is how the worker claims a job.
+type countingDB struct {
+	database.DBTX
+	queryRows int
+}
 
-	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
+func (c *countingDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	c.queryRows++
+	return c.DBTX.QueryRow(ctx, sql, args...)
 }
 
 // holdEncoderSlots takes every slot of a fresh gate of the given size for the

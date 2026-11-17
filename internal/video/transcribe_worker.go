@@ -62,6 +62,45 @@ var (
 	transcriptionStopping atomic.Bool
 )
 
+// transcriptionCancel stops the transcription worker's context at shutdown.
+var transcriptionCancel atomic.Pointer[context.CancelFunc]
+
+// TranscriptionContext gives the transcription worker a context of its own,
+// which StopTranscription cancels at shutdown. The rest of the process keeps
+// running until main returns, so without it a provider's cleanup, such as
+// deleting a patient's staged audio, would never run before the task goes.
+func TranscriptionContext(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	transcriptionCancel.Store(&cancel)
+	return ctx
+}
+
+// StopTranscription cancels the worker's context and waits up to wait for the
+// running job, if any, to return and finish its cleanup. Call it after
+// RequeueInFlightTranscription, so the job is already back in the queue and
+// any result the stopped job still writes is discarded by its generation.
+func StopTranscription(wait time.Duration) {
+	if cancel := transcriptionCancel.Load(); cancel != nil {
+		(*cancel)()
+	}
+	deadline := time.Now().Add(wait)
+	for inFlightTranscription.Load() != nil && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if inFlightTranscription.Load() != nil {
+		slog.Warn("transcribe-worker: running job did not finish its cleanup before shutdown")
+	}
+	// Background cleanups of abandoned remote jobs shorten their wait once the
+	// task is stopping; give them what is left.
+	done := make(chan struct{})
+	go func() { transcribeCleanups.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Until(deadline)):
+		slog.Warn("transcribe-worker: remote job cleanup still running at shutdown; the lifecycle rule removes what is left")
+	}
+}
+
 // RequeueInFlightTranscription hands this process's running job back to the
 // queue at shutdown, as during a deploy or a scale-in. Without it the job
 // waits out its whole deadline, which grows with the recording, before
@@ -101,10 +140,11 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		slog.Error("transcribe-worker: failed to reset stuck jobs", "error", err)
 	}
 
-	// Whisper yields the CPU to encodes, so a job started beside one waits for
-	// it with its deadline running. While this task encodes, leave the job to
-	// an idle task, or to this one on a later tick.
-	if encoders().busy() {
+	// Local Whisper yields the CPU to encodes, so a job started beside one
+	// waits for it with its deadline running. While this task encodes, leave
+	// the job to an idle task, or to this one on a later tick. A provider that
+	// runs off the task has nothing to wait for.
+	if _, local := transcriber.(*localWhisper); local && encoders().busy() {
 		return
 	}
 
