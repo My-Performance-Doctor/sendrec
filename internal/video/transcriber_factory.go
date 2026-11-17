@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -67,9 +68,15 @@ func NewTranscriberFromEnv(storage ObjectStorage) (Transcriber, error) {
 			return nil, fmt.Errorf("TRANSCRIPTION_PROVIDER=aws requires storage that can delete object versions")
 		}
 		// Local Whisper stays in the image as the fallback when Transcribe fails.
+		// The entrypoint downloads its model for this provider too.
+		whisper := newLocalWhisper()
+		if !whisper.Available() {
+			slog.Warn("transcriber: local Whisper fallback unavailable; a failed Transcribe job will fail its transcript",
+				"model_path", whisperModelPath())
+		}
 		return &fallbackTranscriber{
 			primary:  newAWSTranscriber(transcribe.NewFromConfig(cfg), staged, bucket, os.Getenv("TRANSCRIPTION_LANGUAGE_CODE")),
-			fallback: newLocalWhisper(),
+			fallback: whisper,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown TRANSCRIPTION_PROVIDER %q (expected one of: local, openai, deepgram, aws)", provider)

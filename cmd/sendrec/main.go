@@ -335,8 +335,8 @@ func main() {
 	<-shutdownCh
 	slog.Info("shutting down")
 
-	// First, while the database is surely reachable: ECS allows 30 seconds
-	// before it kills the task.
+	// First, while the database is surely reachable: the task definition's
+	// stopTimeout gives shutdown 60 seconds before ECS kills the task.
 	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
 	requeueCancel()

@@ -392,6 +392,10 @@ public class SendRecStack extends Stack {
             .environment(environment)
             .secrets(secrets)
             .portMappings(List.of(PortMapping.builder().containerPort(CONTAINER_PORT).build()))
+            // Shutdown hands the running transcript back (up to 5 s), stops it and waits for its
+            // cleanup (up to 12 s), releases encode leases and drains HTTP (up to 10 s). The
+            // default 30 s leaves no margin; Fargate allows up to 120.
+            .stopTimeout(Duration.seconds(60))
             .logging(
                 LogDrivers.awsLogs(
                     AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("sendrec").build()))

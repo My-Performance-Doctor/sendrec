@@ -35,8 +35,10 @@ if [ -z "${DATABASE_URL:-}" ] && [ -n "${DB_HOST:-}" ]; then
 fi
 
 # Fetch the local Whisper model on first start when the image has none and
-# there is no init container to do it (ECS Fargate, plain Docker).
-if [ "${TRANSCRIPTION_ENABLED:-false}" = "true" ] && [ "${TRANSCRIPTION_PROVIDER:-local}" = "local" ] \
+# there is no init container to do it (ECS Fargate, plain Docker). The aws
+# provider needs it too: local Whisper is its fallback when Transcribe fails.
+case "${TRANSCRIPTION_PROVIDER:-local}" in local|aws) needs_model=true ;; *) needs_model=false ;; esac
+if [ "${TRANSCRIPTION_ENABLED:-false}" = "true" ] && [ "$needs_model" = true ] \
    && [ -n "${WHISPER_MODEL_URL:-}" ]; then
   if [ -z "${WHISPER_MODEL_PATH:-}" ] || [ -z "${WHISPER_MODEL_SHA256:-}" ]; then
     echo "Model download requires WHISPER_MODEL_PATH and WHISPER_MODEL_SHA256" >&2

@@ -297,6 +297,13 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
   }
 
+  @Test void shutdownHasTimeToHandBackAndCleanUp() {
+    for (SendRecStack stack : List.of(stack(Map.of()), production(Map.of()))) {
+      Template.fromStack(stack).hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(
+          Match.objectLike(Map.of("Name", "sendrec", "StopTimeout", 60))))));
+    }
+  }
+
   @Test void transcriptionProviderIsLocalUnlessAwsIsChosen() {
     for (SendRecStack local : List.of(stack(Map.of()), production(Map.of()))) {
       Template template = Template.fromStack(local);

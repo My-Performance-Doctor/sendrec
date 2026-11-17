@@ -74,6 +74,18 @@ class EntrypointTests(unittest.TestCase):
             self.assertFalse((self.root / "model.bin").exists())
             self.assertEqual(list(self.root.glob("*.part.*")), [])
 
+    def test_aws_provider_downloads_the_fallback_model(self):
+        self.fake_download()
+        env = self.model_env() | {"TRANSCRIPTION_PROVIDER": "aws"}
+        self.assertEqual(self.run_entrypoint(env).returncode, 0)
+        self.assertEqual(Path(env["WHISPER_MODEL_PATH"]).read_bytes(), MODEL)
+
+    def test_remote_only_provider_skips_the_model(self):
+        self.fake_download(fail=True)
+        env = self.model_env() | {"TRANSCRIPTION_PROVIDER": "openai"}
+        self.assertEqual(self.run_entrypoint(env).returncode, 0)
+        self.assertFalse(Path(env["WHISPER_MODEL_PATH"]).exists())
+
     def test_corrupt_cache_fails(self):
         (self.root / "model.bin").write_bytes(b"corrupt")
         self.assertNotEqual(self.run_entrypoint(self.model_env()).returncode, 0)

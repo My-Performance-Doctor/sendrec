@@ -11,11 +11,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/transcribe"
 	"github.com/aws/aws-sdk-go-v2/service/transcribe/types"
+	"github.com/aws/smithy-go"
 )
 
 // transcribePrefix holds the audio and output of running jobs. The stack
@@ -140,9 +143,41 @@ func (a *awsTranscriber) Transcribe(ctx context.Context, audioPath, language str
 // errJobFailed marks a job Transcribe itself reported as failed.
 var errJobFailed = errors.New("transcription job failed")
 
-// start starts the job, retrying on errors the SDK's own retries did not
-// absorb. A start whose response was lost may have created the job anyway, so
-// each failure first asks whether the job exists.
+// retryableTranscribeError reports whether an AWS error may clear on its own:
+// throttling, limits, the service's own 5xx faults, and errors that never
+// reached the service, such as a network failure. Access, validation and
+// unsupported-language errors will not, so the job goes to the fallback at once.
+func retryableTranscribeError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	switch apiErr.ErrorCode() {
+	case "ThrottlingException", "TooManyRequestsException", "LimitExceededException",
+		"InternalFailureException", "ServiceUnavailableException", "RequestTimeout", "RequestTimeoutException":
+		return true
+	}
+	var httpErr *awshttp.ResponseError
+	if errors.As(err, &httpErr) && httpErr.HTTPStatusCode() >= 500 {
+		return true
+	}
+	return apiErr.ErrorFault() == smithy.FaultServer
+}
+
+// jobMissing reports whether Transcribe says the job does not exist. The real
+// API answers a missing job with BadRequestException "couldn't be found".
+func jobMissing(err error) bool {
+	var missing *types.NotFoundException
+	if errors.As(err, &missing) {
+		return true
+	}
+	var bad *types.BadRequestException
+	return errors.As(err, &bad) && strings.Contains(strings.ToLower(aws.ToString(bad.Message)), "couldn't be found")
+}
+
+// start starts the job, retrying errors that may clear. A start whose response
+// was lost may have created the job anyway, so each failure first asks whether
+// the job exists.
 func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTranscriptionJobInput) error {
 	var err error
 	for attempt := 1; attempt <= a.startAttempts; attempt++ {
@@ -153,6 +188,9 @@ func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTrans
 			return nil
 		}
 		slog.Warn("transcribe: start failed", "job", aws.ToString(input.TranscriptionJobName), "attempt", attempt, "error", err)
+		if !retryableTranscribeError(err) {
+			break
+		}
 		if attempt < a.startAttempts {
 			select {
 			case <-ctx.Done():
@@ -164,9 +202,10 @@ func (a *awsTranscriber) start(ctx context.Context, input *transcribe.StartTrans
 	return fmt.Errorf("start job: %w", err)
 }
 
-// wait polls the job until it completes, fails or the context ends. A failed
-// poll, such as throttling or a network error, is logged and retried with a
-// longer wait: only the job's deadline gives up on it.
+// wait polls the job until it completes, fails or the context ends. A poll
+// that fails with an error that may clear, such as throttling or a network
+// error, is retried with a longer wait until the job's deadline; any other
+// error ends the wait so the fallback can start.
 func (a *awsTranscriber) wait(ctx context.Context, job string) error {
 	delay := a.poll
 	for {
@@ -175,6 +214,9 @@ func (a *awsTranscriber) wait(ctx context.Context, job string) error {
 		case err != nil:
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if !retryableTranscribeError(err) {
+				return fmt.Errorf("get job: %w", err)
 			}
 			slog.Warn("transcribe: checking the job failed, retrying", "job", job, "error", err)
 			delay = min(delay*2, a.maxPoll)
@@ -193,38 +235,71 @@ func (a *awsTranscriber) wait(ctx context.Context, job string) error {
 	}
 }
 
-// cleanup deletes the patient's audio at once, then, for a job that was still
-// running, waits a bounded time for it to finish so its late output can be
-// deleted too, and finally deletes the output and the job. It runs on a
-// context of its own: the job's may have run out. A task that is stopping
-// waits only briefly; the transcribe/ lifecycle rule removes anything later.
+// stoppingSettle bounds a settle once the task has begun to stop. A var so
+// tests can shorten it.
+var stoppingSettle = 5 * time.Second
+
+// transcribeCleanups tracks background cleanups of abandoned jobs, so
+// shutdown can wait for them.
+var transcribeCleanups sync.WaitGroup
+
+// cleanup deletes the patient's audio at once. For a finished job it deletes
+// the output and the job before returning. A job still running, abandoned at
+// its deadline or a task's shutdown, may still write its output, because
+// Transcribe cannot cancel a job: a background cleanup on a context of its own
+// waits a bounded time for it, then deletes the output and the job. The caller
+// returns at once, so a fallback starts with its whole reserve. The
+// transcribe/ lifecycle rule removes anything a cleanup misses.
 func (a *awsTranscriber) cleanup(ctx context.Context, job, audioKey, outputKey string, started, finished bool) {
-	settle := a.settle
-	if transcriptionStopping.Load() {
-		settle = min(settle, 5*time.Second)
-	}
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settle+5*time.Second)
-	defer cancel()
-	a.deleteKey(cctx, audioKey)
-	if started && !finished {
-		a.settleJob(cctx, job, settle)
-	}
-	a.deleteKey(cctx, outputKey)
-	if started {
-		if _, err := a.api.DeleteTranscriptionJob(cctx, &transcribe.DeleteTranscriptionJobInput{TranscriptionJobName: aws.String(job)}); err != nil {
-			slog.Warn("transcribe: failed to delete job", "job", job, "error", err)
+	base := context.WithoutCancel(ctx)
+	dctx, cancel := context.WithTimeout(base, 15*time.Second)
+	a.deleteKey(dctx, audioKey)
+	cancel()
+	finish := func(fctx context.Context) {
+		a.deleteKey(fctx, outputKey)
+		if started {
+			if _, err := a.api.DeleteTranscriptionJob(fctx, &transcribe.DeleteTranscriptionJobInput{TranscriptionJobName: aws.String(job)}); err != nil && !jobMissing(err) {
+				slog.Warn("transcribe: failed to delete job", "job", job, "error", err)
+			}
 		}
 	}
+	if !started || finished {
+		fctx, cancel := context.WithTimeout(base, 15*time.Second)
+		defer cancel()
+		finish(fctx)
+		return
+	}
+	transcribeCleanups.Add(1)
+	go func() {
+		defer transcribeCleanups.Done()
+		sctx, cancel := context.WithTimeout(base, a.settle+15*time.Second)
+		defer cancel()
+		a.settleJob(sctx, job, a.settle)
+		finish(sctx)
+	}()
 }
 
-// settleJob waits up to settle for an abandoned job to reach a final state.
+// settleJob waits up to settle for an abandoned job to reach a final state. If
+// the task begins to stop meanwhile, it waits at most stoppingSettle more.
 func (a *awsTranscriber) settleJob(ctx context.Context, job string, settle time.Duration) {
 	deadline := time.Now().Add(settle)
-	for time.Now().Before(deadline) {
+	var stopSeen time.Time
+	for {
+		limit := deadline
+		if transcriptionStopping.Load() {
+			if stopSeen.IsZero() {
+				stopSeen = time.Now()
+			}
+			if stopLimit := stopSeen.Add(stoppingSettle); stopLimit.Before(limit) {
+				limit = stopLimit
+			}
+		}
+		if !time.Now().Before(limit) {
+			break
+		}
 		got, err := a.api.GetTranscriptionJob(ctx, &transcribe.GetTranscriptionJobInput{TranscriptionJobName: aws.String(job)})
 		if err != nil {
-			var missing *types.NotFoundException
-			if errors.As(err, &missing) {
+			if jobMissing(err) {
 				return
 			}
 		} else if s := got.TranscriptionJob.TranscriptionJobStatus; s == types.TranscriptionJobStatusCompleted || s == types.TranscriptionJobStatusFailed {
@@ -233,7 +308,7 @@ func (a *awsTranscriber) settleJob(ctx context.Context, job string, settle time.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(a.poll):
+		case <-time.After(min(a.poll, time.Until(limit)+time.Millisecond)):
 		}
 	}
 	slog.Warn("transcribe: abandoned job still running at cleanup; the lifecycle rule removes its output", "job", job)

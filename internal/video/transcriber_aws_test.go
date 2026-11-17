@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/transcribe"
 	"github.com/aws/aws-sdk-go-v2/service/transcribe/types"
+	"github.com/aws/smithy-go"
 )
 
 // fakeTranscribe runs a job by writing output into storage once it has been
@@ -37,14 +38,22 @@ type fakeTranscribe struct {
 	getErrs int
 	// readyAt, when set, keeps the job running until then, whoever polls.
 	readyAt time.Time
+	// startErr and getErr, when set, replace the throttling error.
+	startErr, getErr error
 }
+
+// The real API's answers: throttling is retryable, a missing job is a
+// BadRequestException, and access errors are not retryable.
+var (
+	errSyntheticAWS error = &smithy.GenericAPIError{Code: "ThrottlingException", Message: "synthetic throttling"}
+	errAccessDenied error = &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "synthetic access denied"}
+	errJobNotFound  error = &types.BadRequestException{Message: aws.String("The requested job couldn't be found. Check the job name and try your request again.")}
+)
 
 // DeleteObjectVersions on the in-memory bucket, which keeps no versions.
 func (s *memStorage) DeleteObjectVersions(ctx context.Context, key string) error {
 	return s.DeleteObject(ctx, key)
 }
-
-var errSyntheticAWS = errors.New("synthetic ThrottlingException")
 
 func (f *fakeTranscribe) StartTranscriptionJob(_ context.Context, in *transcribe.StartTranscriptionJobInput, _ ...func(*transcribe.Options)) (*transcribe.StartTranscriptionJobOutput, error) {
 	f.mu.Lock()
@@ -53,6 +62,9 @@ func (f *fakeTranscribe) StartTranscriptionJob(_ context.Context, in *transcribe
 	if f.startCalls <= f.startErrs {
 		if f.createdAnyway {
 			f.started = in
+		}
+		if f.startErr != nil {
+			return nil, f.startErr
 		}
 		return nil, errSyntheticAWS
 	}
@@ -68,10 +80,13 @@ func (f *fakeTranscribe) GetTranscriptionJob(_ context.Context, in *transcribe.G
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.started == nil {
-		return nil, &types.NotFoundException{Message: aws.String("no such job")}
+		return nil, errJobNotFound
 	}
 	if f.getErrs > 0 {
 		f.getErrs--
+		if f.getErr != nil {
+			return nil, f.getErr
+		}
 		return nil, errSyntheticAWS
 	}
 	f.getCalls++
@@ -128,6 +143,7 @@ func newFakeAWSTranscriber(t *testing.T, output string) (*awsTranscriber, *fakeT
 
 func assertNothingStaged(t *testing.T, storage *memStorage, api *fakeTranscribe) {
 	t.Helper()
+	transcribeCleanups.Wait() // abandoned jobs settle in the background
 	storage.mu.Lock()
 	defer storage.mu.Unlock()
 	for key := range storage.objects {

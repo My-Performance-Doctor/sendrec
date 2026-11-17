@@ -90,6 +90,15 @@ func StopTranscription(wait time.Duration) {
 	if inFlightTranscription.Load() != nil {
 		slog.Warn("transcribe-worker: running job did not finish its cleanup before shutdown")
 	}
+	// Background cleanups of abandoned remote jobs shorten their wait once the
+	// task is stopping; give them what is left.
+	done := make(chan struct{})
+	go func() { transcribeCleanups.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Until(deadline)):
+		slog.Warn("transcribe-worker: remote job cleanup still running at shutdown; the lifecycle rule removes what is left")
+	}
 }
 
 // RequeueInFlightTranscription hands this process's running job back to the
