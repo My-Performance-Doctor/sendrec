@@ -7,7 +7,7 @@ The operator approved the proposal, authorized apply, requested an alternative t
 
 ## Release gate: migrations before application tasks, and an explicit production task count
 
-Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced:
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced. Staging ran them migration-first on 17 Nov 2026 (see the switch table below); production has not yet:
 
 | Migration | From | Adds |
 |---|---|---|
@@ -27,10 +27,10 @@ Proved on staging 17 Nov 2026: at 2 running tasks, a stack update removing the s
 
 ### Processing progress switches
 
-| Environment | Switched | Revision | Check |
+| Environment | State | Revision | Evidence |
 |---|---|---|---|
-| Staging | on, 17 Nov 2026 15:49:41 UTC (`sendrec-staging:31`) | `f6796f72`, staging mpd-api `957874e1` with #559 | Passed 15:58 to 16:15 UTC in Staff OS on app-staging, synthetic patient: the Outbox bar showed Preparing video 42% to 90%, then Writing summary, then Ready to send; a forced transcript failure showed Retry transcript, and the retry (202) finished the take (MPD-498) |
-| Production | off | `cef3b004` | switches after mpd-api `957874e1` is live in production, in a grant |
+| Staging | on since 17 Nov 2026 15:49:41 UTC (`sendrec-staging:31`) | `f6796f72`; staging mpd-api `957874e1`, which carries mpd-api #559 | Migrations first: 000079 to 000081 exited 0 at 12:20:34 UTC (release of `420ed984`) and again, already current, at 13:16:34 (`f6796f72`). The switch's synth diff changed only `MPD_PROCESSING_PROGRESS_ENABLED`, false to true, in the application task definition. Staff OS on app-staging, synthetic patient, 15:58 to 16:15 UTC: the Outbox bar showed Preparing video 42% to 90%, then Writing summary, then Ready to send. Staff OS draws that bar only from mpd-api's progress, which mpd-api reads from SendRec's `processing` field. A forced transcript failure showed Retry transcript, and the retry (202) finished the take (MPD-498). |
+| Production | not present: `cef3b00` predates #41 and carries no `MPD_PROCESSING_PROGRESS_ENABLED` | `cef3b00` | Switches only after both: (1) the release carrying migrations 000079 to 000081 is in production, run migration-first per steps 1 and 2; (2) production mpd-api runs mpd-api #559. Both happen inside a ProductionMaintenance grant; the release passes `true` if (2) already holds, otherwise `false` and a later switch. |
 
 ## Deployed revision and state
 
