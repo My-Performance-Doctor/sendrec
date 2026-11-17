@@ -11,8 +11,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/smithy-go"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/pashagolub/pgxmock/v5"
 )
 
 // Throttling or a network blip while the job runs is retried, not a failure:
@@ -55,24 +53,34 @@ func TestAWSTranscriberUsesAJobCreatedBehindAFailedStart(t *testing.T) {
 	assertNothingStaged(t, storage, api)
 }
 
-// A start that keeps failing returns the error, and the job, which a lost
-// response may have created, is still deleted.
+// A start that keeps failing returns the error. When the probe proves no job
+// exists there is nothing to delete; when a lost response created one, it is
+// deleted.
 func TestAWSTranscriberGivesUpOnAStartThatKeepsFailing(t *testing.T) {
-	tr, api, storage, audio := newFakeAWSTranscriber(t, transcribeFixture)
-	api.startErrs = 99
+	for _, created := range []bool{false, true} {
+		tr, api, storage, audio := newFakeAWSTranscriber(t, transcribeFixture)
+		api.startErrs = 99
+		if created {
+			// The job exists but cannot be read: the probe is throttled too.
+			api.createdAnyway, api.getErrs = true, 1<<30
+		}
 
-	_, err := tr.Transcribe(context.Background(), audio, "auto")
-	if !errors.Is(err, errSyntheticAWS) {
-		t.Fatalf("err = %v, want the start error", err)
+		_, err := tr.Transcribe(context.Background(), audio, "auto")
+		if !errors.Is(err, errSyntheticAWS) {
+			t.Fatalf("created %v: err = %v, want the start error", created, err)
+		}
+		transcribeCleanups.Wait()
+		api.mu.Lock()
+		starts, deleted := api.startCalls, len(api.deleted)
+		api.mu.Unlock()
+		if starts != tr.startAttempts {
+			t.Errorf("created %v: start calls = %d, want %d", created, starts, tr.startAttempts)
+		}
+		if want := map[bool]int{false: 0, true: 1}[created]; deleted != want {
+			t.Errorf("created %v: deleted %d jobs, want %d", created, deleted, want)
+		}
+		assertNothingStaged(t, storage, &fakeTranscribe{})
 	}
-	if api.startCalls != tr.startAttempts {
-		t.Errorf("start calls = %d, want %d", api.startCalls, tr.startAttempts)
-	}
-	transcribeCleanups.Wait()
-	if len(api.deleted) != 1 {
-		t.Errorf("deleted jobs %v, want the one that may exist", api.deleted)
-	}
-	assertNothingStaged(t, storage, &fakeTranscribe{})
 }
 
 // Transcribe cannot cancel a job. One abandoned at its deadline still writes
@@ -299,4 +307,3 @@ func TestFallbackTranscriberAvailability(t *testing.T) {
 		}
 	})
 }
-

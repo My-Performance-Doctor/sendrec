@@ -15,13 +15,13 @@ import (
 	"github.com/pashagolub/pgxmock/v5"
 )
 
-// countingDB counts writes and fails any made on a context that has ended.
-type countingDB struct {
+// statusWriteDB counts writes and fails any made on a context that has ended.
+type statusWriteDB struct {
 	pgxmock.PgxPoolIface
 	writes atomic.Int32
 }
 
-func (d *countingDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+func (d *statusWriteDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	d.writes.Add(1)
 	if err := ctx.Err(); err != nil {
 		return pgconn.CommandTag{}, err
@@ -38,7 +38,7 @@ func TestProcessTranscriptionWritesNothingWhenStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mock.Close()
-	db := &countingDB{PgxPoolIface: mock}
+	db := &statusWriteDB{PgxPoolIface: mock}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -66,7 +66,7 @@ func TestProcessTranscriptionRecordsFailureAtItsDeadline(t *testing.T) {
 		WithArgs("video-1", 1, 2).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	processTranscription(context.Background(), &countingDB{PgxPoolIface: mock}, hangingStorage{&mockStorage{}}, stubTranscriber{available: true},
+	processTranscription(context.Background(), &statusWriteDB{PgxPoolIface: mock}, hangingStorage{&mockStorage{}}, stubTranscriber{available: true},
 		"video-1", "recordings/u/v.webm", 1, 0, "user-1", "share", "auto", false, 2)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
