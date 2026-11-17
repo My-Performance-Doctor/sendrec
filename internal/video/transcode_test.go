@@ -385,9 +385,9 @@ func TestConversionsSkipWhileAnotherHoldsTheLease(t *testing.T) {
 			mock.ExpectQuery(`SELECT ` + tc.column + `, transcode_attempts, duration FROM videos`).
 				WithArgs("video-1").
 				WillReturnRows(pgxmock.NewRows([]string{tc.column, "transcode_attempts", "duration"}).AddRow(tc.first, 0, 120))
-			mock.ExpectExec(`UPDATE videos SET encode_started_at = now\(\)`).
-				WithArgs("video-1", (encodeTimeout(120) + time.Minute).Seconds()).
-				WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+			mock.ExpectQuery(`UPDATE videos SET encode_started_at = now\(\)`).
+				WithArgs("video-1", tc.key, maxTranscodeAttempts, (perJobTimeout + time.Minute).Seconds(), encodeExtraCapSeconds).
+				WillReturnError(pgx.ErrNoRows)
 
 			tc.run(context.Background(), mock, s, "video-1", tc.key, "")
 
@@ -403,9 +403,9 @@ func TestConversionsSkipWhileAnotherHoldsTheLease(t *testing.T) {
 
 // expectEncodeClaim expects a conversion to take the video's encode lease.
 func expectEncodeClaim(mock pgxmock.PgxPoolIface, videoID string) {
-	mock.ExpectExec(`UPDATE videos SET encode_started_at = now\(\)`).
-		WithArgs(videoID, (encodeTimeout(120) + time.Minute).Seconds()).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery(`UPDATE videos SET encode_started_at = now\(\)`).
+		WithArgs(videoID, pgxmock.AnyArg(), maxTranscodeAttempts, (perJobTimeout + time.Minute).Seconds(), encodeExtraCapSeconds).
+		WillReturnRows(pgxmock.NewRows([]string{"encode_started_at", "transcode_attempts", "duration"}).AddRow(time.Now(), 0, 120))
 }
 
 // stubFFmpeg replaces the ffmpeg call with one that just writes the output
@@ -731,7 +731,7 @@ func TestEncodeDeadlinesGrowWithTheRecording(t *testing.T) {
 			defer mock.Close()
 			mock.ExpectQuery(`transcode_attempts < \$1`).
 				WithArgs(maxTranscodeAttempts).
-				WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "duration"}).AddRow("video-1", "recordings/user/video", 600))
+				WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "duration", "noise_reduction"}).AddRow("video-1", "recordings/user/video", 600, false))
 			expectAlreadyDone(mock, job)
 
 			db := &deadlineDB{DBTX: mock}

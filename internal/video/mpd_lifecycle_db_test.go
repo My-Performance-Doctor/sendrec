@@ -153,6 +153,10 @@ func TestMPDConcurrentConversionsPreserveWinnerAndRecoverLoser(t *testing.T) {
 		close(release)
 		wg.Wait()
 		t.Fatal("a second conversion ran while the first held the lease")
+	case <-time.After(10 * time.Second):
+		close(release)
+		wg.Wait()
+		t.Fatal("the second conversion neither skipped nor ran")
 	}
 	mustExec(t, pool, `UPDATE videos SET encode_started_at=now()-interval '1 day' WHERE id=$1`, id)
 	convert()

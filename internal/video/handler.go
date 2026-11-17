@@ -119,6 +119,7 @@ func (h *Handler) SetTranscriptionEnabled(enabled bool) {
 
 func (h *Handler) SetNoiseReductionFilter(filter string) {
 	h.noiseReductionFilter = filter
+	noiseReductionFilter.Store(&filter)
 }
 
 func (h *Handler) SetWebhookClient(c *webhook.Client) {

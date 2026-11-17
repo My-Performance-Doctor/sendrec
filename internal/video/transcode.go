@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -65,24 +66,6 @@ const encodeExtraCapSeconds = 110 * 60
 func encodeTimeout(durationSeconds int) time.Duration {
 	extra := min(max(2*durationSeconds, 0), encodeExtraCapSeconds)
 	return perJobTimeout + time.Duration(extra)*time.Second
-}
-
-// claimEncode takes the video's encode lease for a conversion. It fails while
-// another conversion holds a lease younger than its deadline plus a minute: the
-// sweep on each task picked any video older than 5 minutes and repeated encodes
-// still running, three at once for one production recording. A dead task's
-// lease still runs out, so the sweep recovers its video. Publishing or recording
-// a failure releases the lease.
-func claimEncode(ctx context.Context, db database.DBTX, videoID string, duration int) (bool, error) {
-	tag, err := db.Exec(ctx,
-		`UPDATE videos SET encode_started_at = now()
-		 WHERE id = $1 AND (encode_started_at IS NULL OR encode_started_at < now() - make_interval(secs => $2::float8))`,
-		videoID, (encodeTimeout(duration) + time.Minute).Seconds(),
-	)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
 }
 
 // maxTranscodeAttempts bounds how often a single video is fed to ffmpeg before
@@ -231,13 +214,16 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 		slog.Warn("transcode: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
 		return
 	}
-	if claimed, err := claimEncode(ctx, db, videoID, duration); err != nil {
+	lease, _, duration, err := claimEncode(ctx, db, videoID, fileKey, transcodeEligible)
+	if err != nil {
 		slog.Error("transcode: failed to claim", "video_id", videoID, "error", err)
 		return
-	} else if !claimed {
-		slog.Info("transcode: skipped, another conversion is running", "video_id", videoID)
+	}
+	if lease == nil {
+		slog.Info("transcode: skipped, another conversion is running or the video changed", "video_id", videoID)
 		return
 	}
+	defer lease.release(ctx, db)
 
 	slog.Info("transcode: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -253,6 +239,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("transcode: failed to download", "video_id", videoID, "error", err)
 		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		lease.cleared()
 		return
 	}
 
@@ -268,6 +255,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	if err := transcodeToMP4(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("transcode: ffmpeg failed", "video_id", videoID, "error", err)
 		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		lease.cleared()
 		return
 	}
 
@@ -294,8 +282,11 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 		newFileSize)
 	if err != nil {
 		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		lease.cleared()
 		return
 	}
+	// The publish released the lease, or an edit that won did.
+	lease.cleared()
 	if !switched {
 		return
 	}
@@ -305,7 +296,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 func transcodeExistingWebM(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
-		`SELECT id, file_key, duration FROM videos
+		`SELECT id, file_key, duration, noise_reduction FROM videos
 		 WHERE content_type = 'video/webm' AND status = 'ready'
 		   AND created_at < now() - interval '5 minutes'
 		   AND transcode_attempts < $1
@@ -319,19 +310,20 @@ func transcodeExistingWebM(ctx context.Context, db database.DBTX, storage Object
 	for rows.Next() {
 		var videoID, fileKey string
 		var duration int
-		if err := rows.Scan(&videoID, &fileKey, &duration); err != nil {
+		var noiseReduction bool
+		if err := rows.Scan(&videoID, &fileKey, &duration, &noiseReduction); err != nil {
 			slog.Error("transcode-worker: failed to scan", "error", err)
 			continue
 		}
 		jobCtx, cancel := context.WithTimeout(ctx, encodeTimeout(duration))
-		TranscodeWebMAsync(jobCtx, db, storage, videoID, fileKey, "")
+		TranscodeWebMAsync(jobCtx, db, storage, videoID, fileKey, sweepAudioFilter(noiseReduction))
 		cancel()
 	}
 }
 
 func normalizeExistingVideos(ctx context.Context, db database.DBTX, storage ObjectStorage) {
 	rows, err := db.Query(ctx,
-		`SELECT id, file_key, duration FROM videos
+		`SELECT id, file_key, duration, noise_reduction FROM videos
 		 WHERE content_type IN ('video/mp4', 'video/quicktime')
 		   AND status = 'ready' AND ios_normalized = false
 		   AND created_at < now() - interval '5 minutes'
@@ -346,14 +338,30 @@ func normalizeExistingVideos(ctx context.Context, db database.DBTX, storage Obje
 	for rows.Next() {
 		var videoID, fileKey string
 		var duration int
-		if err := rows.Scan(&videoID, &fileKey, &duration); err != nil {
+		var noiseReduction bool
+		if err := rows.Scan(&videoID, &fileKey, &duration, &noiseReduction); err != nil {
 			slog.Error("normalize-worker: failed to scan", "error", err)
 			continue
 		}
 		jobCtx, cancel := context.WithTimeout(ctx, encodeTimeout(duration))
-		NormalizeVideoAsync(jobCtx, db, storage, videoID, fileKey, "")
+		NormalizeVideoAsync(jobCtx, db, storage, videoID, fileKey, sweepAudioFilter(noiseReduction))
 		cancel()
 	}
+}
+
+// noiseReductionFilter is the configured denoise filter, for the sweep, which
+// has no handler. SetNoiseReductionFilter sets it with the handler's.
+var noiseReductionFilter atomic.Pointer[string]
+
+// sweepAudioFilter is the filter a recovered conversion uses: the one the
+// finalize path chose, recorded on the video as noise_reduction. Without it a
+// conversion the sweep recovered, after a stopped task or a failed first try,
+// published the Doctor's recording without noise reduction for good.
+func sweepAudioFilter(noiseReduction bool) string {
+	if f := noiseReductionFilter.Load(); noiseReduction && f != nil {
+		return *f
+	}
+	return ""
 }
 
 func StartTranscodeWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, interval time.Duration) {

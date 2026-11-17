@@ -227,13 +227,13 @@ func CompositeWithWebcam(ctx context.Context, db database.DBTX, storage ObjectSt
 	// output always gets a key of its own, recorded before the upload, so a
 	// composite that can't be published never touches the screen recording.
 	outputType, outputExt := contentType, ext
-	publish := `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, file_size = $4, updated_at = now()
+	publish := `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, file_size = $4, encode_started_at = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'` + editVersionFence(ctx)
 	if contentType == "video/webm" {
 		outputType, outputExt = "video/mp4", ".mp4"
 		// Marked as the transcode worker marks its own MP4s, so the worker
 		// does not encode this one a second time.
-		publish = `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, updated_at = now()
+		publish = `UPDATE videos SET status = 'ready', processing_started_at = NULL, file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, encode_started_at = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'processing'` + editVersionFence(ctx)
 	}
 	outputKey := replacementFileKey(screenKey, outputExt)

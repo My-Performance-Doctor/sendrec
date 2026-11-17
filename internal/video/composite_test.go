@@ -195,7 +195,7 @@ func TestCompositeWithWebcam_MP4KeepsItsType(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`INSERT INTO retired_objects`).WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectQuery(`WITH held AS .*file_key = \$3, file_size = \$4, updated_at`).
+	mock.ExpectQuery(`WITH held AS .*file_key = \$3, file_size = \$4, encode_started_at = NULL, updated_at`).
 		WithArgs("video-123", "recordings/user/video.mp4", pgxmock.AnyArg(), int64(len("mp4 bytes"))).
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
 	expectWebcamCleared(mock)
