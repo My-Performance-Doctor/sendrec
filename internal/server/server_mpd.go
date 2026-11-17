@@ -26,6 +26,7 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 		r.Put("/password", adapter.Password)
 		r.Put("/publication", adapter.Publication)
 		r.Put("/patient-summary", adapter.PatientSummary)
+		r.Post("/retry", adapter.Retry)
 	})
 	media := s.videoHandler.MPDMedia(s.mpdHandler, cfg.MPDService, cfg.MPD.AllowedOrigins)
 	// The same bucket as the other /api/videos routes: preview handoffs and upload

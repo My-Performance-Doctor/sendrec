@@ -106,6 +106,7 @@ class SendRecStackTest {
     String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(allTasks.contains("MPD_IDENTITY_ENABLED, Value=false"));
     assertTrue(allTasks.contains("MPD_EVENTS_ENABLED, Value=false"));
+    assertTrue(allTasks.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
     assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
     template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
         "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
