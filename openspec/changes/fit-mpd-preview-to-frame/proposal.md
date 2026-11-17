@@ -6,7 +6,7 @@ Staff OS now plays SendRec recordings in a patient's Videos by framing `/mpd-pre
 
 - `/mpd-preview` carries its styles in a `<style>` element with the request's CSP nonce, and drops the blocked `style` attribute.
 - The player fills the page and letterboxes the recording on black, whether framed or opened in a tab.
-- The heading is visually hidden. The status shows on its own while access is checked or after it ends. While media is loaded it is visually hidden but still read by screen readers.
+- Framed, the heading is visually hidden. Opened in its own tab, a header above the player names the recording: its title, when it was recorded, and whether patients can open its link (MPD-515). It is cleared when access ends. The status shows on its own while access is checked or after it ends. While media is loaded it is visually hidden but still read by screen readers.
 - The handoff, redemption, media renewal, playback observations and framing policy are unchanged.
 
 ## Capabilities

@@ -7,13 +7,17 @@ The `/mpd-preview` page SHALL fit its player to the window that shows it, keepin
 - **WHEN** Staff OS frames the preview at 16:9 and the handoff is redeemed
 - **THEN** the whole recording and its controls show inside the frame, letterboxed on black, with no heading or status above them
 
+#### Scenario: Opened in its own tab
+- **WHEN** staff open the preview in a tab of its own and the handoff is redeemed
+- **THEN** a header above the player shows the recording's title, its recording date and whether patients can open its link, and the title appears nowhere else on the page or in the tab title
+
 #### Scenario: Recording of another shape
 - **WHEN** the recording is wider or taller than the frame
 - **THEN** it is scaled to fit, not cropped
 
 #### Scenario: Checking or lost access
 - **WHEN** access is still being checked, or the preview has stopped because access ended
-- **THEN** the status text shows on its own, without an empty player
+- **THEN** the status text shows on its own, without an empty player or any recording details
 
 #### Scenario: Styles under the page's CSP
 - **WHEN** the page is served

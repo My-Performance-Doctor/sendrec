@@ -37,12 +37,12 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 			t.Errorf("preview page missing %q", want)
 		}
 	}
-	for _, want := range []string{"describe(redeemed)", "getElementById('mpd-title').textContent=v.title", "window.parent===window)meta.classList.add('shown')"} {
+	for _, want := range []string{"describe(redeemed)", "forget();status('Access ended", "if(player.getAttribute('src'))status('Private staff preview", "getElementById('mpd-title').textContent=v.title", "window.parent===window)meta.classList.add('shown')"} {
 		if !strings.Contains(mpdPlayerJS, want) {
 			t.Errorf("player script missing %q", want)
 		}
 	}
-	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "document.title"} {
+	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "document.title", "setAttribute('title'", ".title=v.title", "pushState", "replaceState(null,v"} {
 		if strings.Contains(mpdPlayerJS, sink) {
 			t.Errorf("player script uses %s; the title may name a patient and stays text in the page header", sink)
 		}
