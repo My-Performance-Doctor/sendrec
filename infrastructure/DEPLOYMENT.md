@@ -5,15 +5,23 @@ Verified on 2026-10-07 through 15:21 UTC using synthetic identities, speech and 
 The operator approved the proposal, authorized apply, requested an alternative to external DNS and authorized this machine for synthetic owner setup. CloudFront supplies its managed HTTPS hostname through a private VPC origin. The pending custom-domain certificate is unused and does not block this deployment.
 
 
-## Release gate: migration 000079 before any release that includes #38 (MPD-498)
+## Release gate: migrations before application tasks, and an explicit production task count
 
-Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. The first release of main that includes PR #38 (`add-mpd-processing-progress`) must run migration 000079 (`videos.conversion_percent`) first, in staging and then in production:
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced:
 
-1. Run the release's migration task (`promote-release.py`, or the migration task definition for production) and confirm it exits 0 and reports migration 79 before the application tasks are replaced.
+| Migration | From | Adds |
+|---|---|---|
+| 000079 | #38, `add-mpd-processing-progress` (MPD-498) | `videos.conversion_percent` |
+| 000080 | #32, `report-playback-completion` (MPD-460) | playback progress for the 80% event |
+| 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos`, once #31 is merged |
+
+1. Deploy the migration task definition on the release image first, with the application task definition unchanged, then run the release's migration task (`promote-release.py`, or the migration task definition for production). Confirm it exits 0 and reports the newest migration (81 once #31 is on main) before the application tasks are replaced.
 2. Only then replace the application tasks.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
-Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
+Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`.
+
+Every production synth must pass `productionTaskCount` (0 to 4, normally 2), the count the service should run. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs.
 
 ## Deployed revision and state
 

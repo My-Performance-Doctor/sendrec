@@ -91,7 +91,7 @@ class SendRecStackTest {
   @Test void productionIsIsolatedImmutableAndUnactivated() {
     SendRecStack stack = production(Map.of());
     Template template = Template.fromStack(stack);
-    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2, "DeploymentConfiguration", Match.objectLike(Map.of(
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
@@ -150,12 +150,34 @@ class SendRecStackTest {
     Stage.of(stack).synth();
   }
 
+  // MPD-502: a plain deploy reset production from 2 tasks to the template's 0. Production
+  // now states its count on every deploy, and staging names none, so a deploy keeps its count.
+  @Test void productionRequiresItsTaskCountAndStagingKeepsItsOwn() {
+    assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of()));
+    for (String bad : List.of("", "five", "-1", "5")) {
+      assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of("productionTaskCount", bad)), bad);
+    }
+    for (int count : List.of(0, 2, 4)) {
+      Template.fromStack(productionWithContext(Map.of("productionTaskCount", String.valueOf(count))))
+          .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", count));
+    }
+    Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
+  }
+
+  // Alarm math metrics are emitted in a fixed order, so an unchanged alarm does not
+  // show up as modified on every deploy.
+  @Test void alarmMetricsKeepAFixedOrder() {
+    String alarms = Template.fromStack(production(Map.of())).findResources("AWS::CloudWatch::Alarm").toString();
+    int desired = alarms.indexOf("Id=desired"), signal = alarms.indexOf("Id=signal");
+    assertTrue(desired >= 0 && signal > desired, "desired must precede signal in each alarm's metrics");
+  }
+
   @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     Template template = Template.fromStack(stack(Map.of("releaseImage", image)));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("BackupRetentionPeriod", 7, "MultiAZ", false));
-    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 1));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     String tasks = template.findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(tasks.contains("MIGRATIONS_MODE, Value=only"));
@@ -342,6 +364,12 @@ class SendRecStackTest {
   }
 
   private SendRecStack production(Map<String, Object> context) {
+    Map<String, Object> withCount = new java.util.HashMap<>(context);
+    withCount.putIfAbsent("productionTaskCount", "2");
+    return productionWithContext(withCount);
+  }
+
+  private SendRecStack productionWithContext(Map<String, Object> context) {
     App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
     IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
