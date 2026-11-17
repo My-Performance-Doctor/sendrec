@@ -188,3 +188,11 @@ Staging is trialling `add-aws-transcription` from branch `t3/aws-transcribe-prov
 A re-transcription of the synthetic 20-minute recording `5201bf55-f802-4c16-b3f3-9e2564b0f9b1` ran from claim to `transcribe: completed` in 25.6 seconds. It published generation 2 with 222 segments ending at 1199.8 seconds. Afterwards `transcribe/` held only Transcribe's empty `.write_access_check_file.temp`, and no `sendrec-*` job remained. A one-off psql task with the migration execution role queued the job. Its definition is deregistered.
 
 Redeploy merged `main` to staging if this branch changes or is not merged.
+
+### Amazon Transcribe cost and failure handling
+
+The AWS price list (`aws pricing get-products --service-code transcribe`, effective 1 June 2026) gives standard batch transcription in Sydney, usage type `APS2-TranscribeAudio`, as a flat US$0.0001 a second with no volume tiers. That is US$0.36 an hour of audio, about US$0.06 for a 10-minute recording and US$0.12 for a 20-minute one. Billing is per second of audio, so a retry or a job a stopped task abandoned is billed again. Transcribe Medical (`APS2-MedicalTranscribeAudio`) is US$0.00125 a second, US$4.50 an hour, and is not used.
+
+A failed status check on a running job, such as throttling or a network error, is retried with a longer wait until the job's deadline. A start is tried three times. If Transcribe still cannot finish the job, the same audio is transcribed with local Whisper inside the job's deadline; the remote attempt keeps back five minutes plus three times the recording's length for it. Logs name the provider that produced each transcript.
+
+The task role may start a job only with its output under `transcribe/` in the recordings bucket. Object reads and writes an AWS service makes for the role outside `transcribe/` are denied. Cleanup deletes every version of the staged audio at once, waits up to three minutes for an abandoned job to finish so its late output can be deleted, then deletes the job. A task that is stopping cancels its running transcript and waits up to 12 seconds for that cleanup. Anything left under `transcribe/`, current or noncurrent, expires after a day, and expired delete markers are removed.
