@@ -18,20 +18,21 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sendrec/sendrec/internal/validate"
 )
 
 const (
 	// Watch pages inline the photo, so it must stay small. mpd-api sends 128 px.
 	maxPhotoBytes = 64 << 10
 	maxPhotoSide  = 512
-	// mpd-api allows 100-character first and last names, plus "Dr".
-	maxNameRunes    = 256
+	// A name longer than SendRec's user name limit, which sign-in applies too,
+	// keeps the current name.
+	maxNameRunes    = validate.MaxNameLength
 	photoRetryAfter = 5 * time.Minute
 	// photoDBTimeout bounds each database step of a background fetch. The read
 	// itself is bounded by the handler's HTTP client, which times out at 5 s.
 	photoDBTimeout = 10 * time.Second
-	// defaultStaffName is what sign-in gives a staff member without a name,
-	// and what a departed staff member's name goes back to.
+	// defaultStaffName is what sign-in gives a staff member without a name.
 	defaultStaffName = "MPD staff"
 )
 
@@ -50,8 +51,9 @@ func warnProfile(message, reason string) {
 // parseProfile reads the grant's profile and never fails the grant. A missing
 // or bad name is dropped, which keeps the last one. A missing or bad photo
 // version drops the whole profile, because a null one removes the photo. A
-// profile whose name and photo are both explicitly null is what mpd-api sends
-// for a staff member it no longer has, so it marks the staff member departed.
+// null name keeps the current one: mpd-api sends no departure signal, so an
+// offboarded staff member's name and photo are removed by the operator SQL in
+// docs/mpd/README.md.
 func parseProfile(raw json.RawMessage) *Profile {
 	if len(raw) == 0 {
 		return nil
@@ -74,9 +76,7 @@ func parseProfile(raw json.RawMessage) *Profile {
 		var name *string
 		if json.Unmarshal(v, &name) != nil {
 			warnProfile("mpd profile name ignored", "type")
-		} else if name == nil {
-			p.Departed = version == nil
-		} else {
+		} else if name != nil {
 			trimmed := strings.TrimSpace(*name)
 			if trimmed == "" || utf8.RuneCountInString(trimmed) > maxNameRunes || strings.IndexFunc(trimmed, unicode.IsControl) >= 0 {
 				warnProfile("mpd profile name ignored", "value")
@@ -92,8 +92,7 @@ func parseProfile(raw json.RawMessage) *Profile {
 // SendRec user, so watch pages show who recorded. Sign-in and each grant
 // refresh call it. It writes only what changed, fetches a new photo off the
 // request path, and never fails the request. A profile without a name keeps
-// the last one; a departed staff member's name goes back to the default.
-// Refresh validates inside its own transaction, which a failed write here
+// the last one. Refresh validates inside its own transaction, which a failed write here
 // would abort, so there the next request applies the profile.
 //
 // The photo the latest grant names is kept in the database (want_version), so
@@ -109,15 +108,8 @@ func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Pro
 		slog.Warn("mpd profile not applied", "stage", "read", "error", err)
 		return
 	}
-	newName := ""
-	switch {
-	case p.Departed && name != defaultStaffName:
-		newName = defaultStaffName
-	case p.DisplayName != nil && *p.DisplayName != name:
-		newName = *p.DisplayName
-	}
-	if newName != "" {
-		if _, err := h.db.Exec(ctx, `UPDATE users SET name=$2,updated_at=now() WHERE id=$1`, userID, newName); err != nil {
+	if p.DisplayName != nil && *p.DisplayName != name {
+		if _, err := h.db.Exec(ctx, `UPDATE users SET name=$2,updated_at=now() WHERE id=$1`, userID, *p.DisplayName); err != nil {
 			slog.Warn("mpd profile not applied", "stage", "name", "error", err)
 		}
 	}
@@ -133,7 +125,7 @@ func (h *Handler) applyProfile(ctx context.Context, userID, token string, p *Pro
 		}
 	}
 	if p.PhotoVersion != nil && !sameVersion(stored, p.PhotoVersion) && h.photos != nil {
-		h.photos.fetchLater(h, userID, token)
+		h.photos.fetchLater(h, userID, token, *p.PhotoVersion)
 	}
 }
 
@@ -143,7 +135,8 @@ func sameVersion(a, b *string) bool {
 
 // photoFetcher keeps photo fetches off the request path: one at a time per
 // user in this process, and a version that failed waits photoRetryAfter
-// before the next try, or is not tried again after a 4xx. The database holds
+// before the next try, or is not tried again after mpd-api says it has no such
+// photo (see finalPhotoStatus). The database holds
 // the wanted version, so this only coordinates fetches within one task.
 // Handler holds it by pointer because Refresh copies the handler.
 type photoFetcher struct {
@@ -158,7 +151,23 @@ type photoFetcher struct {
 type photoFailure struct {
 	version string
 	at      time.Time
-	final   bool // a 4xx: mpd-api will not give this version
+	final   bool // mpd-api will not give this version (finalPhotoStatus)
+}
+
+// waiting reports whether version failed and must not be read again yet.
+func (p photoFailure) waiting(version string) bool {
+	return p.version == version && (p.final || time.Since(p.at) < photoRetryAfter)
+}
+
+// finalPhotoStatus reports whether a status means mpd-api has no such photo,
+// so reading the same version again cannot help. 401, 403, 408 and 429 can be
+// token-specific or passing, so they wait photoRetryAfter like a 5xx.
+func finalPhotoStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 func newPhotoFetcher() *photoFetcher {
@@ -171,8 +180,15 @@ type photoStatusError struct{ status int }
 
 func (e *photoStatusError) Error() string { return fmt.Sprintf("photo status %d", e.status) }
 
-func (f *photoFetcher) fetchLater(h *Handler, userID, token string) {
+// fetchLater reads version off the request path, unless this process already
+// knows it failed and must wait, or a read for the user is running, in which
+// case that read checks the wanted version again when it ends.
+func (f *photoFetcher) fetchLater(h *Handler, userID, token, version string) {
 	f.mu.Lock()
+	if fail, ok := f.failed[userID]; ok && fail.waiting(version) {
+		f.mu.Unlock()
+		return
+	}
 	f.tokens[userID] = token
 	if f.busy[userID] {
 		f.again[userID] = true
@@ -203,10 +219,10 @@ func (f *photoFetcher) run(h *Handler, userID string) {
 		delete(f.again, userID)
 		token := f.tokens[userID]
 		fail, failed := f.failed[userID]
-		done := err != nil || want == nil || sameVersion(want, stored) ||
-			failed && fail.version == *want && (fail.final || time.Since(fail.at) < photoRetryAfter)
+		done := err != nil || want == nil || sameVersion(want, stored) || failed && fail.waiting(*want)
 		if done && !again {
 			delete(f.busy, userID)
+			delete(f.tokens, userID)
 			f.mu.Unlock()
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				slog.Warn("mpd profile not applied", "stage", "photo_read", "error", err)
@@ -225,7 +241,7 @@ func (f *photoFetcher) run(h *Handler, userID string) {
 			cancel()
 		}
 		var status *photoStatusError
-		final := errors.As(err, &status) && status.status >= 400 && status.status < 500
+		final := errors.As(err, &status) && finalPhotoStatus(status.status)
 		f.mu.Lock()
 		if err != nil {
 			f.failed[userID] = photoFailure{version: version, at: time.Now(), final: final}
@@ -246,7 +262,8 @@ func (f *photoFetcher) run(h *Handler, userID string) {
 // token that read the grant. It accepts only a small JPEG whose ETag names the
 // version the grant gave, so a lagging read cannot store an old photo under a
 // new version, and re-encodes it so no EXIF or other metadata segment reaches
-// a patient's page. The handler's HTTP client bounds the read at 5 s.
+// a patient's page. The EXIF orientation is applied to the pixels first, so the
+// photo stays upright without the tag. The handler's HTTP client bounds the read at 5 s.
 func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.cfg.AccessURL, "/")+"/photo", nil)
 	if err != nil {
@@ -280,7 +297,7 @@ func (h *Handler) fetchPhoto(ctx context.Context, token, version string) ([]byte
 		return nil, errors.New("photo is not a JPEG of at most 512 px")
 	}
 	var clean bytes.Buffer
-	if err = jpeg.Encode(&clean, img, &jpeg.Options{Quality: 85}); err != nil {
+	if err = jpeg.Encode(&clean, orient(img, jpegOrientation(body)), &jpeg.Options{Quality: 85}); err != nil {
 		return nil, err
 	}
 	if clean.Len() > maxPhotoBytes {

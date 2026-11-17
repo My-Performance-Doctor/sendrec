@@ -38,9 +38,6 @@ type Grant struct {
 type Profile struct {
 	DisplayName  *string `json:"displayName"`
 	PhotoVersion *string `json:"photoVersion"`
-	// Departed marks a profile whose name and photo are both null, which
-	// mpd-api sends for a staff member it no longer has. It is not stored.
-	Departed bool `json:"-"`
 }
 type Principal struct {
 	UserID, OrganizationID, StaffID, TenantID, SessionID string

@@ -271,33 +271,56 @@ func TestApplyProfileFetchesANewerVersionAfterTheBusyFetch(t *testing.T) {
 	}
 }
 
-func TestApplyProfileStopsRetryingARefusedVersion(t *testing.T) {
+// ageFailure moves the user's recorded photo failure past the retry wait.
+func (f *profileFixture) ageFailure(t *testing.T) photoFailure {
+	t.Helper()
+	f.h.photos.mu.Lock()
+	defer f.h.photos.mu.Unlock()
+	fail := f.h.photos.failed[f.p.UserID]
+	fail.at = time.Now().Add(-2 * photoRetryAfter)
+	f.h.photos.failed[f.p.UserID] = fail
+	return fail
+}
+
+// A 404 says mpd-api has no such photo, so that version is not read again. A
+// 403 can belong to one token, so it is read again after the wait.
+func TestApplyProfileRetriesOnlyPassingRefusals(t *testing.T) {
 	f := newProfileFixture(t)
 	version := "v1"
+	f.status.Store(http.StatusForbidden)
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
+	f.read(t)
+	if fail := f.ageFailure(t); fail.final {
+		t.Fatal("a 403 was treated as final")
+	}
 	f.status.Store(http.StatusNotFound)
 	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
 	f.read(t)
-	f.h.photos.mu.Lock()
-	refused := f.h.photos.failed[f.p.UserID]
-	refused.at = time.Now().Add(-2 * photoRetryAfter)
-	f.h.photos.failed[f.p.UserID] = refused
-	f.h.photos.mu.Unlock()
+	if f.fetches.Load() != 2 {
+		t.Fatalf("a 403 was not read again after the wait: %d fetches", f.fetches.Load())
+	}
+	refused := f.ageFailure(t)
 	f.status.Store(http.StatusOK)
 	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{PhotoVersion: &version})
-	if _, stored, _ := f.read(t); stored != nil || f.fetches.Load() != 1 || !refused.final {
-		t.Fatalf("a 404 for a version was retried: %v, %d fetches, final %v", stored, f.fetches.Load(), refused.final)
+	if _, stored, _ := f.read(t); stored != nil || f.fetches.Load() != 2 || !refused.final {
+		t.Fatalf("a 404 for a version was read again: %v, %d fetches, final %v", stored, f.fetches.Load(), refused.final)
+	}
+	f.h.photos.mu.Lock()
+	tokens, busy := len(f.h.photos.tokens), len(f.h.photos.busy)
+	f.h.photos.mu.Unlock()
+	if tokens != 0 || busy != 0 {
+		t.Fatalf("a finished read left %d tokens and %d busy users", tokens, busy)
 	}
 }
 
-func TestApplyProfileClearsADepartedStaffMember(t *testing.T) {
+// mpd-api sends no departure signal, and a staff member may have neither a
+// name nor a photo, so a profile with both null keeps the name.
+func TestApplyProfileKeepsTheNameWhenTheProfileHasNone(t *testing.T) {
 	f := newProfileFixture(t)
 	name, version := "Dr Synthetic Staff", "v1"
 	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{DisplayName: &name, PhotoVersion: &version})
-	if got, stored, _ := f.read(t); got != name || stored == nil {
-		t.Fatalf("profile not applied: %q %v", got, stored)
-	}
-	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{Departed: true})
-	if got, stored, photo := f.read(t); got != defaultStaffName || stored != nil || photo != nil {
-		t.Fatalf("a departed staff member kept %q and photo %v", got, stored)
+	f.h.applyProfile(context.Background(), f.p.UserID, "synthetic-token", &Profile{})
+	if got, stored, photo := f.read(t); got != name || stored != nil || photo != nil {
+		t.Fatalf("a profile with no name and no photo gave %q and photo %v", got, stored)
 	}
 }

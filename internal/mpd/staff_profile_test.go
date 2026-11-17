@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"net/http"
@@ -75,10 +76,68 @@ func TestGrantProfile(t *testing.T) {
 		if got == nil || str(got.DisplayName) != tc.name || str(got.PhotoVersion) != tc.version {
 			t.Errorf("%s: got %+v", tc.profile, got)
 		}
-		// Only an explicitly null name beside a null photo marks a staff member
-		// mpd-api no longer has.
-		if departed := tc.profile == `,"profile":{"displayName":null,"photoVersion":null}`; got != nil && got.Departed != departed {
-			t.Errorf("%s: departed %v", tc.profile, got.Departed)
+	}
+}
+
+// A phone saves a portrait as landscape pixels with Orientation 6. Re-encoding
+// drops the tag, so the pixels are turned first and the photo stays upright.
+func TestFetchPhotoAppliesTheOrientation(t *testing.T) {
+	// 40 wide, 20 high: the left half red, the right half blue.
+	img := image.NewRGBA(image.Rect(0, 0, 40, 20))
+	for y := 0; y < 20; y++ {
+		for x := 0; x < 40; x++ {
+			c := color.RGBA{R: 255, A: 255}
+			if x >= 20 {
+				c = color.RGBA{B: 255, A: 255}
+			}
+			img.Set(x, y, c)
+		}
+	}
+	var plain bytes.Buffer
+	if err := jpeg.Encode(&plain, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	// A little-endian TIFF block with one IFD entry: Orientation (0x0112), SHORT, 1, value 6.
+	tiff := []byte{'I', 'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0}
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := append([]byte{0xFF, 0xE1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}, payload...)
+	tagged := append(append(append([]byte{}, plain.Bytes()[:2]...), segment...), plain.Bytes()[2:]...)
+	if jpegOrientation(tagged) != 6 || jpegOrientation(plain.Bytes()) != 1 {
+		t.Fatalf("orientation read as %d and %d", jpegOrientation(tagged), jpegOrientation(plain.Bytes()))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(tagged)
+	}))
+	defer srv.Close()
+	h := &Handler{cfg: Config{AccessURL: srv.URL + "/video-access"}, client: srv.Client()}
+	got, err := h.fetchPhoto(context.Background(), "synthetic-token", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upright, err := jpeg.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Turned 90 degrees clockwise: 20 wide, 40 high, red on top, blue below.
+	if b := upright.Bounds(); b.Dx() != 20 || b.Dy() != 40 {
+		t.Fatalf("photo is %dx%d, want 20x40", b.Dx(), b.Dy())
+	}
+	if r, _, bl, _ := upright.At(10, 5).RGBA(); r < bl {
+		t.Error("the top of the turned photo is not red")
+	}
+	if r, _, bl, _ := upright.At(10, 35).RGBA(); bl < r {
+		t.Error("the bottom of the turned photo is not blue")
+	}
+	if jpegOrientation(got) != 1 {
+		t.Error("the stored photo still carries an orientation")
+	}
+}
+
+func TestFinalPhotoStatus(t *testing.T) {
+	for status, final := range map[int]bool{400: true, 404: true, 410: true, 422: true, 401: false, 403: false, 408: false, 429: false, 500: false, 503: false} {
+		if finalPhotoStatus(status) != final {
+			t.Errorf("status %d: final %v", status, !final)
 		}
 	}
 }
