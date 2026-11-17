@@ -15,15 +15,20 @@ class PromotionTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
+        # As synthesized: staging's service names no count, production's states it.
+        self.staging_template = {'Resources': {'Service': {'Type': 'AWS::ECS::Service', 'Properties': {}}}}
         self.template = {'Resources': {'Service': {'Type': 'AWS::ECS::Service', 'Properties': {'DesiredCount': 2}}}}
+        staging_path = pathlib.Path(self.directory.name) / 'staging.json'
+        staging_path.write_text(json.dumps(self.staging_template))
         template = pathlib.Path(self.directory.name) / 'stack.json'
         template.write_text(json.dumps(self.template))
-        config = {'templatePath': str(template), 'stack': 'SyntheticStage', 'desiredCount': 1, 'cluster': 'stage-cluster', 'service': 'stage-service',
+        config = {'templatePath': str(staging_path), 'stack': 'SyntheticStage', 'desiredCount': 1, 'cluster': 'stage-cluster', 'service': 'stage-service',
                   'migrationTaskDefinition': 'stage-migration:1', 'applicationTaskDefinition': 'stage-app:2',
                   'subnets': ['synthetic-private'], 'securityGroups': ['synthetic-private'],
                   'readinessUrl': 'https://synthetic.example/api/ready'}
         self.manifest = {'revision': 'a' * 40, 'image': '111111111111.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:' + 'b' * 64,
-                         'infrastructureSha256': hashlib.sha256(json.dumps([self.template,self.template],sort_keys=True,separators=(',',':')).encode()).hexdigest(), 'staging': config, 'production': {**config, 'desiredCount': 2}}
+                         'infrastructureSha256': hashlib.sha256(json.dumps([self.staging_template,self.template],sort_keys=True,separators=(',',':')).encode()).hexdigest(), 'staging': config,
+                         'production': {**config, 'desiredCount': 2, 'templatePath': str(template), 'stack': 'SyntheticProduction'}}
         for key in ('cluster', 'service', 'migrationTaskDefinition', 'applicationTaskDefinition'):
             self.manifest['production'][key] = self.manifest['production'][key].replace('stage', 'prod')
         self.calls = []
@@ -34,7 +39,8 @@ class PromotionTest(unittest.TestCase):
     def aws(self, *args):
         self.calls.append(args)
         if args[1] == 'get-template':
-            return {'TemplateBody':self.template}
+            stack = args[args.index('--stack-name')+1]
+            return {'TemplateBody': self.staging_template if stack == 'SyntheticStage' else self.template}
         if args[1] == 'describe-repositories':
             return {'repositories': [{'imageTagMutability':'IMMUTABLE'}]}
         if args[1] == 'describe-images':
@@ -132,9 +138,23 @@ class PromotionTest(unittest.TestCase):
         self.manifest['production']['desiredCount'] = 3
         with self.assertRaisesRegex(ValueError, 'DesiredCount'):
             promote.validate(self.manifest, 'production', evidence)
-        self.manifest['staging']['desiredCount'] = 2
-        with self.assertRaises(ValueError):
-            promote.validate(self.manifest, 'staging')
+        promote.validate(self.manifest, 'staging')
+        for bad in (2, 0, True, '1', 1.0):
+            self.manifest['staging']['desiredCount'] = bad
+            with self.assertRaises(ValueError):
+                promote.validate(self.manifest, 'staging')
+
+    def test_production_template_must_state_one_service_count(self):
+        evidence = {k: self.manifest[k] for k in ('image','revision','infrastructureSha256')}
+        evidence.update(target='staging',verified=True)
+        path = pathlib.Path(self.manifest['production']['templatePath'])
+        service = {'Type': 'AWS::ECS::Service', 'Properties': {'DesiredCount': 2}}
+        for resources, message in (({}, 'exactly one'),
+                                   ({'A': service, 'B': service}, 'exactly one'),
+                                   ({'A': {'Type': 'AWS::ECS::Service', 'Properties': {}}}, 'must state DesiredCount')):
+            path.write_text(json.dumps({'Resources': resources}))
+            with self.assertRaisesRegex(ValueError, message):
+                promote.validate(self.manifest, 'production', evidence)
 
     def test_production_runs_its_own_copy_of_the_reviewed_digest(self):
         copy = '222222222222.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:' + 'b' * 64

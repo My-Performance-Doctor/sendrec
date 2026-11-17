@@ -41,10 +41,12 @@ def validate(manifest, target, staged=None):
     for environment in ("staging", "production"):
         target_image(manifest, environment)
     count = config.get("desiredCount")
-    if target == "staging" and count != 1:
+    # bool is an int in Python, and True == 1, so it is refused explicitly.
+    whole = isinstance(count, int) and not isinstance(count, bool)
+    if target == "staging" and (not whole or count != 1):
         raise ValueError("A staging release runs one task")
     if target == "production":
-        if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 4:
+        if not whole or not 1 <= count <= 4:
             raise ValueError("A production release runs 1 to 4 tasks")
         # The template's own count is what every later stack deploy applies, so a
         # release that scales to another count would be undone by the next deploy.
@@ -71,7 +73,10 @@ def template_task_count(config):
     services = [r for r in template.get("Resources", {}).values() if r.get("Type") == "AWS::ECS::Service"]
     if len(services) != 1:
         raise ValueError("The reviewed template must have exactly one ECS service")
-    return services[0].get("Properties", {}).get("DesiredCount")
+    count = services[0].get("Properties", {}).get("DesiredCount")
+    if count is None:
+        raise ValueError("The reviewed production template must state DesiredCount")
+    return count
 
 
 def target_image(manifest, target):
