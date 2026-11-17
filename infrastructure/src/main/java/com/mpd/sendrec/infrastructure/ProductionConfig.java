@@ -39,8 +39,8 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
 
   /**
    * `productionTaskCount`: the service's task count, required on every production deploy. A template
-   * without it would reset a running service to the template's count. 0 keeps a new stack dormant;
-   * 4 is the most a release may set.
+   * without it would reset a running service to the template's count. It is 1 to 4: the production
+   * stack has run since 13 November 2026, so a count of 0 could only stop a running service.
    */
   public static int taskCount(Construct scope) {
     String value = required(scope, "productionTaskCount").trim();
@@ -50,7 +50,7 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
     } catch (NumberFormatException e) {
       throw new IllegalArgumentException("productionTaskCount must be a whole number");
     }
-    if (count < 0 || count > 4) throw new IllegalArgumentException("productionTaskCount must be 0 to 4");
+    if (count < 1 || count > 4) throw new IllegalArgumentException("productionTaskCount must be 1 to 4");
     return count;
   }
 

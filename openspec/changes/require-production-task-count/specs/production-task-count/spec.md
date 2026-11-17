@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Production deploys state their task count
-Production synthesis SHALL require `productionTaskCount`, a whole number from 0 to 4, and the production service template SHALL carry that count. Synthesis SHALL fail when the value is missing or invalid.
+Production synthesis SHALL require `productionTaskCount`, a whole number from 1 to 4, and the production service template SHALL carry that count. Synthesis SHALL fail when the value is missing or invalid.
 
 #### Scenario: Deploy without a task count
 - **WHEN** production is synthesized without `productionTaskCount`

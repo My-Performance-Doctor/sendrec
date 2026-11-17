@@ -154,10 +154,10 @@ class SendRecStackTest {
   // now states its count on every deploy, and staging names none, so a deploy keeps its count.
   @Test void productionRequiresItsTaskCountAndStagingKeepsItsOwn() {
     assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of()));
-    for (String bad : List.of("", "five", "-1", "5")) {
+    for (String bad : List.of("", "five", "-1", "0", "5")) {
       assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of("productionTaskCount", bad)), bad);
     }
-    for (int count : List.of(0, 2, 4)) {
+    for (int count : List.of(1, 2, 4)) {
       Template.fromStack(productionWithContext(Map.of("productionTaskCount", String.valueOf(count))))
           .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", count));
     }

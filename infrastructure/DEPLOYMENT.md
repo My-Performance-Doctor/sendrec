@@ -21,7 +21,7 @@ Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies mig
 
 Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`.
 
-Every production synth must pass `productionTaskCount` (0 to 4, normally 2), the count the service should run. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs.
+Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the count the service should run. 0 is refused: the production stack has run since 13 November, so 0 could only stop it. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs.
 
 ## Deployed revision and state
 
