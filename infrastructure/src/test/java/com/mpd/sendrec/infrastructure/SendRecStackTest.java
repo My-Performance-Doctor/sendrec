@@ -88,7 +88,7 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::CloudFront::Function", Map.of("FunctionCode", Match.stringLikeRegexp("192\\.0\\.2\\.10")));
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("bootstrap", "false", "bootstrapCidr", "0.0.0.0/0")));
   }
-  @Test void productionIsIsolatedImmutableAndUnactivated() {
+  @Test void productionIsIsolatedImmutableAndRunsItsStatedCount() {
     SendRecStack stack = production(Map.of());
     Template template = Template.fromStack(stack);
     template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2, "DeploymentConfiguration", Match.objectLike(Map.of(

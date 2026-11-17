@@ -3,7 +3,7 @@ package com.mpd.sendrec.infrastructure;
 import software.constructs.Construct;
 
 /**
- * Production is opt-in synthesis. Creating its service starts zero application tasks. Patient links
+ * Production is opt-in synthesis. Its service runs the tasks named by {@link #taskCount}. Patient links
  * use {@link #HOSTNAME}; its certificate, like the account it names, is a required deploy input, so a
  * deploy that leaves it out fails rather than taking the alias off the distribution.
  */

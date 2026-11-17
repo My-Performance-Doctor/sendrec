@@ -130,4 +130,4 @@ Before any operator-run teardown, list the stack resources, verify backups and e
 
 ## Production preparation
 
-The optional production stack and immutable release controls are documented in [the production runbook](../docs/production/README.md). Production remains unactivated, with zero application tasks and integration flags disabled by default.
+The optional production stack and immutable release controls are documented in [the production runbook](../docs/production/README.md). Production runs the number of application tasks named by the required `productionTaskCount` input (0 keeps a new stack dormant), with integration flags disabled by default.

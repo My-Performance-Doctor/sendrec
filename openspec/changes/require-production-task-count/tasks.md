@@ -1,7 +1,8 @@
 ## 1. Task count
 
 - [x] 1.1 Require `productionTaskCount` (0 to 4) for production synthesis and set it on the service.
-- [x] 1.2 Emit no task count for staging, using CDK's `removeDefaultDesiredCount` flag set on the stack.
+- [x] 1.2 Emit no task count for staging: a null `desiredCount` leaves `DesiredCount` out of the template.
+- [x] 1.4 Make `promote-release.py` accept a production count of 1 to 4 only when it equals the reviewed template's `DesiredCount`; staging still runs 1.
 - [x] 1.3 Test a missing or invalid count, counts 0, 2 and 4, and staging's absent count.
 
 ## 2. Stable alarms

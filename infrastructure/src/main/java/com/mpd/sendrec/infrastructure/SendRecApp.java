@@ -18,7 +18,7 @@ public final class SendRecApp {
       ProductionConfig production = ProductionConfig.fromContext(app);
       new SendRecStack(app, "SendRecProduction", StackProps.builder()
           .env(Environment.builder().account(production.account()).region(ProductionConfig.REGION).build())
-          .stackName("SendRecProduction").description("SendRec production preparation; zero tasks until approved release")
+          .stackName("SendRecProduction").description("SendRec production; runs the tasks named by productionTaskCount")
           .build(), production);
     } else {
     new SendRecStack(

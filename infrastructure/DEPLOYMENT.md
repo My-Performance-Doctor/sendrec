@@ -15,7 +15,7 @@ Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies mig
 | 000080 | #32, `report-playback-completion` (MPD-460) | playback progress for the 80% event |
 | 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos`, once #31 is merged |
 
-1. Deploy the migration task definition on the release image first, with the application task definition unchanged, then run the release's migration task (`promote-release.py`, or the migration task definition for production). Confirm it exits 0 and reports the newest migration (81 once #31 is on main) before the application tasks are replaced.
+1. Deploy a change that moves only the migration task definition to the release image, with the application task definition unchanged, then run that migration task definition once with `aws ecs run-task` (`promote-release.py` cannot run against this intermediate stack, because the application definition still names the old image). Confirm it exits 0 and reports the newest migration (81 once #31 is on main) before the application tasks are replaced.
 2. Only then replace the application tasks.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
@@ -198,7 +198,7 @@ The first production recording (16 November, 15:29 UTC) uploaded in 46 seconds. 
 
 Production now runs `cc69b681413d309f9ca1557eb199b9a4c19832e2` (PR #33). It is the image staging had run since 16:55 UTC, at index digest `sha256:ecc1c67b28373bba6a08545e1a9a2bf9a021b7faa573e4e2ba853dfb171ff027`, copied into production's immutable repository with `crane copy`, which keeps the digest. The release used a change set built from the live production template. It changed only the two task-definition images, and set `DesiredCount` to the live 2, because the template's 0 would otherwise have been sent with the update. There was no migration. Before execution, the logs showed no encode or transcription for six hours. The rollout ran from 22:48:17 to 22:51:09 UTC. Health reports `cc69b681`, readiness passed three times, and both new tasks started cleanly.
 
-Production's template still says `DesiredCount: 0`, and the live service runs 2. Build any later production release from the live template, or set the count, so an update does not scale the service to zero.
+Production's template then said `DesiredCount: 0` while the live service ran 2. `require-production-task-count` (MPD-502) makes `productionTaskCount` a required production synth input, so a release names the count and an update cannot scale the service to zero.
 
 On 17 November MPD's AWS organization attached the AI services opt-out policy `ai-services-opt-out-all` to its root. The effective policy on the staging and production accounts reads `optOut`.
 
