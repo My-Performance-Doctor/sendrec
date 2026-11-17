@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
+	"github.com/sendrec/sendrec/internal/database"
 )
 
 type stubTranscriber struct {
@@ -66,12 +68,12 @@ func TestProcessNextTranscription_NoJobs(t *testing.T) {
 
 	// Stuck job reset
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
 	// Claim query returns no rows
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -90,12 +92,12 @@ func TestProcessNextTranscription_ResetsStuckJobs(t *testing.T) {
 
 	// Stuck job reset — should match 1 row
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// Claim query returns no rows (the reset job will be picked up next tick)
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	storage := &mockStorage{}
 	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
@@ -126,7 +128,7 @@ func TestProcessTranscription_HungJobFailsAtItsDeadline(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		processTranscription(context.Background(), db, hangingStorage{&mockStorage{}}, stubTranscriber{available: true},
-			"video-123", "recordings/u/v.webm", 0, "u", "tok", "auto", false)
+			"video-123", "recordings/u/v.webm", 0, 0, "u", "tok", "auto", false)
 		close(done)
 	}()
 
@@ -149,15 +151,196 @@ func TestProcessNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectExec(`transcript_started_at < now\(\) - make_interval\(secs => \$1\)`).
-		WithArgs((transcriptionJobTimeout + time.Minute).Seconds()).
+	mock.ExpectExec(`transcript_started_at < now\(\) - make_interval\(secs => \$1::float8 \+ LEAST\(GREATEST\(\$2::bigint \* duration, 0\), \$3::bigint\)\)`).
+		WithArgs((transcriptionJobTimeout + time.Minute).Seconds(), transcriptionSecondsPerSecond, transcriptionExtraCapSeconds).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "user_id", "share_token", "language"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
 	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A fixed 30 minutes failed 10 minute recordings, and without a transcript MPD
+// never creates the patient's report. The deadline grows with the recording.
+func TestTranscriptionTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		duration int
+		want     time.Duration
+	}{
+		{0, 30 * time.Minute},
+		{-5, 30 * time.Minute},
+		{60, 34 * time.Minute},
+		{10 * 60, 70 * time.Minute},
+		{30 * 60, 150 * time.Minute},
+		{24 * 60 * 60, 30*time.Minute + 4*time.Hour},
+	} {
+		if got := transcriptionTimeout(tc.duration); got != tc.want {
+			t.Errorf("transcriptionTimeout(%d) = %v, want %v", tc.duration, got, tc.want)
+		}
+	}
+}
+
+// Local Whisper yields the CPU to encodes, so a job claimed beside one would
+// spend its deadline waiting: while this task encodes, the job stays pending
+// for an idle task. A provider that runs off the task claims it at once.
+func TestProcessNextTranscription_OnlyLocalWhisperWaitsForEncodes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		transcriber Transcriber
+		claims      int
+	}{
+		{"local whisper", newLocalWhisper(), 0},
+		{"off-task provider", stubTranscriber{available: true}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holdEncoderSlots(t, 1)
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+
+			// The stuck-job reset always runs.
+			mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+			if tc.claims > 0 {
+				mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).WillReturnError(pgx.ErrNoRows)
+			}
+			db := &countingDB{DBTX: mock}
+
+			processNextTranscription(context.Background(), db, &mockStorage{}, tc.transcriber, false)
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+			if db.queryRows != tc.claims {
+				t.Errorf("claims attempted = %d, want %d", db.queryRows, tc.claims)
+			}
+		})
+	}
+}
+
+// countingDB counts QueryRow calls, which is how the worker claims a job.
+type countingDB struct {
+	database.DBTX
+	queryRows int
+}
+
+func (c *countingDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	c.queryRows++
+	return c.DBTX.QueryRow(ctx, sql, args...)
+}
+
+// holdEncoderSlots takes every slot of a fresh gate of the given size for the
+// rest of the test, as running encodes would.
+func holdEncoderSlots(t *testing.T, limit int) {
+	t.Helper()
+	prev := ffmpegEncoders.Load()
+	slots := newEncoderSlots(limit)
+	ffmpegEncoders.Store(slots)
+	var releases []func()
+	for range limit {
+		release, err := slots.acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	t.Cleanup(func() {
+		for _, release := range releases {
+			release()
+		}
+		ffmpegEncoders.Store(prev)
+	})
+}
+
+// A deploy or scale-in stops the task mid-job. The job goes straight back to
+// the queue instead of waiting out a deadline that grows with the recording,
+// and the stopping worker claims nothing more.
+func TestRequeueInFlightTranscription(t *testing.T) {
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscription.Store(nil)
+	})
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	inFlightTranscription.Store(&transcriptionJob{videoID: "video-123", generation: 4})
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1.*transcript_status = 'processing' AND transcript_generation = \$2`).
+		WithArgs("video-123", 4).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	RequeueInFlightTranscription(context.Background(), mock)
+	// No reset and no claim once stopping.
+	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestRequeueInFlightTranscription_NothingRunning(t *testing.T) {
+	t.Cleanup(func() { transcriptionStopping.Store(false) })
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	RequeueInFlightTranscription(context.Background(), mock)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// stopDuringClaim begins shutdown while the claim is in flight, after
+// RequeueInFlightTranscription has already looked and found nothing running.
+type stopDuringClaim struct{ pgxmock.PgxPoolIface }
+
+func (s stopDuringClaim) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	transcriptionStopping.Store(true)
+	return s.PgxPoolIface.QueryRow(ctx, sql, args...)
+}
+
+// A job claimed as the task begins to stop goes straight back to the queue,
+// instead of waiting out its deadline in the stuck-job reset.
+func TestProcessNextTranscription_RequeuesAJobClaimedDuringShutdown(t *testing.T) {
+	holdEncoderSlots(t, 0) // a fresh, idle gate
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscription.Store(nil)
+	})
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending'`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}).
+			AddRow("video-123", "recordings/v.webm", 1, 600, "user-1", "share", "auto", 3))
+	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1.*transcript_status = 'processing' AND transcript_generation = \$2`).
+		WithArgs("video-123", 3).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	processNextTranscription(context.Background(), stopDuringClaim{mock}, &mockStorage{}, stubTranscriber{available: true}, false)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+	if inFlightTranscription.Load() != nil {
+		t.Error("the requeued job is still marked as running")
 	}
 }

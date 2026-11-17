@@ -20,13 +20,13 @@ A redirect from `/{token}` to `/watch/{token}` was rejected: it costs a round tr
 
 `EnvironmentConfig.customDomain()` returns null unless an environment names a hostname and its certificate. `StagingConfig` will return `new CustomDomain("results-staging.mpd.health", "arn:aws:acm:us-east-1:…")` once the certificate exists. The stack then adds the alias and certificate to the distribution and makes `https://{name}` the `BASE_URL`. Moving the whole service, not only share links, keeps one origin for cookies, the MPD sign-in callback, CSP and CORS, and needs no new setting in the server. The CloudFront hostname keeps answering, so `/watch/{token}` links already sent still open, and the recordings bucket's CORS rule keeps it so their players still load captions.
 
-Deploy contexts were rejected for this. A deploy that left them out would remove the alias, and every link already sent on the custom hostname would fail at CloudFront. Committed config can only change through a reviewed pull request. The certificate ARN must be in `us-east-1` and in the stack's account. Production's hostname belongs in `ProductionConfig`, whose values are all deploy inputs today; it is added with production's own deployment change.
+Deploy contexts were rejected for this. A deploy that left them out would remove the alias, and every link already sent on the custom hostname would fail at CloudFront. Committed config can only change through a reviewed pull request. The certificate ARN must be in `us-east-1` and in the stack's account. Production commits `results.mpd.health` in `ProductionConfig`. Its certificate ARN is a required deploy input, as production's account and other values are, so this public repository names no production account. Leaving it out fails synthesis, so a deploy still cannot drop the alias.
 
 A separate share-only hostname was rejected. It needs a second base URL in the server and a second accepted origin in mpd-api, for no gain to patients.
 
 ## Risks
 
 - **Cutover order.** mpd-api must move `SENDREC_ORIGIN` in the same window as SendRec's `BASE_URL`. Until both are deployed, sends fail closed with `provider_metadata_mismatch`; nothing is sent to the wrong host.
-- **Staff on the old hostname.** SendRec's own staff sign-in accepts only `BASE_URL` as its origin, so staff use the new hostname for SendRec's pages. Staff OS is unaffected.
+- **Staff on the old hostname.** SendRec's own staff sign-in accepts only `BASE_URL` as its origin, so staff use the new hostname for SendRec's pages. Staff OS frames `/mpd-preview` from its configured SendRec URL, and the frame redeems its handoff only from `BASE_URL`, so Staff OS moves its SendRec URL in the same window. Its session and API calls are unaffected.
 - **DNS outside AWS.** `mpd.health` is at GoDaddy. Until the CNAME exists, the distribution answers only on its CloudFront hostname, so commit the hostname only after DNS resolves.
 - **Future app routes.** A top-level app path of exactly 16 lowercase alphanumerics or 22 base64url characters would be taken as a share link. A comment beside the SPA routes says so.

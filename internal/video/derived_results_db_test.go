@@ -109,7 +109,7 @@ func TestTranscriptFollowsTheContent(t *testing.T) {
 			}
 			s := newMemStorage(map[string]string{key: "video", oldVTT: "old transcript"})
 
-			processTranscription(context.Background(), pool, s, tr, videoID, key, 0, "u", "tok", "auto", false)
+			processTranscription(context.Background(), pool, s, tr, videoID, key, 0, 0, "u", "tok", "auto", false)
 
 			got := readDerived(t, pool, videoID)
 			if s.snapshot()[oldVTT] != "old transcript" {

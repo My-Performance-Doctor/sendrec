@@ -143,6 +143,27 @@ func TestX264ParamsOnlyOnX264Builders(t *testing.T) {
 	}
 }
 
+// -r 60 doubled every 30 fps recording, so x264 encoded each frame twice.
+// Remove-segments is an edit with its own codec choice and is left out.
+func TestPlaybackEncodesKeepTheSourceFrameRate(t *testing.T) {
+	for _, tc := range allBuilders() {
+		if tc.codec != "libx264" || strings.HasPrefix(tc.name, "remove-segments") {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			if slices.Contains(tc.args, "-r") {
+				t.Errorf("forces a frame rate with -r: %v", tc.args)
+			}
+			for _, pair := range [][2]string{{"-fpsmax", "60"}, {"-preset", "veryfast"}} {
+				i := slices.Index(tc.args, pair[0])
+				if i == -1 || tc.args[i+1] != pair[1] {
+					t.Errorf("want %s %s: %v", pair[0], pair[1], tc.args)
+				}
+			}
+		})
+	}
+}
+
 func TestX264MemoryParamsBoundsTheKnownCosts(t *testing.T) {
 	got := strings.Split(x264MemoryParams()[1], ":")
 	for _, want := range []string{"rc-lookahead=10", "ref=1", "bframes=0"} {
@@ -184,6 +205,27 @@ func TestFFmpegHonoursTheBounds(t *testing.T) {
 		}
 		if strings.Contains(string(out), "Trailing option") {
 			t.Error("ffmpeg reported a trailing option, so at least one bound was discarded")
+		}
+	})
+
+	t.Run("normalize keeps the source frame rate up to 60", func(t *testing.T) {
+		fast := dir + "/fast.mp4"
+		ffmpegFixture(t, "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=120:duration=1",
+			"-c:v", "libx264", "-y", fast)
+		for _, tc := range []struct{ in, want string }{{src, "15/1"}, {fast, "60/1"}} {
+			out := dir + "/rate.mp4"
+			args := buildNormalizeArgs(tc.in, out, "", fitFrame(320, 240))
+			if o, err := exec.Command("ffmpeg", append([]string{"-nostdin", "-loglevel", "error"}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg failed: %v: %s", err, o)
+			}
+			rate, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+				"-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", out).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(string(rate)); got != tc.want {
+				t.Errorf("%s: output rate %s, want %s", tc.in, got, tc.want)
+			}
 		}
 	})
 

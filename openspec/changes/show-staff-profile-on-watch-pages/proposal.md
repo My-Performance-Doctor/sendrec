@@ -23,7 +23,7 @@ None.
 
 ## Impact
 
-Migration `000078` adds `mpd_staff_photos`. The change touches `internal/mpd` (grant, sign-in and session refresh), the watch page handler, its template and the managed page CSS, and `docs/mpd`. It adds no configuration: the photo URL is `MPD_ACCESS_URL` plus `/photo`. mpd-api ships its half in its own repository against this contract.
+Migration `000080` adds `mpd_staff_photos`. The change touches `internal/mpd` (grant, sign-in and session refresh), the watch page handler, its template and the managed page CSS, and `docs/mpd`. It adds no configuration: the photo URL is `MPD_ACCESS_URL` plus `/photo`. mpd-api ships its half in its own repository against this contract.
 
 ## Approval and delivery
 

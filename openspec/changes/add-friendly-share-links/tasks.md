@@ -13,3 +13,10 @@
 
 - [ ] 3.1 After merge: an administrator requests the `us-east-1` certificate for `results-staging.mpd.health`, and its validation record and a CNAME to the SendRec distribution are added at GoDaddy.
 - [ ] 3.2 Commit the hostname and certificate in `StagingConfig` through a reviewed pull request, then deploy staging together with mpd-api's `SENDREC_ORIGIN` and `sendrecCallbackUrl`. Send a synthetic recording and confirm the patient link is `https://results-staging.mpd.health/{16 characters}`, opens through its password gate in Chrome, Safari and Firefox, and that an earlier CloudFront `/watch/` link still plays.
+
+## 4. Production
+
+- [x] 4.1 An administrator requested the `us-east-1` certificate for `results.mpd.health` in the production account, and it was issued on 13 November 2026.
+- [x] 4.2 Commit `results.mpd.health` in `ProductionConfig`, taking its certificate from the required input `productionDomainCertificateArn`. Test the alias, `BASE_URL`, a missing input and a certificate from another account or region.
+- [ ] 4.3 Add a CNAME at GoDaddy from `results.mpd.health` to the production distribution's `*.cloudfront.net` name, and merge 4.2 only once it resolves.
+- [ ] 4.4 In one window, deploy production SendRec with `productionDomainCertificateArn`, set the `origin` of mpd-api's production integration secret to `https://results.mpd.health`, deploy mpd-api with the matching `sendrecCallbackUrl`, and deploy Staff OS with its production SendRec URL on the new hostname. Send a synthetic recording and confirm its link is `https://results.mpd.health/{16 characters}`, the Staff OS preview plays, and an earlier CloudFront link still opens.
