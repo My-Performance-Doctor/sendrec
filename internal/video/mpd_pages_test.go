@@ -117,6 +117,15 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	if strings.Contains(body, `href="`+testBaseURL+`" class="logo"`) {
 		t.Error("the logo should not lead a patient to SendRec's sign-in")
 	}
+	// The source offer must stay a visible, recognisable link, not only markup.
+	if !strings.Contains(body, ".branding a { color: inherit; text-decoration: underline;") {
+		t.Error("managed watch page CSS no longer underlines the source-code link")
+	}
+	for _, hidden := range []string{".branding { display: none", ".branding{display:none", ".branding a { display: none", "visibility: hidden"} {
+		if strings.Contains(mpdWatchCSS, hidden) {
+			t.Errorf("mpdWatchCSS hides the source offer with %q", hidden)
+		}
+	}
 	if !strings.Contains(body, `<a href="`+mpdSourceURL+`">Source code</a>`) || strings.Contains(body, "Recorded with SendRec") || strings.Contains(body, `href="https://sendrec.eu"`) {
 		t.Error("the footer should offer the source, not credit SendRec")
 	}
