@@ -5,15 +5,25 @@ Verified on 2026-10-07 through 15:21 UTC using synthetic identities, speech and 
 The operator approved the proposal, authorized apply, requested an alternative to external DNS and authorized this machine for synthetic owner setup. CloudFront supplies its managed HTTPS hostname through a private VPC origin. The pending custom-domain certificate is unused and does not block this deployment.
 
 
-## Release gate: migration 000079 before any release that includes #38 (MPD-498)
+## Release gate: migrations before application tasks, and an explicit production task count
 
-Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. The first release of main that includes PR #38 (`add-mpd-processing-progress`) must run migration 000079 (`videos.conversion_percent`) first, in staging and then in production:
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced:
 
-1. Run the release's migration task (`promote-release.py`, or the migration task definition for production) and confirm it exits 0 and reports migration 79 before the application tasks are replaced.
-2. Only then replace the application tasks.
+| Migration | From | Adds |
+|---|---|---|
+| 000079 | #38, `add-mpd-processing-progress` (MPD-498) | `videos.conversion_percent` |
+| 000080 | #32, `report-playback-completion` (MPD-460) | playback progress for the 80% event |
+| 000081 | #31, `show-staff-profile-on-watch-pages` | `mpd_staff_photos` |
+
+1. Deploy a change that moves only the migration task definition to the release image, with the application task definition unchanged, then run that migration task definition once with `aws ecs run-task` (`promote-release.py` cannot run against this intermediate stack, because the application definition still names the old image). Confirm it exits 0 and reports migration 81 before the application tasks are replaced.
+2. Only then deploy the full template, which replaces the application tasks, and then run `promote-release.py`, whose migration rerun is a no-op. Promote's rollback target is the application definition live when it starts, which is already the new one, so rolling back the release means redeploying the previous template at the same task count.
 3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
 
-Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
+Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`.
+
+Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the count the service should run. 0 is refused: the production stack has run since 13 November, so 0 could only stop it. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs. Production's live template has carried `DesiredCount: 2` since the 17 November release (MPD-510), which deployed an assembly patched to hold the count.
+
+Proved on staging 17 Nov 2026: at 2 running tasks, a stack update removing the service's DesiredCount (11:39:24 to 11:40:02 UTC) left the service at 2/2; the live template now carries no count. (Run and recorded by the release coordinator for `require-production-task-count`.)
 
 ## Deployed revision and state
 
@@ -190,7 +200,7 @@ The first production recording (16 November, 15:29 UTC) uploaded in 46 seconds. 
 
 Production now runs `cc69b681413d309f9ca1557eb199b9a4c19832e2` (PR #33). It is the image staging had run since 16:55 UTC, at index digest `sha256:ecc1c67b28373bba6a08545e1a9a2bf9a021b7faa573e4e2ba853dfb171ff027`, copied into production's immutable repository with `crane copy`, which keeps the digest. The release used a change set built from the live production template. It changed only the two task-definition images, and set `DesiredCount` to the live 2, because the template's 0 would otherwise have been sent with the update. There was no migration. Before execution, the logs showed no encode or transcription for six hours. The rollout ran from 22:48:17 to 22:51:09 UTC. Health reports `cc69b681`, readiness passed three times, and both new tasks started cleanly.
 
-Production's template still says `DesiredCount: 0`, and the live service runs 2. Build any later production release from the live template, or set the count, so an update does not scale the service to zero.
+Production's template then said `DesiredCount: 0` while the live service ran 2. `require-production-task-count` (MPD-502) makes `productionTaskCount` a required production synth input, so a release names the count and an update cannot scale the service to zero.
 
 On 17 November MPD's AWS organization attached the AI services opt-out policy `ai-services-opt-out-all` to its root. The effective policy on the staging and production accounts reads `optOut`.
 

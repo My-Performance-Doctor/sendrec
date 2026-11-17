@@ -88,10 +88,10 @@ class SendRecStackTest {
     template.hasResourceProperties("AWS::CloudFront::Function", Map.of("FunctionCode", Match.stringLikeRegexp("192\\.0\\.2\\.10")));
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("bootstrap", "false", "bootstrapCidr", "0.0.0.0/0")));
   }
-  @Test void productionIsIsolatedImmutableAndUnactivated() {
+  @Test void productionIsIsolatedImmutableAndRunsItsStatedCount() {
     SendRecStack stack = production(Map.of());
     Template template = Template.fromStack(stack);
-    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 0, "DeploymentConfiguration", Match.objectLike(Map.of(
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2, "DeploymentConfiguration", Match.objectLike(Map.of(
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
@@ -150,12 +150,53 @@ class SendRecStackTest {
     Stage.of(stack).synth();
   }
 
+  // MPD-502: a plain deploy reset production from 2 tasks to the template's 0. Production
+  // now states its count on every deploy, and staging names none, so a deploy keeps its count.
+  @Test void productionRequiresItsTaskCountAndStagingKeepsItsOwn() {
+    assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of()));
+    for (String bad : List.of("", "five", "-1", "0", "5")) {
+      assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of("productionTaskCount", bad)), bad);
+    }
+    for (int count : List.of(1, 2, 4)) {
+      Template.fromStack(productionWithContext(Map.of("productionTaskCount", String.valueOf(count))))
+          .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", count));
+    }
+    // A numeric context value, as cdk.json or a JSON -c gives, works the same way.
+    for (Object numeric : List.<Object>of(2, 2.0)) {
+      Template.fromStack(productionWithContext(Map.of("productionTaskCount", numeric)))
+          .hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2));
+    }
+    for (Object bad : List.<Object>of(2.5, 0, 5)) {
+      assertThrows(IllegalArgumentException.class, () -> productionWithContext(Map.of("productionTaskCount", bad)), String.valueOf(bad));
+    }
+    Template.fromStack(stack(Map.of())).hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
+  }
+
+  // Alarm math metrics are emitted in a fixed order, so an unchanged alarm does not
+  // show up as modified on every deploy.
+  @Test void alarmMetricsKeepAFixedOrder() {
+    Map<String, Map<String, Object>> alarms = Template.fromStack(production(Map.of())).findResources("AWS::CloudWatch::Alarm");
+    int checked = 0;
+    for (var alarm : alarms.entrySet()) {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> properties = (Map<String, Object>) alarm.getValue().get("Properties");
+      Object metrics = properties.get("Metrics");
+      if (!(metrics instanceof List<?> list)) continue;
+      List<Object> ids = new java.util.ArrayList<>();
+      for (Object metric : list) ids.add(((Map<?, ?>) metric).get("Id"));
+      if (!ids.contains("desired")) continue;
+      assertTrue(ids.indexOf("desired") < ids.indexOf("signal"), alarm.getKey() + " lists signal before desired: " + ids);
+      checked++;
+    }
+    assertTrue(checked >= 5, "expected the application alarms' metric math, checked " + checked);
+  }
+
   @Test void controlledStagingHasSingleMigrationAndDisabledIntegration() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     Template template = Template.fromStack(stack(Map.of("releaseImage", image)));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("BackupRetentionPeriod", 7, "MultiAZ", false));
-    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 1));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     String tasks = template.findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(tasks.contains("MIGRATIONS_MODE, Value=only"));
@@ -342,6 +383,12 @@ class SendRecStackTest {
   }
 
   private SendRecStack production(Map<String, Object> context) {
+    Map<String, Object> withCount = new java.util.HashMap<>(context);
+    withCount.putIfAbsent("productionTaskCount", "2");
+    return productionWithContext(withCount);
+  }
+
+  private SendRecStack productionWithContext(Map<String, Object> context) {
     App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
     IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",

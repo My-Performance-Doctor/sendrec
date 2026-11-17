@@ -40,8 +40,22 @@ def validate(manifest, target, staged=None):
     # Check both environments' images now, so a bad production copy stops the release before staging migrates.
     for environment in ("staging", "production"):
         target_image(manifest, environment)
-    if config.get("desiredCount") != (2 if target == "production" else 1):
-        raise ValueError("Only one staging or two approved production tasks are supported")
+    # bool is an int in Python, and True == 1, so it is refused explicitly.
+    def whole(count):
+        return isinstance(count, int) and not isinstance(count, bool)
+    staging_count = manifest["staging"].get("desiredCount")
+    if not whole(staging_count) or staging_count != 1:
+        raise ValueError("A staging release runs one task")
+    # Production's half is checked on either target, so a staging promote stops before
+    # migrating when the production release it rehearses could not go ahead.
+    production = manifest["production"]
+    production_count = production.get("desiredCount")
+    if not whole(production_count) or not 1 <= production_count <= 4:
+        raise ValueError("A production release runs 1 to 4 tasks")
+    # The template's own count is what every later stack deploy applies, so a
+    # release that scales to another count would be undone by the next deploy.
+    if template_task_count(production) != production_count:
+        raise ValueError("The release's task count must equal the reviewed production template's DesiredCount")
     parsed = urllib.parse.urlparse(config["readinessUrl"])
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path != "/api/ready":
         raise ValueError("Readiness requires an exact HTTPS /api/ready URL")
@@ -55,6 +69,18 @@ def validate(manifest, target, staged=None):
             if config[key] == manifest["staging"][key]:
                 raise ValueError("Production and staging resources must differ")
     return config
+
+
+def template_task_count(config):
+    """The single ECS service's DesiredCount in the reviewed template."""
+    template = json.loads(pathlib.Path(config["templatePath"]).read_text())
+    services = [r for r in template.get("Resources", {}).values() if r.get("Type") == "AWS::ECS::Service"]
+    if len(services) != 1:
+        raise ValueError("The reviewed template must have exactly one ECS service")
+    count = services[0].get("Properties", {}).get("DesiredCount")
+    if count is None:
+        raise ValueError("The reviewed production template must state DesiredCount")
+    return count
 
 
 def target_image(manifest, target):

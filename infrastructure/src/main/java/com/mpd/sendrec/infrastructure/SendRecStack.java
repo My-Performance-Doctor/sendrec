@@ -89,6 +89,10 @@ public class SendRecStack extends Stack {
   SendRecStack(final Construct scope, final String id, final StackProps props,
       final EnvironmentConfig config, final IVpc suppliedVpc) {
     super(scope, id, props);
+    // Production names its count on every deploy. Staging passes none: a null
+    // desiredCount leaves DesiredCount out of the template, and CloudFormation
+    // then keeps a running service's count on every update.
+    Integer productionTaskCount = config.production() ? ProductionConfig.taskCount(this) : null;
 
     DeploymentOptions options = new DeploymentOptions(this);
     if (config.production() && (options.bootstrap || !options.bootstrapIp.isEmpty())) {
@@ -406,7 +410,10 @@ public class SendRecStack extends Stack {
             .cluster(cluster)
             .serviceName(prefix + "-service")
             .taskDefinition(taskDefinition)
-            .desiredCount(config.production() ? 0 : 1)
+            // Production states its count on every deploy, so a deploy can never
+            // fall back to a default and stop the service. Staging names none and
+            // keeps whatever count it runs (1 when the service is first created).
+            .desiredCount(productionTaskCount)
             .minHealthyPercent(config.production() ? 100 : 0)
             .maxHealthyPercent(config.production() ? 200 : 100)
             .circuitBreaker(software.amazon.awscdk.services.ecs.DeploymentCircuitBreaker.builder().rollback(true).build())
@@ -534,7 +541,7 @@ public class SendRecStack extends Stack {
         double missingValue = item.getKey().equals("Target5xx") ? 0 : threshold;
         signal = software.amazon.awscdk.services.cloudwatch.MathExpression.Builder.create()
             .expression("IF(desired > 0, FILL(signal, " + missingValue + "), 0)")
-            .usingMetrics(Map.of("desired", desiredCount, "signal", item.getValue()))
+            .usingMetrics(new java.util.TreeMap<>(Map.of("desired", desiredCount, "signal", item.getValue())))
             .period(Duration.minutes(5)).build();
       }
       var alarm = software.amazon.awscdk.services.cloudwatch.Alarm.Builder.create(this, item.getKey() + "Alarm")
