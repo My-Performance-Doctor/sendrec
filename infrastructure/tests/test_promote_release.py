@@ -138,11 +138,18 @@ class PromotionTest(unittest.TestCase):
         self.manifest['production']['desiredCount'] = 3
         with self.assertRaisesRegex(ValueError, 'DesiredCount'):
             promote.validate(self.manifest, 'production', evidence)
+        self.manifest['production']['desiredCount'] = 2
         promote.validate(self.manifest, 'staging')
         for bad in (2, 0, True, '1', 1.0):
             self.manifest['staging']['desiredCount'] = bad
             with self.assertRaises(ValueError):
                 promote.validate(self.manifest, 'staging')
+
+    def test_staging_promote_stops_when_the_production_half_is_invalid(self):
+        self.manifest['production']['desiredCount'] = 3
+        with patch.object(promote, 'aws', self.aws), self.assertRaisesRegex(ValueError, 'DesiredCount'):
+            promote.promote(self.manifest, 'staging', probe=lambda _: True)
+        self.assertFalse(any(c[1] == 'run-task' for c in self.calls))
 
     def test_production_template_must_state_one_service_count(self):
         evidence = {k: self.manifest[k] for k in ('image','revision','infrastructureSha256')}

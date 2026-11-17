@@ -40,18 +40,22 @@ def validate(manifest, target, staged=None):
     # Check both environments' images now, so a bad production copy stops the release before staging migrates.
     for environment in ("staging", "production"):
         target_image(manifest, environment)
-    count = config.get("desiredCount")
     # bool is an int in Python, and True == 1, so it is refused explicitly.
-    whole = isinstance(count, int) and not isinstance(count, bool)
-    if target == "staging" and (not whole or count != 1):
+    def whole(count):
+        return isinstance(count, int) and not isinstance(count, bool)
+    staging_count = manifest["staging"].get("desiredCount")
+    if not whole(staging_count) or staging_count != 1:
         raise ValueError("A staging release runs one task")
-    if target == "production":
-        if not whole or not 1 <= count <= 4:
-            raise ValueError("A production release runs 1 to 4 tasks")
-        # The template's own count is what every later stack deploy applies, so a
-        # release that scales to another count would be undone by the next deploy.
-        if template_task_count(config) != count:
-            raise ValueError("The release's task count must equal the reviewed production template's DesiredCount")
+    # Production's half is checked on either target, so a staging promote stops before
+    # migrating when the production release it rehearses could not go ahead.
+    production = manifest["production"]
+    production_count = production.get("desiredCount")
+    if not whole(production_count) or not 1 <= production_count <= 4:
+        raise ValueError("A production release runs 1 to 4 tasks")
+    # The template's own count is what every later stack deploy applies, so a
+    # release that scales to another count would be undone by the next deploy.
+    if template_task_count(production) != production_count:
+        raise ValueError("The release's task count must equal the reviewed production template's DesiredCount")
     parsed = urllib.parse.urlparse(config["readinessUrl"])
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path != "/api/ready":
         raise ValueError("Readiness requires an exact HTTPS /api/ready URL")
