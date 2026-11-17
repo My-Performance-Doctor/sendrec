@@ -37,6 +37,23 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
         required(scope, "productionDomainCertificateArn"));
   }
 
+  /**
+   * `productionTaskCount`: the service's task count, required on every production deploy. A template
+   * without it would reset a running service to the template's count. 0 keeps a new stack dormant;
+   * 4 is the most a release may set.
+   */
+  public static int taskCount(Construct scope) {
+    String value = required(scope, "productionTaskCount").trim();
+    int count;
+    try {
+      count = Integer.parseInt(value);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("productionTaskCount must be a whole number");
+    }
+    if (count < 0 || count > 4) throw new IllegalArgumentException("productionTaskCount must be 0 to 4");
+    return count;
+  }
+
   private static String required(Construct scope, String key) {
     Object value = scope.getNode().tryGetContext(key);
     if (value == null || value.toString().isBlank()) throw new IllegalArgumentException("Missing " + key);

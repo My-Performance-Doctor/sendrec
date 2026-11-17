@@ -89,10 +89,10 @@ public class SendRecStack extends Stack {
   SendRecStack(final Construct scope, final String id, final StackProps props,
       final EnvironmentConfig config, final IVpc suppliedVpc) {
     super(scope, id, props);
-    // With no desiredCount, the service template carries no DesiredCount, and
-    // CloudFormation leaves a running service's count alone on every update.
-    getNode().setContext("@aws-cdk/aws-ecs:removeDefaultDesiredCount", true);
-    Integer productionTaskCount = config.production() ? productionTaskCount() : null;
+    // Production names its count on every deploy. Staging passes none: a null
+    // desiredCount leaves DesiredCount out of the template, and CloudFormation
+    // then keeps a running service's count on every update.
+    Integer productionTaskCount = config.production() ? ProductionConfig.taskCount(this) : null;
 
     DeploymentOptions options = new DeploymentOptions(this);
     if (config.production() && (options.bootstrap || !options.bootstrapIp.isEmpty())) {
@@ -613,24 +613,6 @@ public class SendRecStack extends Stack {
         .prefix("transcribe/")
         .expiredObjectDeleteMarker(true)
         .build();
-  }
-
-  /**
-   * `productionTaskCount`: the production service's task count, required on every production deploy.
-   * A template without it would reset a running service to the template's count. 0 creates a dormant
-   * service; 4 is the most a release may set.
-   */
-  private Integer productionTaskCount() {
-    Object value = getNode().tryGetContext("productionTaskCount");
-    if (value == null || value.toString().isBlank()) throw new IllegalArgumentException("Missing productionTaskCount");
-    int count;
-    try {
-      count = Integer.parseInt(value.toString().trim());
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException("productionTaskCount must be a whole number");
-    }
-    if (count < 0 || count > 4) throw new IllegalArgumentException("productionTaskCount must be 0 to 4");
-    return count;
   }
 
   /** `transcriptionProvider`: local Whisper by default, or aws for Amazon Transcribe. */
