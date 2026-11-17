@@ -32,7 +32,7 @@ func signedFixture(t *testing.T) (*Handler, func(map[string]any) string) {
 		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "synthetic", Algorithm: "RS256", Use: "sig"}}})
 	}))
 	t.Cleanup(jwks.Close)
-	h := &Handler{cfg: Config{Enabled: true, Issuer: "https://issuer.example", AllowedClientIDs: []string{"recorder", "future"}}, client: jwks.Client()}
+	h := &Handler{cfg: Config{Enabled: true, Issuer: "https://issuer.example", AllowedClientIDs: []string{"recorder", "future"}}, client: jwks.Client(), photos: newPhotoFetcher()}
 	h.verifier = oidc.NewVerifier(h.cfg.Issuer, oidc.NewRemoteKeySet(context.Background(), jwks.URL), &oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{"RS256"}})
 	h.idVerifier = oidc.NewVerifier(h.cfg.Issuer, oidc.NewRemoteKeySet(context.Background(), jwks.URL), &oidc.Config{ClientID: "recorder", SupportedSigningAlgs: []string{"RS256"}})
 	sign := func(changes map[string]any) string {

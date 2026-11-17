@@ -12,6 +12,16 @@ A future client exchanges an approved Cognito staff access token through `POST /
 
 Sessions enforce the `/api/v1/staff/video-access` response, bounded by its `validUntil` and 30 seconds. Expired grants fail closed during outages. A managed session cannot use personal scope, a different workspace header, old API keys or local password login to expand access. Offboarding retains media.
 
+The grant can carry a `profile` with `displayName` and `photoVersion`. On sign-in and when an API request refreshes the grant, SendRec copies the name to the user. The refresh endpoint's own grant read leaves this to the next request, because it runs inside a transaction. When `photoVersion` changes, SendRec reads `GET {MPD_ACCESS_URL}/photo` with the same token, off the request path and one read at a time per user. It keeps only a JPEG of at most 64 KiB and 512 px a side whose `ETag` is the quoted `photoVersion`, so a lagging read cannot store an old photo under a new version. SendRec re-encodes the JPEG, so no EXIF or other metadata segment reaches a patient's page. The version the latest grant names is kept in `mpd_staff_photos.want_version`, so both tasks agree on it: a read stores its photo only while that is still the wanted version, a grant that changes or removes the photo during a read wins over that read, and a newer version named during a read is read next. Managed watch pages show that photo beside the name, inline in the page, and show initials without a photo. A null `photoVersion` removes the photo. A null, missing or bad name (blank, over 100 bytes, control or format characters such as U+202E, or not a string) keeps the last name. A missing or bad `photoVersion` makes SendRec ignore the whole profile. A failed photo read keeps the stored photo. A 400, 404, 410 or 422 means mpd-api has no such photo, so SendRec logs it once and does not read that version again; any other failure, including 401, 403, 408, 429, a 5xx or a network error, is read again after five minutes. Each read is bounded by the 5-second HTTP client. None of these blocks access. A grant without a profile, from an older mpd-api, changes nothing. A change in Staff OS reaches watch pages when that staff member next uses SendRec. mpd-api sends no departure signal, and a profile with a null name and a null photo can belong to an active staff member, so SendRec never infers that a staff member has left. An offboarded staff member keeps their last name and photo on their videos until an operator runs, with their SendRec user ID:
+
+```sql
+BEGIN;
+DELETE FROM mpd_staff_photos WHERE user_id = '<user id>';
+UPDATE users SET name = 'MPD staff', updated_at = now() WHERE id = '<user id>' AND id IN (SELECT user_id FROM mpd_external_identities);
+COMMIT;
+```
+
+
 | Operation | Request | Authorization |
 |---|---|---|
 | Record | `POST /api/videos`, title, duration, fileSize, contentType and optional webcam size/type | `record` |
