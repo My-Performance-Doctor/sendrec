@@ -23,6 +23,8 @@ Without 000079, conversions still publish. The percent writes and the clear afte
 
 Every production synth must pass `productionTaskCount` (1 to 4, normally 2), the count the service should run. 0 is refused: the production stack has run since 13 November, so 0 could only stop it. The template then states that count, so a stack deploy never resets a running service (MPD-502: a template count of 0 would have stopped both production tasks). Staging's template names no count, so a staging deploy keeps whatever count the service runs. Production's live template has carried `DesiredCount: 2` since the 17 November release (MPD-510), which deployed an assembly patched to hold the count.
 
+Proved on staging 17 Nov 2026: at 2 running tasks, a stack update removing the service's DesiredCount (11:39:24 to 11:40:02 UTC) left the service at 2/2; the live template now carries no count. (Run and recorded by the release coordinator for `require-production-task-count`.)
+
 ## Deployed revision and state
 
 - Deployment source: `9ffd8e7935dedb9c25eaba1a159fc9015933e5bf` on `feat/add-aws-staging-deployment-apply`. Later handoff changes are documentation only. [Implementation PR #2](https://github.com/My-Performance-Doctor/sendrec/pull/2) remains for human review and merge.

@@ -13,4 +13,4 @@
 
 - [x] 3.1 List migrations 000079, 000080 and 000081 in order in `infrastructure/DEPLOYMENT.md`, with `productionTaskCount`.
 - [x] 3.2 Add `productionTaskCount` to the production synthesis inputs in `docs/production/README.md`.
-- [ ] 3.3 Prove on staging that a deploy at 2 tasks keeps 2 tasks.
+- [x] 3.3 Prove on staging that a deploy at 2 tasks keeps 2 tasks.
