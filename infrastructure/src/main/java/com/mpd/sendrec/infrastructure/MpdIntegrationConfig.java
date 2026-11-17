@@ -15,11 +15,14 @@ final class MpdIntegrationConfig {
     environment.put("MPD_SERVICE_ENABLED", "false");
     environment.put("MPD_EVENTS_ENABLED", "false");
     environment.put("MPD_REQUIRE_PASSWORD", "true");
-    // Off until mpd-api accepts `processing` in production (add-mpd-processing-progress).
-    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", "false");
-    Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
-    if (activate == null || "false".equals(activate.toString())) return;
-    if (!"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");
+    // `mpdProcessingProgress` adds processing (conversion and transcript state, with the conversion
+    // percent) to the MPD metadata response. Per-step retry is served whenever the integration is
+    // active, whatever this says. An active deploy must state it, true or false, so a deploy that
+    // leaves it out cannot quietly turn it off or change the application task definition.
+    boolean active = isActive(scope);
+    boolean progress = processingProgress(scope, active);
+    environment.put("MPD_PROCESSING_PROGRESS_ENABLED", String.valueOf(progress));
+    if (!active) return;
     String secretArn = required(scope, "mpdIntegrationSecretArn");
     if (!secretArn.matches("arn:aws:secretsmanager:ap-southeast-2:" + scope.getAccount() + ":secret:[A-Za-z0-9/_+=.@-]+"))
       throw new IllegalArgumentException("MPD integration secret must be explicitly supplied in the target account and region");
@@ -36,13 +39,35 @@ final class MpdIntegrationConfig {
     environment.put("MPD_EVENTS_ENABLED", "true");
   }
 
+  /** Whether the MPD integration is active; anything but true or false is refused. */
+  private static boolean isActive(Stack scope) {
+    Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
+    if (activate == null || "false".equals(activate.toString())) return false;
+    if (!"true".equals(activate.toString())) throw new IllegalArgumentException("activateMpdIntegration must be true or false");
+    return true;
+  }
+
+  private static boolean processingProgress(Stack scope, boolean active) {
+    Object value = scope.getNode().tryGetContext("mpdProcessingProgress");
+    if (value != null && !"true".equals(value.toString()) && !"false".equals(value.toString()))
+      throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
+    if (!active) {
+      if ("true".equals(String.valueOf(value)))
+        throw new IllegalArgumentException("mpdProcessingProgress needs activateMpdIntegration=true");
+      return false;
+    }
+    if (value == null) throw new IllegalArgumentException("Missing activation setting mpdProcessingProgress (true or false)");
+    if ("true".equals(value.toString())) return true;
+    if ("false".equals(value.toString())) return false;
+    throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
+  }
+
   /**
    * Exact browser origins of approved MPD clients, such as Staff OS. They upload straight to the
    * recordings bucket, so the bucket CORS rule must list them. Empty while the integration is dormant.
    */
   static List<String> browserOrigins(Stack scope) {
-    Object activate = scope.getNode().tryGetContext("activateMpdIntegration");
-    if (activate == null || !"true".equals(activate.toString())) return List.of();
+    if (!isActive(scope)) return List.of();
     List<String> origins = new ArrayList<>();
     for (String raw : required(scope, "MPD_ALLOWED_ORIGINS").split(",")) {
       String origin = raw.trim();

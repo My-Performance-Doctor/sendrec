@@ -219,7 +219,43 @@ class SendRecStackTest {
         "MPD_EVENT_RECEIVER_URL", "https://api.example.test/webhook",
         "MPD_EVENT_KEY_ID", "synthetic-1"));
     context.put("MPD_ALLOWED_ORIGINS", origins);
+    context.put("mpdProcessingProgress", "false");
     return context;
+  }
+
+  // An active deploy must state processing progress, so leaving it out can neither turn it off
+  // nor change the application task definition by accident.
+  @Test void processingProgressIsARequiredDeploySetting() {
+    String off = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(off.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    Map<String, Object> on = activation("https://staff.example.test");
+    on.put("mpdProcessingProgress", "true");
+    String enabled = Template.fromStack(stack(on)).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=true"));
+    assertFalse(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    Map<String, Object> missing = activation("https://staff.example.test");
+    missing.remove("mpdProcessingProgress");
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(missing)).getMessage().contains("mpdProcessingProgress"));
+    Map<String, Object> bad = activation("https://staff.example.test");
+    bad.put("mpdProcessingProgress", "yes");
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(bad)).getMessage().contains("mpdProcessingProgress must be true or false"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "true"))).getMessage().contains("needs activateMpdIntegration"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "false", "mpdProcessingProgress", "true"))).getMessage().contains("needs activateMpdIntegration"));
+    String dormant = Template.fromStack(stack(Map.of("activateMpdIntegration", "false", "mpdProcessingProgress", "false"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(dormant.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    // In a controlled release the application definition carries the value; the migration one does not need it.
+    Map<String, Object> release = activation("https://staff.example.test");
+    release.put("mpdProcessingProgress", "true");
+    release.put("releaseImage", "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64));
+    Template released = Template.fromStack(stack(release));
+    released.resourceCountIs("AWS::ECS::TaskDefinition", 2);
+    var definitions = released.findResources("AWS::ECS::TaskDefinition");
+    for (var entry : definitions.entrySet()) {
+      boolean migration = entry.getKey().startsWith("MigrationTaskDefinition");
+      boolean carries = entry.getValue().toString().contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=true");
+      assertEquals(!migration, carries, entry.getKey() + (migration ? " must not" : " must") + " carry the setting");
+    }
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdProcessingProgress", "FALSE"))).getMessage().contains("must be true or false"));
   }
 
   @Test void approvedMpdClientsCanUploadStraightToTheBucket() {
