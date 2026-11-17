@@ -24,7 +24,8 @@ func TestEncodeLeaseFollowsTheDeadline(t *testing.T) {
 			t.Fatal(err)
 		}
 		if lease != nil {
-			lease.cleared()
+			// Keep the lease in the row; only stop tracking it here.
+			inFlightEncodes.Delete(lease)
 		}
 		return lease != nil
 	}
@@ -48,10 +49,19 @@ func TestEncodeLeaseFollowsTheDeadline(t *testing.T) {
 		t.Fatal("expired lease was not taken over")
 	}
 
-	// A failure releases it, so the next sweep can retry at once.
-	recordTranscodeFailure(ctx, pool, id, "synthetic.webm", errors.New("synthetic failure"))
+	// A failure counts an attempt for the holder and leaves the lease to its
+	// release, which frees it so the next sweep can retry at once.
+	var held time.Time
+	if err := pool.QueryRow(ctx, `SELECT encode_started_at FROM videos WHERE id=$1`, id).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	recordTranscodeFailure(ctx, pool, id, "synthetic.webm", errors.New("synthetic failure"), held)
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND transcode_attempts=1 AND encode_started_at IS NOT NULL`, id) {
+		t.Fatal("the holder's failure was not counted, or freed the lease itself")
+	}
+	(&encodeLease{videoID: id, startedAt: held}).release(ctx, pool)
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND encode_started_at IS NULL`, id) {
-		t.Fatal("recorded failure kept the lease")
+		t.Fatal("the holder's release kept the lease")
 	}
 }
 
@@ -95,7 +105,7 @@ func TestEditReleasesALosingConversionsLease(t *testing.T) {
 	if err != nil || lease == nil {
 		t.Fatalf("the edited file's conversion could not claim at once: lease %v, err %v", lease, err)
 	}
-	defer lease.cleared()
+	defer lease.release(ctx, pool)
 	stale.release(ctx, pool)
 	if !exists(t, pool, `SELECT 1 FROM videos WHERE id = $1 AND encode_started_at IS NOT NULL`, videoID) {
 		t.Fatal("the stale conversion's release freed the edited file's lease")
@@ -198,5 +208,92 @@ func TestSweepKeepsTheNoiseFilter(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A publish that missed because an edit was running leaves the row to the
+// edit; the conversion's own release frees the lease, so when the edit falls
+// back to 'ready' on the same file the next conversion claims at once.
+func TestMissedPublishDuringAnEditReleasesTheLease(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	id, _, _ := seedManagedLifecycle(t, pool, "ready")
+	stubConversions(t, "converted", func() {
+		mustExec(t, pool, `UPDATE videos SET status='processing' WHERE id=$1`, id)
+	})
+
+	TranscodeWebMAsync(ctx, pool, newMemStorage(map[string]string{"synthetic.webm": "original"}), id, "synthetic.webm", "")
+
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND file_key='synthetic.webm' AND encode_started_at IS NULL`, id) {
+		t.Fatal("the conversion that missed its publish kept the lease")
+	}
+	// The edit fails and falls back to 'ready' on the same file.
+	mustExec(t, pool, `UPDATE videos SET status='ready' WHERE id=$1`, id)
+	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	if err != nil || lease == nil {
+		t.Fatalf("the next conversion could not claim at once: lease %v, err %v", lease, err)
+	}
+	lease.release(ctx, pool)
+}
+
+// A stale holder, whose lease ran out and was taken over, neither counts its
+// failure against the file nor frees the newer lease.
+func TestStaleHolderLeavesANewerLeaseAlone(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	id, _, _ := seedManagedLifecycle(t, pool, "ready")
+	stale, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	if err != nil || stale == nil {
+		t.Fatalf("claim: lease %v, err %v", stale, err)
+	}
+	inFlightEncodes.Delete(stale)
+	mustExec(t, pool, `UPDATE videos SET encode_started_at = encode_started_at + interval '2 hours' WHERE id=$1`, id)
+
+	recordTranscodeFailure(ctx, pool, id, "synthetic.webm", errors.New("synthetic failure"), stale.startedAt)
+	stale.release(ctx, pool)
+
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND transcode_attempts=0 AND encode_started_at IS NOT NULL`, id) {
+		t.Fatal("the stale holder counted its failure or freed the newer lease")
+	}
+}
+
+// A bogus duration must not overflow the lease interval and fail every claim.
+func TestClaimWithAHugeDuration(t *testing.T) {
+	pool := accountDB(t)
+	ctx := context.Background()
+	id, _, _ := seedManagedLifecycle(t, pool, "ready")
+	mustExec(t, pool, `UPDATE videos SET duration=2147483647 WHERE id=$1`, id)
+	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	if err != nil || lease == nil {
+		t.Fatalf("claim with a huge duration: lease %v, err %v", lease, err)
+	}
+	inFlightEncodes.Delete(lease)
+	if again, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible); err != nil || again != nil {
+		t.Fatalf("second claim beside a live lease: lease %v, err %v", again, err)
+	}
+}
+
+// Shutdown hands leases back after the HTTP drain: the transcript hand-back,
+// which runs first, does not stop claims, so a finalize served during the
+// drain still converts, and its lease is released by ReleaseInFlightEncodes.
+func TestShutdownReleasesClaimsMadeDuringTheDrain(t *testing.T) {
+	t.Cleanup(func() {
+		encodesStopping.Store(false)
+		transcriptionStopping.Store(false)
+	})
+	pool := accountDB(t)
+	ctx := context.Background()
+	id, _, _ := seedManagedLifecycle(t, pool, "ready")
+
+	RequeueInFlightTranscription(ctx, pool)
+	lease, _, _, err := claimEncode(ctx, pool, id, "synthetic.webm", transcodeEligible)
+	if err != nil || lease == nil {
+		t.Fatalf("a finalize during the drain could not claim: lease %v, err %v", lease, err)
+	}
+
+	ReleaseInFlightEncodes(ctx, pool)
+
+	if !exists(t, pool, `SELECT 1 FROM videos WHERE id=$1 AND encode_started_at IS NULL`, id) {
+		t.Fatal("the drain's claim was not handed back")
 	}
 }

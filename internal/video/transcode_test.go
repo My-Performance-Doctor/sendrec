@@ -140,7 +140,7 @@ func TestRecordTranscodeFailure_TransientIncrementsAttempts(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "no space left on device", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "no space left on device", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(2))
 
 	recordTranscodeFailure(context.Background(), mock, "video-1", "k", fmt.Errorf("no space left on device"))
@@ -162,7 +162,7 @@ func TestRecordTranscodeFailure_PermanentConsumesBudget(t *testing.T) {
 	// permanent = true, so the statement sets attempts straight to the cap
 	// instead of incrementing.
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", cause.Error(), true, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", cause.Error(), true, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(maxTranscodeAttempts))
 	// Giving up is the one failure the owner has to hear about. Audit 3.8.
 	mock.ExpectExec(`UPDATE videos SET processing_error = \$2`).
@@ -188,7 +188,7 @@ func TestRecordTranscodeFailure_TruncatesLongMessage(t *testing.T) {
 	long := strings.Repeat("x", 5000)
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", strings.Repeat("x", 2000), false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", strings.Repeat("x", 2000), false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	recordTranscodeFailure(context.Background(), mock, "video-1", "k", fmt.Errorf("%s", long))
@@ -211,7 +211,7 @@ func TestRecordTranscodeFailure_TruncationKeepsValidUTF8(t *testing.T) {
 	long := strings.Repeat("日", 2000)
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", strings.Repeat("日", 666), false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", strings.Repeat("日", 666), false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	recordTranscodeFailure(context.Background(), mock, "video-1", "k", fmt.Errorf("%s", long))
@@ -229,7 +229,7 @@ func TestRecordTranscodeFailure_HandlesDBError(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "boom", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "boom", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("connection refused"))
 
 	// Should not panic — the caller has already given up on this attempt.
@@ -287,10 +287,7 @@ func TestTranscodeWebMAsync_StopsWhenBudgetExhausted(t *testing.T) {
 
 	s := &mockStorage{}
 
-	mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
-			AddRow("video/webm", maxTranscodeAttempts, 120))
+	expectClaimRefused(mock, "video-1")
 
 	TranscodeWebMAsync(context.Background(), mock, s, "video-1", "recordings/user/video.webm", "")
 
@@ -311,14 +308,10 @@ func TestTranscodeWebMAsync_ProceedsBelowBudget(t *testing.T) {
 
 	s := &mockStorage{downloadToFileErr: fmt.Errorf("s3 down")}
 
-	mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
-			AddRow("video/webm", maxTranscodeAttempts-1, 120))
 	expectEncodeClaim(mock, "video-1")
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "s3 down", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "s3 down", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(maxTranscodeAttempts))
 	// Giving up is the one failure the owner has to hear about. Audit 3.8.
 	mock.ExpectExec(`UPDATE videos SET processing_error = \$2`).
@@ -344,10 +337,7 @@ func TestNormalizeVideoAsync_StopsWhenBudgetExhausted(t *testing.T) {
 
 	s := &mockStorage{}
 
-	mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
-			AddRow(false, maxTranscodeAttempts, 120))
+	expectClaimRefused(mock, "video-1")
 
 	NormalizeVideoAsync(context.Background(), mock, s, "video-1", "recordings/user/video.mp4", "")
 
@@ -382,12 +372,10 @@ func TestConversionsSkipWhileAnotherHoldsTheLease(t *testing.T) {
 			}
 			defer mock.Close()
 			s := &mockStorage{}
-			mock.ExpectQuery(`SELECT ` + tc.column + `, transcode_attempts, duration FROM videos`).
-				WithArgs("video-1").
-				WillReturnRows(pgxmock.NewRows([]string{tc.column, "transcode_attempts", "duration"}).AddRow(tc.first, 0, 120))
 			mock.ExpectQuery(`UPDATE videos SET encode_started_at = now\(\)`).
 				WithArgs("video-1", tc.key, maxTranscodeAttempts, (perJobTimeout + time.Minute).Seconds(), encodeExtraCapSeconds).
 				WillReturnError(pgx.ErrNoRows)
+			expectRefusalRead(mock)
 
 			tc.run(context.Background(), mock, s, "video-1", tc.key, "")
 
@@ -399,6 +387,21 @@ func TestConversionsSkipWhileAnotherHoldsTheLease(t *testing.T) {
 			}
 		})
 	}
+}
+
+// expectClaimRefused expects a conversion's claim to be refused, here because
+// the video no longer needs it or its budget is spent, and the read that logs
+// why.
+func expectClaimRefused(mock pgxmock.PgxPoolIface, videoID string) {
+	mock.ExpectQuery(`UPDATE videos SET encode_started_at = now\(\)`).
+		WithArgs(videoID, pgxmock.AnyArg(), maxTranscodeAttempts, (perJobTimeout + time.Minute).Seconds(), encodeExtraCapSeconds).
+		WillReturnError(pgx.ErrNoRows)
+	expectRefusalRead(mock)
+}
+
+// expectRefusalRead expects the read that logs why a claim was refused.
+func expectRefusalRead(mock pgxmock.PgxPoolIface) {
+	mock.ExpectQuery(`SELECT status, file_key = \$2`).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnError(pgx.ErrNoRows)
 }
 
 // expectEncodeClaim expects a conversion to take the video's encode lease.
@@ -431,10 +434,6 @@ func TestTranscodeWebMAsync_UploadFailureConsumesBudget(t *testing.T) {
 	stubFFmpeg(t, &transcodeToMP4)
 	s := &mockStorage{uploadFileErr: fmt.Errorf("s3 unavailable")}
 
-	mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
-			AddRow("video/webm", 0, 120))
 	expectEncodeClaim(mock, "video-1")
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
@@ -443,7 +442,7 @@ func TestTranscodeWebMAsync_UploadFailureConsumesBudget(t *testing.T) {
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	TranscodeWebMAsync(context.Background(), mock, s, "video-1", "recordings/user/video.webm", "")
@@ -465,10 +464,6 @@ func TestTranscodeWebMAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 	stubFFmpeg(t, &transcodeToMP4)
 	s := &mockStorage{}
 
-	mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
-			AddRow("video/webm", 0, 120))
 	expectEncodeClaim(mock, "video-1")
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
@@ -477,7 +472,7 @@ func TestTranscodeWebMAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1", "recordings/user/video.webm", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "deadlock detected", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "deadlock detected", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	TranscodeWebMAsync(context.Background(), mock, s, "video-1", "recordings/user/video.webm", "")
@@ -505,10 +500,6 @@ func TestNormalizeVideoAsync_UploadFailureConsumesBudget(t *testing.T) {
 
 	s := &mockStorage{uploadFileErr: fmt.Errorf("s3 unavailable")}
 
-	mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
-			AddRow(false, 0, 120))
 	expectEncodeClaim(mock, "video-1")
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
@@ -517,7 +508,7 @@ func TestNormalizeVideoAsync_UploadFailureConsumesBudget(t *testing.T) {
 		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "s3 unavailable", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	NormalizeVideoAsync(context.Background(), mock, s, "video-1", "recordings/user/video.mp4", "")
@@ -541,7 +532,7 @@ func TestRecordTranscodeFailure_SanitizesShortMessages(t *testing.T) {
 	cause := fmt.Errorf("ffmpeg: %s", "bad\xffbyte\x00here")
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "ffmpeg: badbytehere", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "ffmpeg: badbytehere", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	recordTranscodeFailure(context.Background(), mock, "video-1", "k", cause)
@@ -567,10 +558,6 @@ func TestNormalizeVideoAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 
 	s := &mockStorage{}
 
-	mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
-			AddRow(false, 0, 120))
 	expectEncodeClaim(mock, "video-1")
 	mock.ExpectExec(`INSERT INTO retired_objects`).
 		WithArgs(pgxmock.AnyArg()).
@@ -579,7 +566,7 @@ func TestNormalizeVideoAsync_DBUpdateFailureConsumesBudget(t *testing.T) {
 		WithArgs("video-1", "recordings/user/video.mp4", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnError(errors.New("deadlock detected"))
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "deadlock detected", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "deadlock detected", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	NormalizeVideoAsync(context.Background(), mock, s, "video-1", "recordings/user/video.mp4", "")
@@ -622,7 +609,7 @@ func TestRecordTranscodeFailure_CountsAfterTheJobTimedOut(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", pgxmock.AnyArg(), false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", pgxmock.AnyArg(), false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
@@ -652,13 +639,9 @@ func TestNormalizeVideoAsync_ProbeFailureIsAnAttemptNotAVerdict(t *testing.T) {
 	}
 	t.Cleanup(func() { probeVideoProperties = originalProbe })
 
-	mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
-		WithArgs("video-1").
-		WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
-			AddRow(false, 0, 120))
 	expectEncodeClaim(mock, "video-1")
 	mock.ExpectQuery(`UPDATE videos`).
-		WithArgs("video-1", "ffprobe: exit status 1", false, maxTranscodeAttempts, pgxmock.AnyArg()).
+		WithArgs("video-1", "ffprobe: exit status 1", false, maxTranscodeAttempts, pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"transcode_attempts"}).AddRow(1))
 
 	NormalizeVideoAsync(context.Background(), mock, &mockStorage{}, "video-1", "recordings/user/video.mp4", "")
@@ -693,11 +676,14 @@ func (db *deadlineDB) recorded() []time.Time {
 // minutes plus twice ten minutes, so a bit under thirty from now.
 func expectEncodeDeadline(t *testing.T, deadlines []time.Time) {
 	t.Helper()
-	if len(deadlines) != 1 {
-		t.Fatalf("got %d job contexts, want one", len(deadlines))
+	// The claim, and the read that logs a refusal, both run on the job context.
+	if len(deadlines) == 0 {
+		t.Fatal("got no job contexts, want the job's")
 	}
-	if remaining := time.Until(deadlines[0]); remaining <= 29*time.Minute || remaining > 30*time.Minute {
-		t.Errorf("job deadline is %v away, want just under 30 min for a 600 s recording", remaining.Round(time.Second))
+	for _, d := range deadlines {
+		if remaining := time.Until(d); remaining <= 29*time.Minute || remaining > 30*time.Minute {
+			t.Errorf("job deadline is %v away, want just under 30 min for a 600 s recording", remaining.Round(time.Second))
+		}
 	}
 }
 
@@ -710,15 +696,9 @@ func TestEncodeDeadlinesGrowWithTheRecording(t *testing.T) {
 		// The row says the job is done, so it exits after this first read.
 		switch job {
 		case JobTypeTranscode:
-			mock.ExpectQuery(`SELECT content_type, transcode_attempts, duration FROM videos`).
-				WithArgs("video-1").
-				WillReturnRows(pgxmock.NewRows([]string{"content_type", "transcode_attempts", "duration"}).
-					AddRow("video/mp4", 0, 600))
+			expectClaimRefused(mock, "video-1")
 		case JobTypeNormalize:
-			mock.ExpectQuery(`SELECT ios_normalized, transcode_attempts, duration FROM videos`).
-				WithArgs("video-1").
-				WillReturnRows(pgxmock.NewRows([]string{"ios_normalized", "transcode_attempts", "duration"}).
-					AddRow(true, 0, 600))
+			expectClaimRefused(mock, "video-1")
 		}
 	}
 

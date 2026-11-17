@@ -167,33 +167,19 @@ var transcodeToIOSCompatible = func(ctx context.Context, inputPath, outputPath, 
 }
 
 func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, audioFilter string) {
-	// Check if video is already normalized (another normalize may have completed)
-	var normalized bool
-	var attempts int
-	var duration int
-	if err := db.QueryRow(ctx, "SELECT ios_normalized, transcode_attempts, duration FROM videos WHERE id = $1", videoID).Scan(&normalized, &attempts, &duration); err != nil {
-		slog.Error("normalize: failed to check status", "video_id", videoID, "error", err)
-		return
-	}
-	if normalized {
-		slog.Info("normalize: skipped, already normalized", "video_id", videoID)
-		return
-	}
-	// The worker query filters on this too, but job enqueues reach us directly.
-	if attempts >= maxTranscodeAttempts {
-		slog.Warn("normalize: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
-		return
-	}
+	// The claim checks the file, its status, the attempt budget and whether it
+	// still needs converting in one statement; the worker query filters on most
+	// of these too, but job enqueues reach us directly.
 	lease, _, duration, err := claimEncode(ctx, db, videoID, fileKey, normalizeEligible)
 	if err != nil {
 		slog.Error("normalize: failed to claim", "video_id", videoID, "error", err)
 		return
 	}
 	if lease == nil {
-		slog.Info("normalize: skipped, another conversion is running or the video changed", "video_id", videoID)
+		logClaimRefused(ctx, db, "normalize", videoID, fileKey)
 		return
 	}
-	defer lease.release(ctx, db)
+	defer lease.done(ctx, db)
 
 	slog.Info("normalize: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -208,8 +194,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("normalize: failed to download", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -224,8 +209,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		// normalized here took it out of every later pass while it could still
 		// fail on iPhones; count an attempt instead, within the retry budget.
 		slog.Warn("normalize: probe failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -233,7 +217,6 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		slog.Info("normalize: already compatible", "video_id", videoID,
 			"width", props.Width, "height", props.Height, "level", props.Level, "fps", props.FrameRate)
 		markIOSNormalized(ctx, db, videoID, fileKey)
-		lease.cleared()
 		return
 	}
 
@@ -252,8 +235,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := transcodeToIOSCompatible(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("normalize: ffmpeg failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -267,17 +249,14 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 	// Written next to the original, never over it: an edit may be reading it.
 	newFileKey := replacementFileKey(fileKey, path.Ext(fileKey))
 	switched, err := publishConversion(ctx, db, storage, "normalize", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true, encode_started_at = NULL,
+		`UPDATE videos SET file_key = $3, file_size = $4, ios_normalized = true,
 		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
-	// The publish released the lease, or an edit that won did.
-	lease.cleared()
 	if !switched {
 		return
 	}
@@ -289,7 +268,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 // row still points at it and no edit is replacing it.
 func markIOSNormalized(ctx context.Context, db database.DBTX, videoID, fileKey string) {
 	if _, err := db.Exec(ctx,
-		`UPDATE videos SET ios_normalized = true, encode_started_at = NULL, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
+		`UPDATE videos SET ios_normalized = true, updated_at = now() WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		videoID, fileKey,
 	); err != nil {
 		slog.Error("normalize: failed to mark normalized", "video_id", videoID, "error", err)

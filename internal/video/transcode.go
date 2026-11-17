@@ -107,7 +107,10 @@ const (
 // The budget belongs to the file the job converted, fileKey. If the video has
 // moved on to another file, or was deleted, nothing is counted: an edit's
 // output must not inherit the failures of the file it replaced. #328.
-func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, fileKey string, cause error) {
+// held, when given, is the failing conversion's claimed lease time: the attempt
+// counts only while no other conversion holds a newer lease on the row. The
+// lease itself is left to the conversion's release.
+func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, fileKey string, cause error, held ...time.Time) {
 	permanent := isPermanentFFmpegError(cause)
 
 	// The cause carries raw ffmpeg output, so it can hold arbitrary bytes, and
@@ -126,18 +129,23 @@ func recordTranscodeFailure(ctx context.Context, db database.DBTX, videoID, file
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
+	var claimed *time.Time
+	if len(held) > 0 {
+		claimed = &held[0]
+	}
 	var attempts int
 	err := db.QueryRow(ctx,
 		`UPDATE videos
 		 SET transcode_attempts = CASE WHEN $3 THEN $4 ELSE transcode_attempts + 1 END,
-		     transcode_error = $2, encode_started_at = NULL,
+		     transcode_error = $2,
 		     updated_at = now()
 		 WHERE id = $1 AND file_key = $5 AND status != 'deleted'
+		   AND ($6::timestamptz IS NULL OR encode_started_at IS NULL OR encode_started_at = $6)
 		 RETURNING transcode_attempts`,
-		videoID, msg, permanent, maxTranscodeAttempts, fileKey,
+		videoID, msg, permanent, maxTranscodeAttempts, fileKey, claimed,
 	).Scan(&attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		slog.Info("transcode: video moved on from the failed file, not counting it", "video_id", videoID, "key", fileKey, "error", cause)
+		slog.Info("transcode: video moved on from the failed file or another conversion holds it, not counting it", "video_id", videoID, "key", fileKey, "error", cause)
 		return
 	}
 	if err != nil {
@@ -197,33 +205,19 @@ func publishConversion(ctx context.Context, db database.DBTX, storage ObjectStor
 }
 
 func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, audioFilter string) {
-	// Check if video is still WebM (another transcode may have already completed)
-	var contentType string
-	var attempts int
-	var duration int
-	if err := db.QueryRow(ctx, "SELECT content_type, transcode_attempts, duration FROM videos WHERE id = $1", videoID).Scan(&contentType, &attempts, &duration); err != nil {
-		slog.Error("transcode: failed to check content type", "video_id", videoID, "error", err)
-		return
-	}
-	if contentType != "video/webm" {
-		slog.Info("transcode: skipped, already transcoded", "video_id", videoID, "content_type", contentType)
-		return
-	}
-	// The worker query filters on this too, but job enqueues reach us directly.
-	if attempts >= maxTranscodeAttempts {
-		slog.Warn("transcode: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
-		return
-	}
+	// The claim checks the file is still this WebM, its status and the attempt
+	// budget in one statement; the worker query filters on most of these too,
+	// but job enqueues reach us directly.
 	lease, _, duration, err := claimEncode(ctx, db, videoID, fileKey, transcodeEligible)
 	if err != nil {
 		slog.Error("transcode: failed to claim", "video_id", videoID, "error", err)
 		return
 	}
 	if lease == nil {
-		slog.Info("transcode: skipped, another conversion is running or the video changed", "video_id", videoID)
+		logClaimRefused(ctx, db, "transcode", videoID, fileKey)
 		return
 	}
-	defer lease.release(ctx, db)
+	defer lease.done(ctx, db)
 
 	slog.Info("transcode: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -238,8 +232,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("transcode: failed to download", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -254,8 +247,7 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 
 	if err := transcodeToMP4(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("transcode: ffmpeg failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -276,17 +268,14 @@ func TranscodeWebMAsync(ctx context.Context, db database.DBTX, storage ObjectSto
 	newFileKey := replacementFileKey(fileKey, ".mp4")
 
 	switched, err := publishConversion(ctx, db, storage, "transcode", videoID, fileKey, newFileKey, tmpOutputPath,
-		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true, encode_started_at = NULL,
+		`UPDATE videos SET file_key = $3, content_type = 'video/mp4', file_size = $4, cues_fixed = true, ios_normalized = true,
 		     transcode_attempts = 0, transcode_error = NULL, updated_at = now()
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
-		lease.cleared()
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
-	// The publish released the lease, or an edit that won did.
-	lease.cleared()
 	if !switched {
 		return
 	}
