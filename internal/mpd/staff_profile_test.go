@@ -67,9 +67,9 @@ func TestGrantProfile(t *testing.T) {
 		{profile: `,"profile":{"displayName":"   ","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":"` + wide + `","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":"Dr\nStaff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
-		// U+202E reverses the text after it, so "Dr ‮ffatS" would show as "Dr Staff".
-		{profile: `,"profile":{"displayName":"Dr ‮ffatS","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
-		{profile: `,"profile":{"displayName":"Dr​Staff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		// U+202E reverses the text after it, so "Dr \u202effatS" would show as "Dr Staff".
+		{profile: `,"profile":{"displayName":"Dr \u202effatS","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
+		{profile: `,"profile":{"displayName":"Dr\u200bStaff","photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 		{profile: `,"profile":{"displayName":5,"photoVersion":"0f3a9c"}`, name: "<nil>", version: "0f3a9c"},
 	} {
 		got := decode(tc.profile)
