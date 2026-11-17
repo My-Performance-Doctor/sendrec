@@ -39,7 +39,7 @@ func (l *localWhisper) Transcribe(ctx context.Context, audioPath, language strin
 		_ = os.Remove(outputPrefix + ".json")
 	}()
 
-	cmd := exec.CommandContext(ctx, "whisper-cli",
+	argv := whisperCommand(
 		"-m", whisperModelPath(),
 		"-f", audioPath,
 		"--output-json",
@@ -47,12 +47,27 @@ func (l *localWhisper) Transcribe(ctx context.Context, audioPath, language strin
 		"-t", "2",
 		"-l", language,
 	)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("whisper-cli: %w: %s", err, string(output))
 	}
 
 	return parseWhisperJSON(outputPrefix + ".json")
+}
+
+// whisperCommand runs whisper-cli at the lowest CPU priority when nice is
+// installed, as it is in the Alpine runtime image. Whisper and an encode
+// sharing a 2 vCPU task slowed each other badly: a 10 minute recording's
+// transcript took 37 minutes instead of 10 and its encode 18 instead of 7.5.
+// At nice 19 an encode takes the CPU first, as if whisper were paused, and the
+// HTTP server keeps priority over both. nice execs whisper-cli, so cancelling
+// the context still kills whisper itself.
+func whisperCommand(args ...string) []string {
+	if nice, err := exec.LookPath("nice"); err == nil {
+		return append([]string{nice, "-n", "19", "whisper-cli"}, args...)
+	}
+	return append([]string{"whisper-cli"}, args...)
 }
 
 func whisperModelPath() string {

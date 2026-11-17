@@ -44,7 +44,9 @@ class SendRecStackTest {
         "BucketEncryption", Match.anyValue())))));
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Match.absent()));
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "ExpireOldVersions", "Status", "Enabled",
-        "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
+        "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 30), "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
+        Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1)),
+            Map.of("Id", "RemoveTranscriptionDeleteMarkers", "Status", "Enabled", "Prefix", "transcribe/", "ExpiredObjectDeleteMarker", true)))));
     template.hasResource("AWS::RDS::DBInstance", Match.objectLike(Map.of("DeletionPolicy", "Retain", "Properties", Match.objectLike(Map.of(
         "StorageEncrypted", true, "PubliclyAccessible", false, "DBName", "sendrec",
         "EngineVersion", "18.6", "AllowMajorVersionUpgrade", true, "BackupRetentionPeriod", 7)))));
@@ -93,15 +95,18 @@ class SendRecStackTest {
         "MinimumHealthyPercent", 100, "MaximumPercent", 200, "DeploymentCircuitBreaker", Map.of("Enable", true, "Rollback", true)))));
     template.hasResourceProperties("AWS::RDS::DBInstance", Map.of("DBInstanceClass", "db.t4g.small", "MultiAZ", true, "BackupRetentionPeriod", 35,
         "StorageEncrypted", true, "PubliclyAccessible", false, "DeletionProtection", true));
-    // Versioning on and nothing expires; only abandoned multipart uploads are cleaned up.
+    // Versioning on and no recording expires; only abandoned multipart uploads and transcription staging are cleaned up.
     template.hasResourceProperties("AWS::S3::Bucket", Map.of("VersioningConfiguration", Map.of("Status", "Enabled"),
         "LifecycleConfiguration", Map.of("Rules", List.of(Map.of("Id", "AbortIncompleteUploads", "Status", "Enabled",
-            "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7))))));
+            "AbortIncompleteMultipartUpload", Map.of("DaysAfterInitiation", 7)),
+            Map.of("Id", "ExpireTranscriptionStaging", "Status", "Enabled", "Prefix", "transcribe/", "ExpirationInDays", 1, "NoncurrentVersionExpiration", Map.of("NoncurrentDays", 1)),
+            Map.of("Id", "RemoveTranscriptionDeleteMarkers", "Status", "Enabled", "Prefix", "transcribe/", "ExpiredObjectDeleteMarker", true)))));
     template.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", Map.of("HealthCheckPath", "/api/ready"));
     template.resourceCountIs("AWS::ECS::TaskDefinition", 2);
     String allTasks = template.findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(allTasks.contains("MPD_IDENTITY_ENABLED, Value=false"));
     assertTrue(allTasks.contains("MPD_EVENTS_ENABLED, Value=false"));
+    assertTrue(allTasks.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
     assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
     template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
         "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
@@ -256,11 +261,32 @@ class SendRecStackTest {
   @Test void productionRejectsStagingDataMutableImagesAndMissingAlertDestination() {
     String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
     String topic = "arn:aws:sns:ap-southeast-2:537421187871:synthetic-operations";
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", StagingConfig.INSTANCE.vpcId(), "pl-123", "isolated-bucket", image, topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", StagingConfig.INSTANCE.recordingsBucketName(), image, topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic));
-    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, ""));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", StagingConfig.INSTANCE.vpcId(), "pl-123", "isolated-bucket", image, topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", StagingConfig.INSTANCE.recordingsBucketName(), image, topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image.replace("@sha256:" + "a".repeat(64), ":latest"), topic, DOMAIN_CERTIFICATE));
+    assertThrows(IllegalArgumentException.class, () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, "", DOMAIN_CERTIFICATE));
     assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App()));
+  }
+
+  @Test void productionLinksUseResultsMpdHealthWithACertificateFromItsOwnAccount() {
+    Template template = Template.fromStack(production(Map.of()));
+    template.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+        "Aliases", List.of("results.mpd.health"),
+        "ViewerCertificate", Match.objectLike(Map.of("AcmCertificateArn", DOMAIN_CERTIFICATE))))));
+    template.hasOutput("BaseUrl", Map.of("Value", "https://results.mpd.health"));
+
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    for (String arn : List.of("", DOMAIN_CERTIFICATE.replace("us-east-1", "ap-southeast-2"), DOMAIN_CERTIFICATE.replace(StagingConfig.ACCOUNT, "111111111111"))) {
+      assertThrows(IllegalArgumentException.class,
+          () -> new ProductionConfig("537421187871", "vpc-123", "pl-123", "isolated-bucket", image, PRODUCTION_TOPIC, arn), arn);
+    }
+    // Every other production input present: leaving out the certificate still fails, so no deploy drops the alias.
+    Map<String, Object> inputs = new java.util.HashMap<>(Map.of("productionAccount", "537421187871", "productionVpcId", "vpc-123",
+        "productionCloudFrontPrefixListId", "pl-123", "productionBucket", "isolated-bucket", "productionImage", image,
+        "productionAlertTopicArn", PRODUCTION_TOPIC));
+    assertThrows(IllegalArgumentException.class, () -> ProductionConfig.fromContext(new App(AppProps.builder().context(inputs).build())));
+    inputs.put("productionDomainCertificateArn", DOMAIN_CERTIFICATE);
+    assertEquals("results.mpd.health", ProductionConfig.fromContext(new App(AppProps.builder().context(inputs).build())).customDomain().name());
   }
 
   @Test void productionDatabaseSizeIsMicroOrSmallAndStagingStaysMicro() {
@@ -272,12 +298,55 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> production(Map.of("productionDatabaseSize", "large")));
   }
 
+  @Test void shutdownHasTimeToHandBackAndCleanUp() {
+    for (SendRecStack stack : List.of(stack(Map.of()), production(Map.of()))) {
+      Template.fromStack(stack).hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(
+          Match.objectLike(Map.of("Name", "sendrec", "StopTimeout", 60))))));
+    }
+  }
+
+  @Test void transcriptionProviderIsLocalUnlessAwsIsChosen() {
+    for (SendRecStack local : List.of(stack(Map.of()), production(Map.of()))) {
+      Template template = Template.fromStack(local);
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+          "Environment", Match.arrayWith(List.of(Map.of("Name", "TRANSCRIPTION_PROVIDER", "Value", "local")))))))));
+      assertFalse(template.toJSON().toString().contains("transcribe:"), "no Transcribe permissions without the aws provider");
+    }
+    for (SendRecStack aws : List.of(stack(Map.of("transcriptionProvider", "aws")), production(Map.of("transcriptionProvider", "aws")))) {
+      Template template = Template.fromStack(aws);
+      template.hasResourceProperties("AWS::ECS::TaskDefinition", Map.of("ContainerDefinitions", Match.arrayWith(List.of(Match.objectLike(Map.of(
+          "Environment", Match.arrayWith(List.of(Map.of("Name", "TRANSCRIPTION_PROVIDER", "Value", "aws"),
+              Map.of("Name", "TRANSCRIPTION_LANGUAGE_CODE", "Value", "en-AU")))))))));
+      var jobs = Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
+          Match.stringLikeRegexp(":transcription-job/sendrec-\\*$")))))));
+      // A job may only be started with its output under transcribe/ in the recordings bucket.
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", "transcribe:StartTranscriptionJob", "Effect", "Allow", "Resource", jobs,
+              "Condition", Map.of(
+                  "StringEquals", Map.of("transcribe:OutputBucketName", Match.objectLike(Map.of("Ref", Match.stringLikeRegexp("^Recordings")))),
+                  "StringLike", Map.of("transcribe:OutputKey", "transcribe/*"))))))))));
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", List.of("transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"),
+              "Effect", "Allow", "Resource", jobs))))))));
+      // Object calls an AWS service makes for the role are denied outside transcribe/.
+      template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
+          "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of(
+              "Action", List.of("s3:GetObject*", "s3:PutObject*"), "Effect", "Deny",
+              "NotResource", Match.objectLike(Map.of("Fn::Join", Match.arrayWith(List.of(Match.arrayWith(List.of(
+                  Match.stringLikeRegexp("/transcribe/\\*$"))))))),
+              "Condition", Map.of("Bool", Map.of("aws:ViaAWSService", "true"))))))))));
+    }
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("transcriptionProvider", "openai")));
+  }
+
   private SendRecStack production(Map<String, Object> context) {
     App app = new App(AppProps.builder().outdir("build/synthetic-production").context(context).build());
     IVpc vpc = syntheticVpc(app, "ProductionSyntheticNetwork");
     var config = new ProductionConfig("537421187871", "vpc-123abc", "pl-b8a742d1", "synthetic-sendrec-production",
         "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64),
-        PRODUCTION_TOPIC);
+        PRODUCTION_TOPIC, DOMAIN_CERTIFICATE);
     return new SendRecStack(app, "Production", props, config, vpc);
   }
 

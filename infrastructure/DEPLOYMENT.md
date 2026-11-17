@@ -4,6 +4,17 @@ Verified on 2026-10-07 through 15:21 UTC using synthetic identities, speech and 
 
 The operator approved the proposal, authorized apply, requested an alternative to external DNS and authorized this machine for synthetic owner setup. CloudFront supplies its managed HTTPS hostname through a private VPC origin. The pending custom-domain certificate is unused and does not block this deployment.
 
+
+## Release gate: migration 000079 before any release that includes #38 (MPD-498)
+
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. The first release of main that includes PR #38 (`add-mpd-processing-progress`) must run migration 000079 (`videos.conversion_percent`) first, in staging and then in production:
+
+1. Run the release's migration task (`promote-release.py`, or the migration task definition for production) and confirm it exits 0 and reports migration 79 before the application tasks are replaced.
+2. Only then replace the application tasks.
+3. Keep `MPD_PROCESSING_PROGRESS_ENABLED=false`, as CDK sets it. Turn it on only after mpd-api #559 (`add-video-processing-progress`) is live in production: staging first, then production, each recorded here.
+
+Without 000079, conversions still publish. The percent writes and the clear after a publish fail and are logged as warnings, `POST /api/integrations/mpd/videos/{videoId}/retry` answers 404, because its read of the row fails, and with the setting on the metadata read omits `processing`. A release pinned to `cef3b00` or earlier does not include #38 and needs no migration.
+
 ## Deployed revision and state
 
 - Deployment source: `9ffd8e7935dedb9c25eaba1a159fc9015933e5bf` on `feat/add-aws-staging-deployment-apply`. Later handoff changes are documentation only. [Implementation PR #2](https://github.com/My-Performance-Doctor/sendrec/pull/2) remains for human review and merge.
@@ -172,3 +183,27 @@ The remaining worker drill then ran on the same candidate during a two-task depl
 This closes the measured worker gate with optional sending workers and legacy webhooks disabled. There was no active retention leader; safe concurrent optional retention or sending remains unverified and those workers must stay disabled. Standard production promotion requires two tasks and rollout approval with the tested settings. The dated record keeps empty-stack preparation and later patient activation separate.
 
 After restoring the seeded warning to null, staging returned to one healthy definition-18 task at 12:29:39 UTC, with zero pending tasks, the 30-second drain and all dependency checks true. The synthetic media remains retained; the owned cleanup orphan is gone. No shared account or policy changed.
+
+## Update, 2026-11-16/17 UTC: production capacity release and an Amazon Transcribe staging trial
+
+The first production recording (16 November, 15:29 UTC) uploaded in 46 seconds. Then Staff OS failed the take at 10 minutes, three normalizes ran at once, and Whisper was killed at the old 30-minute deadline. `speed-up-playback-encodes` (PR #35) covers the encodes.
+
+Production now runs `cc69b681413d309f9ca1557eb199b9a4c19832e2` (PR #33). It is the image staging had run since 16:55 UTC, at index digest `sha256:ecc1c67b28373bba6a08545e1a9a2bf9a021b7faa573e4e2ba853dfb171ff027`, copied into production's immutable repository with `crane copy`, which keeps the digest. The release used a change set built from the live production template. It changed only the two task-definition images, and set `DesiredCount` to the live 2, because the template's 0 would otherwise have been sent with the update. There was no migration. Before execution, the logs showed no encode or transcription for six hours. The rollout ran from 22:48:17 to 22:51:09 UTC. Health reports `cc69b681`, readiness passed three times, and both new tasks started cleanly.
+
+Production's template still says `DesiredCount: 0`, and the live service runs 2. Build any later production release from the live template, or set the count, so an update does not scale the service to zero.
+
+On 17 November MPD's AWS organization attached the AI services opt-out policy `ai-services-opt-out-all` to its root. The effective policy on the staging and production accounts reads `optOut`.
+
+Staging is trialling `add-aws-transcription` from branch `t3/aws-transcribe-provider` at `f761f1f3229c83b5197589e73697306c5eb5e28f`, digest `sha256:4b3cbe2ba06bc9c9ae21a97a5155c8569b9ea26e4e5d36fe16e0b9a896d1daf8`, with `transcriptionProvider=aws`, before review. The change set took from a CDK synth with the live staging contexts only the two task definitions, the task-role policy and the bucket lifecycle. It kept the live `DesiredCount` of 2, which differs from the code's 1. The stack was updated from 23:07:59 to 23:12:03 UTC, and staging runs definition 24. Health reports `f761f1f3`, readiness passed, and both workers started with `aws-transcribe`.
+
+A re-transcription of the synthetic 20-minute recording `5201bf55-f802-4c16-b3f3-9e2564b0f9b1` ran from claim to `transcribe: completed` in 25.6 seconds. It published generation 2 with 222 segments ending at 1199.8 seconds. Afterwards `transcribe/` held only Transcribe's empty `.write_access_check_file.temp`, and no `sendrec-*` job remained. A one-off psql task with the migration execution role queued the job. Its definition is deregistered.
+
+Redeploy merged `main` to staging if this branch changes or is not merged.
+
+### Amazon Transcribe cost and failure handling
+
+The AWS price list (`aws pricing get-products --service-code transcribe`, effective 1 June 2026) gives standard batch transcription in Sydney, usage type `APS2-TranscribeAudio`, as a flat US$0.0001 a second with no volume tiers. That is US$0.36 an hour of audio, about US$0.06 for a 10-minute recording and US$0.12 for a 20-minute one. Billing is per second of audio, so a retry or a job a stopped task abandoned is billed again. Transcribe Medical (`APS2-MedicalTranscribeAudio`) is US$0.00125 a second, US$4.50 an hour, and is not used.
+
+A status check that fails with throttling, a limit, a 5xx or a network error is retried with a longer wait until the job's deadline, and a start is tried three times. Access, validation and missing-job errors go to the fallback at once. If Transcribe cannot finish the job, the same audio is transcribed with local Whisper inside the job's deadline. Transcribe gets ten minutes plus half the recording's length, and never more than half the deadline; Whisper keeps the rest, about 20 minutes plus 3.5 times the length, enough for dense speech on a slow host. Whisper starts at once and yields the CPU to encodes at nice 19. A Transcribe job abandoned while running that completes during its cleanup still wins if it finishes before Whisper. Without the Whisper model, Transcribe gets the whole deadline. The entrypoint downloads the Whisper model for the `aws` provider too; without it the fallback is skipped with a warning. Logs name the provider that produced each transcript.
+
+The task role may start a job only with its output under `transcribe/` in the recordings bucket. Object reads and writes an AWS service makes for the role outside `transcribe/` are denied. Cleanup deletes every version of the staged audio at once. For an abandoned job it waits in the background, up to three minutes, for the late output, deletes it and the job, so a fallback starts at once. A task that is stopping cancels its running transcript, cuts that wait to five seconds and waits up to 12 seconds for the cleanups. The container's stop timeout is 60 seconds, to fit the hand-back, this cleanup, encode lease release and the HTTP drain. Anything left under `transcribe/`, current or noncurrent, expires after a day, and expired delete markers are removed.

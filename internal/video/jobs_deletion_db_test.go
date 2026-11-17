@@ -156,7 +156,7 @@ func TestTranscriptionAfterDeletion(t *testing.T) {
 	}
 	s := newMemStorage(map[string]string{key: "video"})
 
-	processTranscription(context.Background(), pool, s, tr, videoID, key, 0, "u", "tok", "auto", false)
+	processTranscription(context.Background(), pool, s, tr, videoID, key, 0, 0, "u", "tok", "auto", false)
 
 	if _, _, transcript, status := readStatus(t, pool, videoID); transcript != nil || (status != nil && *status == "ready") {
 		t.Errorf("transcript_key = %v, status = %v; want nothing published", transcript, status)

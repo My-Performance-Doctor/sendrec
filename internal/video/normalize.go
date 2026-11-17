@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sendrec/sendrec/internal/database"
 )
@@ -134,16 +135,9 @@ var probeVideoProperties = func(ctx context.Context, inputPath string) (videoPro
 
 func buildNormalizeArgs(inputPath, outputPath, audioFilter string, frame outputFrame) []string {
 	args := append(globalThreads(), inputThreads()...)
-	args = append(args,
-		"-i", inputPath,
-		"-c:v", "libx264",
-		"-profile:v", "high",
-		"-level:v", "5.1",
-		"-preset", "fast",
-		"-crf", "23",
-		"-vf", frame.filter(),
-		"-r", "60",
-	)
+	args = append(args, "-i", inputPath)
+	args = append(args, playbackVideoArgs()...)
+	args = append(args, "-vf", frame.filter())
 	args = appendEncoderBounds(args, "video/mp4")
 	if audioFilter != "" {
 		args = append(args, "-af", audioFilter)
@@ -165,8 +159,7 @@ var transcodeToIOSCompatible = func(ctx context.Context, inputPath, outputPath, 
 	}
 	defer release()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	output, err := cmd.CombinedOutput()
+	output, err := runFFmpeg(ctx, args)
 	if err != nil {
 		return fmt.Errorf("ffmpeg normalize: %w: %s", err, string(output))
 	}
@@ -174,23 +167,21 @@ var transcodeToIOSCompatible = func(ctx context.Context, inputPath, outputPath, 
 }
 
 func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectStorage, videoID, fileKey, audioFilter string) {
-	// Check if video is already normalized (another normalize may have completed)
-	var normalized bool
-	var attempts int
-	var duration int
-	if err := db.QueryRow(ctx, "SELECT ios_normalized, transcode_attempts, duration FROM videos WHERE id = $1", videoID).Scan(&normalized, &attempts, &duration); err != nil {
-		slog.Error("normalize: failed to check status", "video_id", videoID, "error", err)
+	// The claim checks the file, its status, the attempt budget and whether it
+	// still needs converting in one statement; the worker query filters on most
+	// of these too, but job enqueues reach us directly.
+	lease, duration, err := claimEncode(ctx, db, videoID, fileKey, normalizeEligible)
+	if err != nil {
+		slog.Error("normalize: failed to claim", "video_id", videoID, "error", err)
 		return
 	}
-	if normalized {
-		slog.Info("normalize: skipped, already normalized", "video_id", videoID)
+	if lease == nil {
+		logClaimRefused(ctx, db, "normalize", videoID, fileKey)
 		return
 	}
-	// The worker query filters on this too, but job enqueues reach us directly.
-	if attempts >= maxTranscodeAttempts {
-		slog.Warn("normalize: skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
-		return
-	}
+	defer lease.done(ctx, db)
+	// Staff OS shows the percent through the MPD integration (add-mpd-processing-progress).
+	ctx = withEncodeProgress(ctx, conversionReporter(ctx, db, videoID, fileKey, duration, time.Now))
 
 	slog.Info("normalize: starting", "video_id", videoID, "audio_filter", audioFilter)
 
@@ -205,7 +196,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := storage.DownloadToFile(ctx, fileKey, tmpInputPath); err != nil {
 		slog.Error("normalize: failed to download", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -220,7 +211,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		// normalized here took it out of every later pass while it could still
 		// fail on iPhones; count an attempt instead, within the retry budget.
 		slog.Warn("normalize: probe failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -246,7 +237,7 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 
 	if err := transcodeToIOSCompatible(ctx, tmpInputPath, tmpOutputPath, audioFilter); err != nil {
 		slog.Error("normalize: ffmpeg failed", "video_id", videoID, "error", err)
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 
@@ -265,13 +256,14 @@ func NormalizeVideoAsync(ctx context.Context, db database.DBTX, storage ObjectSt
 		 WHERE id = $1 AND file_key = $2 AND status = 'ready'`,
 		newFileSize)
 	if err != nil {
-		recordTranscodeFailure(ctx, db, videoID, fileKey, err)
+		recordTranscodeFailure(ctx, db, videoID, fileKey, err, lease.startedAt)
 		return
 	}
 	if !switched {
 		return
 	}
 
+	clearConversionPercent(ctx, db, videoID)
 	slog.Info("normalize: completed", "video_id", videoID, "new_size", newFileSize)
 }
 

@@ -203,7 +203,7 @@ func main() {
 		log.Fatal("invalid managed event configuration")
 	}
 	go eventWorker.Run(cleanupCtx)
-	serviceConfig := video.MPDServiceConfig{Enabled: strictBool("MPD_SERVICE_ENABLED", false), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID"), TenantID: os.Getenv("MPD_TENANT_ID"), TokenHashes: splitConfigured("MPD_SERVICE_TOKEN_HASHES"), RequirePassword: strictBool("MPD_REQUIRE_PASSWORD", true)}
+	serviceConfig := video.MPDServiceConfig{Enabled: strictBool("MPD_SERVICE_ENABLED", false), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID"), TenantID: os.Getenv("MPD_TENANT_ID"), TokenHashes: splitConfigured("MPD_SERVICE_TOKEN_HASHES"), RequirePassword: strictBool("MPD_REQUIRE_PASSWORD", true), ProcessingProgress: strictBool("MPD_PROCESSING_PROGRESS_ENABLED", false)}
 	video.SetMPDPatientPages(serviceConfig.Enabled)
 	video.SetBrandFontDir(os.Getenv("BRAND_FONT_DIR"))
 	if serviceConfig.Enabled && (serviceConfig.WorkspaceID == "" || serviceConfig.TenantID == "" || len(serviceConfig.TokenHashes) == 0) {
@@ -291,12 +291,12 @@ func main() {
 	video.StartCleanupLoop(cleanupCtx, db.Pool, store, 10*time.Minute)
 
 	if getEnv("TRANSCRIPTION_ENABLED", "false") == "true" {
-		transcriber, err := video.NewTranscriberFromEnv()
+		transcriber, err := video.NewTranscriberFromEnv(store)
 		if err != nil {
 			slog.Error("transcriber configuration invalid", "error", err)
 			os.Exit(1)
 		}
-		video.StartTranscriptionWorker(cleanupCtx, db.Pool, store, transcriber, 5*time.Second, aiEnabled)
+		video.StartTranscriptionWorker(video.TranscriptionContext(cleanupCtx), db.Pool, store, transcriber, 5*time.Second, aiEnabled)
 	}
 	video.StartSummaryWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
 	video.StartDocumentWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
@@ -334,6 +334,19 @@ func main() {
 
 	<-shutdownCh
 	slog.Info("shutting down")
+
+	// First, while the database is surely reachable: the task definition's
+	// stopTimeout gives shutdown 60 seconds before ECS kills the task.
+	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
+	requeueCancel()
+	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	video.ReleaseInFlightEncodes(releaseCtx, db.Pool)
+	releaseCancel()
+	// Then stop the running transcript so its provider's cleanup deletes the
+	// staged audio and job before the task goes. At most 5 + 5 + 12 s, then
+	// the 10 s HTTP drain, inside the 60 s stop timeout.
+	video.StopTranscription(12 * time.Second)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

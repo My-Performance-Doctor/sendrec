@@ -2,10 +2,16 @@ package com.mpd.sendrec.infrastructure;
 
 import software.constructs.Construct;
 
-/** Production is opt-in synthesis. Creating its service starts zero application tasks. */
+/**
+ * Production is opt-in synthesis. Creating its service starts zero application tasks. Patient links
+ * use {@link #HOSTNAME}; its certificate, like the account it names, is a required deploy input, so a
+ * deploy that leaves it out fails rather than taking the alias off the distribution.
+ */
 public record ProductionConfig(String account, String vpcId, String cloudFrontPrefixListId,
-    String recordingsBucketName, String immutableImage, String alertTopicArn) implements EnvironmentConfig {
+    String recordingsBucketName, String immutableImage, String alertTopicArn, String domainCertificateArn)
+    implements EnvironmentConfig {
   public static final String REGION = "ap-southeast-2";
+  public static final String HOSTNAME = "results.mpd.health";
 
   public ProductionConfig {
     if (account == null || !account.matches("[0-9]{12}")) throw new IllegalArgumentException("Explicit production account required");
@@ -20,12 +26,15 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
       throw new IllegalArgumentException("Production image must be a same-account Sydney ECR digest");
     if (alertTopicArn == null || !alertTopicArn.matches("arn:aws:sns:ap-southeast-2:" + account + ":[A-Za-z0-9_-]+"))
       throw new IllegalArgumentException("An explicit same-account operational SNS destination is required");
+    if (!new CustomDomain(HOSTNAME, domainCertificateArn).account().equals(account))
+      throw new IllegalArgumentException("The production hostname's certificate must be in the production account");
   }
 
   public static ProductionConfig fromContext(Construct scope) {
     return new ProductionConfig(required(scope, "productionAccount"), required(scope, "productionVpcId"),
         required(scope, "productionCloudFrontPrefixListId"), required(scope, "productionBucket"),
-        required(scope, "productionImage"), required(scope, "productionAlertTopicArn"));
+        required(scope, "productionImage"), required(scope, "productionAlertTopicArn"),
+        required(scope, "productionDomainCertificateArn"));
   }
 
   private static String required(Construct scope, String key) {
@@ -38,4 +47,5 @@ public record ProductionConfig(String account, String vpcId, String cloudFrontPr
   public int taskCpu() { return 2048; }
   public int taskMemoryMiB() { return 4096; }
   public boolean production() { return true; }
+  @Override public CustomDomain customDomain() { return new CustomDomain(HOSTNAME, domainCertificateArn); }
 }

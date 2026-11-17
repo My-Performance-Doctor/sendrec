@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,10 @@ type MPDServiceConfig struct {
 	// Hex SHA-256 verifiers, current and optionally previous during rotation.
 	TokenHashes     []string
 	RequirePassword bool
+	// ProcessingProgress puts `processing` on the metadata response. Off by
+	// default: mpd-api before its add-video-processing-progress refuses a
+	// metadata field it does not know (add-mpd-processing-progress).
+	ProcessingProgress bool
 }
 
 type MPDMetadata struct {
@@ -40,6 +46,9 @@ type MPDMetadata struct {
 	PasswordProtected bool       `json:"passwordProtected"`
 	WatchURL          *string    `json:"watchUrl"`
 	EmbedURL          *string    `json:"embedUrl"`
+	// Only on the metadata read, and only while ProcessingProgress is on;
+	// stored mutation receipts never carry it.
+	Processing *MPDProcessing `json:"processing,omitempty"`
 }
 
 type MPDAdapter struct {
@@ -77,18 +86,67 @@ func (a *MPDAdapter) metadata(ctx context.Context, db database.DBTX, id string) 
  WHERE s.video_id=$1 AND s.tenant_id=$2 AND EXISTS(SELECT 1 FROM mpd_managed_workspaces w WHERE w.organization_id=$3 AND w.tenant_id=s.tenant_id) AND (v.organization_id=$3 OR s.deleted_at IS NOT NULL)`, id, a.cfg.TenantID, a.cfg.WorkspaceID).
 		Scan(&m.VideoID, &m.OwnerStaffID, &m.TenantID, &m.MediaVersion, &m.Status, &m.Published, &m.PublishedAt, &m.PasswordProtected, &share)
 	if err == nil && m.Published && m.Status != "deleted" {
-		watch := WatchLink(a.h.baseURL, share)
-		embed := a.h.baseURL + "/embed/" + share
-		m.WatchURL = &watch
-		m.EmbedURL = &embed
+		m.WatchURL, m.EmbedURL = a.links(share)
 	}
 	return m, err
+}
+
+// links are a published video's watch and embed links on the current BASE_URL.
+func (a *MPDAdapter) links(share string) (*string, *string) {
+	watch := WatchLink(a.h.baseURL, share)
+	embed := a.h.baseURL + "/embed/" + share
+	return &watch, &embed
+}
+
+// currentLinks moves a stored publication receipt's links to the current BASE_URL, so
+// a retry stored before a hostname change still names the origin mpd-api accepts. Only
+// the origin changes: each link keeps its stored path, and a link whose share token is
+// no longer the video's is refused rather than swapped for the new one. Every other
+// field is returned as stored, and the stored receipt is not changed.
+func (a *MPDAdapter) currentLinks(ctx context.Context, db database.DBTX, id string, receipt []byte) ([]byte, error) {
+	var m MPDMetadata
+	if err := json.Unmarshal(receipt, &m); err != nil {
+		return nil, err
+	}
+	if m.WatchURL == nil && m.EmbedURL == nil {
+		return receipt, nil
+	}
+	var share string
+	if err := db.QueryRow(ctx, `SELECT share_token FROM videos WHERE id=$1`, id).Scan(&share); err != nil {
+		return nil, err
+	}
+	var err error
+	if m.WatchURL, err = a.rebase(m.WatchURL, "/"+share, "/watch/"+share); err == nil {
+		m.EmbedURL, err = a.rebase(m.EmbedURL, "/embed/"+share)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(m)
+}
+
+// rebase puts a stored link on the current BASE_URL when its path is one of paths.
+func (a *MPDAdapter) rebase(link *string, paths ...string) (*string, error) {
+	if link == nil {
+		return nil, nil
+	}
+	u, err := url.Parse(*link)
+	if err != nil || !slices.Contains(paths, u.Path) || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errMutationRefused{409, "stale publication receipt"}
+	}
+	rebased := a.h.baseURL + u.Path
+	return &rebased, nil
 }
 func (a *MPDAdapter) Metadata(w http.ResponseWriter, r *http.Request) {
 	m, err := a.metadata(r.Context(), a.h.db, chi.URLParam(r, "videoId"))
 	if err != nil {
 		httputil.WriteError(w, 404, "recording unavailable")
 		return
+	}
+	if a.cfg.ProcessingProgress && m.Status != "deleted" {
+		if row, err := a.processingRow(r.Context(), a.h.db, m.VideoID); err == nil {
+			m.Processing = processingOf(row)
+		}
 	}
 	httputil.WriteJSON(w, 200, m)
 }
@@ -217,8 +275,19 @@ func (a *MPDAdapter) fenced(w http.ResponseWriter, r *http.Request, operation st
 			httputil.WriteError(w, 409, "idempotency conflict")
 			return
 		}
+		if operation == "publication" {
+			receipt, err = a.currentLinks(r.Context(), tx, id, receipt)
+		}
+		var refused errMutationRefused
+		if errors.As(err, &refused) {
+			httputil.WriteError(w, refused.status, refused.message)
+			return
+		}
 		// Advancing the work fence never reapplies the original side effect.
-		if _, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET work_version=$2 WHERE video_id=$1`, id, work); err == nil {
+		if err == nil {
+			_, err = tx.Exec(r.Context(), `UPDATE mpd_video_state SET work_version=$2 WHERE video_id=$1`, id, work)
+		}
+		if err == nil {
 			err = tx.Commit(r.Context())
 		}
 		if err != nil {

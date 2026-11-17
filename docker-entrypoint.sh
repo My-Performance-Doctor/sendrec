@@ -35,32 +35,64 @@ if [ -z "${DATABASE_URL:-}" ] && [ -n "${DB_HOST:-}" ]; then
 fi
 
 # Fetch the local Whisper model on first start when the image has none and
-# there is no init container to do it (ECS Fargate, plain Docker).
-if [ "${TRANSCRIPTION_ENABLED:-false}" = "true" ] && [ "${TRANSCRIPTION_PROVIDER:-local}" = "local" ] \
-   && [ -n "${WHISPER_MODEL_URL:-}" ]; then
+# there is no init container to do it (ECS Fargate, plain Docker). The aws
+# provider needs it too: local Whisper is its fallback when Transcribe fails.
+# The provider is matched as the server reads it: trimmed and in any case.
+fetch_model() {
   if [ -z "${WHISPER_MODEL_PATH:-}" ] || [ -z "${WHISPER_MODEL_SHA256:-}" ]; then
     echo "Model download requires WHISPER_MODEL_PATH and WHISPER_MODEL_SHA256" >&2
-    exit 1
+    return 1
   fi
-  if [ ! -f "$WHISPER_MODEL_PATH" ]; then
-    mkdir -p "$(dirname "$WHISPER_MODEL_PATH")"
-    model_part="${WHISPER_MODEL_PATH}.part.$$"
-    trap 'rm -f "$model_part"' EXIT HUP INT TERM
-    echo "Downloading pinned transcription model"
-    if ! wget -q -T 60 -O "$model_part" "$WHISPER_MODEL_URL"; then
-      echo "Transcription model download failed" >&2
-      exit 1
+  if [ -f "$WHISPER_MODEL_PATH" ]; then
+    if ! printf '%s  %s\n' "$WHISPER_MODEL_SHA256" "$WHISPER_MODEL_PATH" | sha256sum -c - >/dev/null 2>&1; then
+      echo "Cached transcription model checksum failed" >&2
+      return 2
     fi
-    if ! printf '%s  %s\n' "$WHISPER_MODEL_SHA256" "$model_part" | sha256sum -c - >/dev/null 2>&1; then
-      echo "Transcription model checksum failed" >&2
-      exit 1
-    fi
-    mv "$model_part" "$WHISPER_MODEL_PATH"
-    trap - EXIT HUP INT TERM
-  elif ! printf '%s  %s\n' "$WHISPER_MODEL_SHA256" "$WHISPER_MODEL_PATH" | sha256sum -c - >/dev/null 2>&1; then
-    echo "Cached transcription model checksum failed" >&2
-    exit 1
+    return 0
   fi
+  if ! mkdir -p "$(dirname "$WHISPER_MODEL_PATH")"; then
+    echo "Transcription model directory could not be created" >&2
+    return 1
+  fi
+  model_part="${WHISPER_MODEL_PATH}.part.$$"
+  trap 'rm -f "$model_part"' EXIT HUP INT TERM
+  echo "Downloading pinned transcription model"
+  if ! wget -q -T 60 -O "$model_part" "$WHISPER_MODEL_URL"; then
+    echo "Transcription model download failed" >&2
+    rm -f "$model_part"; trap - EXIT HUP INT TERM
+    return 1
+  fi
+  if ! printf '%s  %s\n' "$WHISPER_MODEL_SHA256" "$model_part" | sha256sum -c - >/dev/null 2>&1; then
+    echo "Transcription model checksum failed" >&2
+    rm -f "$model_part"; trap - EXIT HUP INT TERM
+    return 1
+  fi
+  if ! mv "$model_part" "$WHISPER_MODEL_PATH"; then
+    echo "Transcription model could not be moved into place" >&2
+    rm -f "$model_part"; trap - EXIT HUP INT TERM
+    return 1
+  fi
+  trap - EXIT HUP INT TERM
+}
+provider=$(printf '%s' "${TRANSCRIPTION_PROVIDER:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+if [ -z "$provider" ]; then provider=local; fi
+if [ "${TRANSCRIPTION_ENABLED:-false}" = "true" ] && [ -n "${WHISPER_MODEL_URL:-}" ]; then
+  case "$provider" in
+    local)
+      fetch_model || exit 1
+      ;;
+    aws)
+      # Transcribe works without the model; only the fallback is lost, and the
+      # server warns about that at start. A corrupt cache is removed so the
+      # fallback reports itself unavailable instead of failing each job.
+      status=0
+      fetch_model || status=$?
+      if [ "$status" -eq 2 ]; then rm -f "$WHISPER_MODEL_PATH"; fi
+      if [ "$status" -ne 0 ]; then
+        echo "Continuing without the Whisper fallback model" >&2
+      fi
+      ;;
+  esac
 fi
 
 exec "$@"

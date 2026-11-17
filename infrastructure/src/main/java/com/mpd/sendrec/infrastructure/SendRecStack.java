@@ -115,7 +115,8 @@ public class SendRecStack extends Stack {
             .blockPublicAccess(BlockPublicAccess.BLOCK_ALL)
             .encryption(BucketEncryption.S3_MANAGED)
             .versioned(config.production())
-            .lifecycleRules(List.of(recordingsLifecycle(config.production())))
+            .lifecycleRules(List.of(recordingsLifecycle(config.production()), transcriptionLifecycle(),
+                transcriptionDeleteMarkers()))
             .enforceSsl(true)
             .removalPolicy(RemovalPolicy.RETAIN)
             .build();
@@ -314,7 +315,37 @@ public class SendRecStack extends Stack {
     environment.put("REGISTRATION_ENABLED", Boolean.toString(options.bootstrap));
     environment.put("API_DOCS_ENABLED", "true");
     environment.put("TRANSCRIPTION_ENABLED", "true");
-    environment.put("TRANSCRIPTION_PROVIDER", "local");
+    String transcriptionProvider = transcriptionProvider();
+    environment.put("TRANSCRIPTION_PROVIDER", transcriptionProvider);
+    if ("aws".equals(transcriptionProvider)) {
+      // Amazon Transcribe reads the staged audio and writes its output with the task role's own
+      // bucket access (forward access sessions). A job may only write under transcribe/, and any
+      // object call an AWS service makes for the role outside transcribe/ is denied, so a job can
+      // neither read a recording nor overwrite a published caption.
+      environment.put("TRANSCRIPTION_LANGUAGE_CODE", "en-AU");
+      String jobs = "arn:" + getPartition() + ":transcribe:" + getRegion() + ":" + getAccount()
+          + ":transcription-job/sendrec-*";
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .actions(List.of("transcribe:StartTranscriptionJob"))
+              .resources(List.of(jobs))
+              .conditions(Map.of(
+                  "StringEquals", Map.of("transcribe:OutputBucketName", recordings.getBucketName()),
+                  "StringLike", Map.of("transcribe:OutputKey", "transcribe/*")))
+              .build());
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .actions(List.of("transcribe:GetTranscriptionJob", "transcribe:DeleteTranscriptionJob"))
+              .resources(List.of(jobs))
+              .build());
+      taskDefinition.getTaskRole().addToPrincipalPolicy(
+          software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
+              .effect(software.amazon.awscdk.services.iam.Effect.DENY)
+              .actions(List.of("s3:GetObject*", "s3:PutObject*"))
+              .notResources(List.of(recordings.arnForObjects("transcribe/*")))
+              .conditions(Map.of("Bool", Map.of("aws:ViaAWSService", "true")))
+              .build());
+    }
     environment.put("WHISPER_MODEL_PATH", "/tmp/models/ggml-small.bin");
     environment.put("WHISPER_MODEL_URL", WHISPER_MODEL_URL);
     environment.put("WHISPER_MODEL_SHA256", WHISPER_MODEL_SHA256);
@@ -361,6 +392,10 @@ public class SendRecStack extends Stack {
             .environment(environment)
             .secrets(secrets)
             .portMappings(List.of(PortMapping.builder().containerPort(CONTAINER_PORT).build()))
+            // Shutdown hands the running transcript back (up to 5 s), stops it and waits for its
+            // cleanup (up to 12 s), releases encode leases and drains HTTP (up to 10 s). The
+            // default 30 s leaves no margin; Fargate allows up to 120.
+            .stopTimeout(Duration.seconds(60))
             .logging(
                 LogDrivers.awsLogs(
                     AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("sendrec").build()))
@@ -545,6 +580,40 @@ public class SendRecStack extends Stack {
     if (size == null || "small".equals(size.toString())) return InstanceSize.SMALL;
     if ("micro".equals(size.toString())) return InstanceSize.MICRO;
     throw new IllegalArgumentException("productionDatabaseSize must be micro or small");
+  }
+
+  /**
+   * Amazon Transcribe's audio and output live under `transcribe/` only while a job runs. The
+   * provider deletes every version of both when a job ends; a task that stops mid-job can leave them
+   * behind, so current and noncurrent copies expire after a day.
+   */
+  static LifecycleRule transcriptionLifecycle() {
+    return LifecycleRule.builder()
+        .id("ExpireTranscriptionStaging")
+        .prefix("transcribe/")
+        .expiration(Duration.days(1))
+        .noncurrentVersionExpiration(Duration.days(1))
+        .build();
+  }
+
+  /**
+   * Delete markers left once a staged object's versions have expired. S3 does not accept this in the
+   * same rule as a dated expiration, so it is a rule of its own.
+   */
+  static LifecycleRule transcriptionDeleteMarkers() {
+    return LifecycleRule.builder()
+        .id("RemoveTranscriptionDeleteMarkers")
+        .prefix("transcribe/")
+        .expiredObjectDeleteMarker(true)
+        .build();
+  }
+
+  /** `transcriptionProvider`: local Whisper by default, or aws for Amazon Transcribe. */
+  private String transcriptionProvider() {
+    Object value = getNode().tryGetContext("transcriptionProvider");
+    if (value == null || "local".equals(value.toString())) return "local";
+    if ("aws".equals(value.toString())) return "aws";
+    throw new IllegalArgumentException("transcriptionProvider must be local or aws");
   }
 
   /**
