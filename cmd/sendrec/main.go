@@ -339,8 +339,10 @@ func main() {
 	// before it kills the task.
 	requeueCtx, requeueCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.RequeueInFlightTranscription(requeueCtx, db.Pool)
-	video.ReleaseInFlightEncodes(requeueCtx, db.Pool)
 	requeueCancel()
+	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	video.ReleaseInFlightEncodes(releaseCtx, db.Pool)
+	releaseCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

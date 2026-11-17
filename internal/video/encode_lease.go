@@ -108,7 +108,7 @@ func logClaimRefused(ctx context.Context, db database.DBTX, job, videoID, fileKe
 		slog.Warn(job+": skipped, could not read why", "video_id", videoID, "error", err)
 		return
 	}
-	if sameFile && attempts >= maxTranscodeAttempts {
+	if status == "ready" && sameFile && !leased && attempts >= maxTranscodeAttempts {
 		slog.Warn(job+": skipped, attempt budget exhausted", "video_id", videoID, "attempts", attempts)
 		return
 	}
@@ -119,11 +119,12 @@ func logClaimRefused(ctx context.Context, db database.DBTX, job, videoID, fileKe
 // release frees the lease if this conversion still holds it. Each try has its
 // own short timeout within ctx's deadline. A failed try leaves the lease
 // tracked, so a later release (the conversion's deferred done) tries again.
-func (l *encodeLease) release(ctx context.Context, db database.DBTX) {
+// It reports whether the lease is released.
+func (l *encodeLease) release(ctx context.Context, db database.DBTX) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.released {
-		return
+		return true
 	}
 	ctx, cancel := context.WithTimeout(ctx, releaseTimeout)
 	defer cancel()
@@ -131,17 +132,33 @@ func (l *encodeLease) release(ctx context.Context, db database.DBTX) {
 		`UPDATE videos SET encode_started_at = NULL WHERE id = $1 AND encode_started_at = $2`,
 		l.videoID, l.startedAt,
 	); err != nil {
-		slog.Error("encode: failed to release lease", "video_id", l.videoID, "error", err)
-		return
+		slog.Warn("encode: lease release failed", "video_id", l.videoID, "error", err)
+		return false
 	}
 	l.released = true
 	inFlightEncodes.Delete(l)
+	return true
 }
 
+// releaseAttempts and releaseBackoff bound done's retries.
+const releaseAttempts = 3
+
+var releaseBackoff = 200 * time.Millisecond
+
 // done releases the lease at the end of a conversion, on a context of its own:
-// the job's may have run out, which is the commonest reason to be here.
+// the job's may have run out, which is the commonest reason to be here. A
+// release that keeps failing leaves the lease to run out at its deadline.
 func (l *encodeLease) done(ctx context.Context, db database.DBTX) {
-	l.release(context.WithoutCancel(ctx), db)
+	ctx = context.WithoutCancel(ctx)
+	for attempt := 1; attempt <= releaseAttempts; attempt++ {
+		if l.release(ctx, db) {
+			return
+		}
+		if attempt < releaseAttempts {
+			time.Sleep(time.Duration(attempt) * releaseBackoff)
+		}
+	}
+	slog.Error("encode: gave up releasing lease; it runs out at its deadline", "video_id", l.videoID, "attempts", releaseAttempts)
 }
 
 // ReleaseInFlightEncodes hands this process's encode leases back at shutdown,
@@ -157,16 +174,22 @@ func ReleaseInFlightEncodes(ctx context.Context, db database.DBTX) {
 // of them when only is nil. Tests pass their own videos.
 func releaseInFlightEncodes(ctx context.Context, db database.DBTX, only func(videoID string) bool) {
 	encodesStopping.Store(true)
-	n := 0
+	released, failed := 0, 0
 	inFlightEncodes.Range(func(key, _ any) bool {
 		lease := key.(*encodeLease)
 		if only == nil || only(lease.videoID) {
-			lease.release(ctx, db)
-			n++
+			if lease.release(ctx, db) {
+				released++
+			} else {
+				failed++
+			}
 		}
 		return true
 	})
-	if n > 0 {
-		slog.Info("encode: released running conversions at shutdown", "count", n)
+	if released > 0 {
+		slog.Info("encode: released running conversions at shutdown", "count", released)
+	}
+	if failed > 0 {
+		slog.Error("encode: could not release running conversions at shutdown; they run out at their deadlines", "count", failed)
 	}
 }

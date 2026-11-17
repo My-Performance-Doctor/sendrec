@@ -317,3 +317,31 @@ func TestFailedReleaseCanBeRetried(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// done retries a failing release before giving the lease up to its deadline.
+func TestDoneRetriesTheRelease(t *testing.T) {
+	prev := releaseBackoff
+	releaseBackoff = time.Millisecond
+	t.Cleanup(func() { releaseBackoff = prev })
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	lease := &encodeLease{videoID: "video-1", startedAt: time.Now()}
+	inFlightEncodes.Store(lease, struct{}{})
+	t.Cleanup(func() { inFlightEncodes.Delete(lease) })
+	for range releaseAttempts - 1 {
+		mock.ExpectExec(`UPDATE videos SET encode_started_at = NULL`).WithArgs("video-1", lease.startedAt).WillReturnError(errors.New("connection reset"))
+	}
+	mock.ExpectExec(`UPDATE videos SET encode_started_at = NULL`).WithArgs("video-1", lease.startedAt).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	lease.done(context.Background(), mock)
+
+	if _, tracked := inFlightEncodes.Load(lease); tracked {
+		t.Fatal("the retried release left the lease tracked")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}

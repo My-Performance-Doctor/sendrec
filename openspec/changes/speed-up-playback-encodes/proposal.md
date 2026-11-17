@@ -39,7 +39,6 @@ Non-goals:
 
 - A hosted transcription provider. It would make transcripts far faster, but it sends patient audio out of the task and needs a privacy decision.
 - Remove-segments, which uses x264's default preset and is not part of the Staff OS flow.
-- Handing a running encode back at shutdown. A deploy mid-encode leaves the original recording playing until the lease expires and the sweep runs.
 
 ## Capabilities
 
@@ -53,7 +52,7 @@ None.
 
 ## Impact
 
-The change adds migration 78 (`videos.encode_started_at`) and touches `internal/video/encoder_params.go`, `normalize.go`, `transcode.go`, `trim.go`, `composite.go` and their tests. The column is nullable, so tasks on the previous image keep working during a rolling deploy. Production changes only with a reviewed production release, whose promotion runs the migration.
+The change adds migration 78 (`videos.encode_started_at`) and touches `internal/video/encoder_params.go`, `encode_lease.go`, `normalize.go`, `transcode.go`, `trim.go`, `composite.go`, `cmd/sendrec/main.go` and their tests. A stopping task hands its encode leases back before the HTTP drain, next to #33's transcript hand-back, so a deploy does not hold a video's conversion until its lease runs out. The column is nullable, so tasks on the previous image keep working during a rolling deploy. Production changes only with a reviewed production release, whose promotion runs the migration.
 
 ## Approval and delivery
 
