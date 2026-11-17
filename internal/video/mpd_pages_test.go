@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,25 @@ func TestWatchPage_Managed_UnlockedPageUsesMPDLookAndNoSignInLink(t *testing.T) 
 	}
 	if strings.Contains(body, `href="`+testBaseURL+`" class="logo"`) {
 		t.Error("the logo should not lead a patient to SendRec's sign-in")
+	}
+	// The source offer must stay a visible, recognisable link, not only markup:
+	// no .branding rule in the MPD CSS may hide it, and the link stays underlined.
+	underlined := false
+	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(mpdWatchCSS, "")
+	css = regexp.MustCompile(`\s+`).ReplaceAllString(strings.ToLower(css), "")
+	for _, rule := range regexp.MustCompile(`[^{}]*\.branding[^{}]*\{[^}]*\}`).FindAllString(css, -1) {
+		compact := strings.TrimSpace(rule)
+		for _, hidden := range []string{"display:none", "visibility:hidden", "opacity:0;", "opacity:0}", "opacity:0!", "font-size:0;", "font-size:0}", "font-size:0!", "font-size:0px", "{color:transparent", ";color:transparent", "text-decoration:none", "text-decoration-line:none"} {
+			if strings.Contains(compact, hidden) {
+				t.Errorf("mpdWatchCSS rule %q hides or disguises the source offer (%s)", rule, hidden)
+			}
+		}
+		if strings.HasPrefix(compact, ".brandinga{") && strings.Contains(compact, "text-decoration:underline") {
+			underlined = true
+		}
+	}
+	if !underlined {
+		t.Error("mpdWatchCSS no longer underlines the source-code link")
 	}
 	if !strings.Contains(body, `<a href="`+mpdSourceURL+`">Source code</a>`) || strings.Contains(body, "Recorded with SendRec") || strings.Contains(body, `href="https://sendrec.eu"`) {
 		t.Error("the footer should offer the source, not credit SendRec")
