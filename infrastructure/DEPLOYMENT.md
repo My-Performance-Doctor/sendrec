@@ -7,7 +7,7 @@ The operator approved the proposal, authorized apply, requested an alternative t
 
 ## Release gate: migrations before application tasks, and an explicit production task count
 
-Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced. Staging ran them migration-first on 17 Nov 2026 (see the switch table below); production has not yet:
+Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced. Staging ran them migration-first on 17 Nov 2026: 000079 to 000081 exited 0 at 12:20:34 UTC (release of `420ed984`), and the `f6796f72` release's run at 13:16:34 found them current. Production has not yet:
 
 | Migration | From | Adds |
 |---|---|---|
@@ -29,10 +29,12 @@ Proved on staging 17 Nov 2026: at 2 running tasks, a stack update removing the s
 
 | Environment | State | Revision | Evidence |
 |---|---|---|---|
-| Staging | on since 17 Nov 2026 15:49:41 UTC (`sendrec-staging:31`) | `f6796f72`; staging mpd-api `957874e1`, which carries mpd-api #559 | Migrations first: 000079 to 000081 exited 0 at 12:20:34 UTC (release of `420ed984`) and again, already current, at 13:16:34 (`f6796f72`). The switch's synth diff changed only `MPD_PROCESSING_PROGRESS_ENABLED`, false to true, in the application task definition. Staff OS on app-staging, synthetic patient, 15:58 to 16:15 UTC: the Outbox bar showed Preparing video 42% to 90%, then Writing summary, then Ready to send. Staff OS draws that bar only from mpd-api's progress, which mpd-api reads from SendRec's `processing` field. A forced transcript failure showed Retry transcript, and the retry (202) finished the take (MPD-498). |
-| Production | not present: `cef3b00` predates #41 and carries no `MPD_PROCESSING_PROGRESS_ENABLED` | `cef3b00` | Switches only after both: (1) the release carrying migrations 000079 to 000081 is in production, run migration-first per steps 1 and 2; (2) production mpd-api runs mpd-api #559. Both happen inside a ProductionMaintenance grant; the release passes `true` if (2) already holds, otherwise `false` and a later switch. |
+| Staging | on since 17 Nov 2026 15:49:41 UTC (`sendrec-staging:31`) | `f6796f72`; staging mpd-api `957874e1`, which carries mpd-api #559 | A separate step after the `f6796f72` release. Its synth diff changed only `MPD_PROCESSING_PROGRESS_ENABLED`, false to true, in the application task definition, plus the service's `TaskDefinition` reference that follows a new revision. Staff OS on app-staging, synthetic patient, 15:58 to 16:15 UTC: the Outbox bar showed Preparing video 42%, 61%, 72%, 80% and 90%, then Writing summary, then Ready to send; those percents come from SendRec's `processing` field through mpd-api. A direct `GET /api/integrations/mpd/videos/{videoId}` was not run. A forced transcript failure showed Retry transcript, and the retry (202) finished the take (MPD-498). |
+| Production | not present: `cef3b00` predates #41 and carries no `MPD_PROCESSING_PROGRESS_ENABLED` | `cef3b00` | The first release after #41 passes `false`. Switch on as a separate, recorded step, the same as staging and possibly in the same ProductionMaintenance grant after that release's read-back, once both hold: (1) the release carrying migrations 000079 to 000081 is in production, run migration-first per steps 1 and 2; (2) production mpd-api runs mpd-api #559, through its own release. |
 
 ## Deployed revision and state
+
+The 7 October 2026 snapshot of the first staging deployment; later releases are recorded above and in the switch table.
 
 - Deployment source: `9ffd8e7935dedb9c25eaba1a159fc9015933e5bf` on `feat/add-aws-staging-deployment-apply`. Later handoff changes are documentation only. [Implementation PR #2](https://github.com/My-Performance-Doctor/sendrec/pull/2) remains for human review and merge.
 - CloudFormation reached `UPDATE_COMPLETE` at 15:15:28 UTC. The live template equals the synthesized normal-access template. Its SHA256, using JSON with sorted keys and compact separators, is `3010142bcefd7ffb5447403266bacf563247cea02b7e1c289ecfcc28e74d89d5`.
