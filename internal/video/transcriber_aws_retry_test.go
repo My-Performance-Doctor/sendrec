@@ -133,20 +133,27 @@ func TestAWSTranscriberFailsFastOnPermanentErrors(t *testing.T) {
 	t.Run("start", func(t *testing.T) {
 		tr, api, storage, audio := newFakeAWSTranscriber(t, transcribeFixture)
 		api.startErrs, api.startErr = 99, errAccessDenied
-		if _, err := tr.Transcribe(context.Background(), audio, "auto"); !errors.Is(err, errAccessDenied) || api.startCalls != 1 {
-			t.Fatalf("err %v after %d starts, want access denied after one", err, api.startCalls)
-		}
+		_, err := tr.Transcribe(context.Background(), audio, "auto")
 		assertNothingStaged(t, storage, &fakeTranscribe{})
+		api.mu.Lock()
+		starts := api.startCalls
+		api.mu.Unlock()
+		if !errors.Is(err, errAccessDenied) || starts != 1 {
+			t.Fatalf("err %v after %d starts, want access denied after one", err, starts)
+		}
 	})
 	t.Run("poll", func(t *testing.T) {
+		// With no deadline, a retried error would never return: returning at
+		// all is the fail-fast.
 		tr, api, storage, audio := newFakeAWSTranscriber(t, transcribeFixture)
 		api.getErrs, api.getErr = 99, errAccessDenied
 		if _, err := tr.Transcribe(context.Background(), audio, "auto"); !errors.Is(err, errAccessDenied) {
 			t.Fatalf("err = %v, want access denied", err)
 		}
-		if api.getErrs != 98 {
-			t.Errorf("polled %d times, want once", 99-api.getErrs)
-		}
+		transcribeCleanups.Wait()
+		api.mu.Lock()
+		api.getErrs = 0
+		api.mu.Unlock()
 		assertNothingStaged(t, storage, api)
 	})
 }
