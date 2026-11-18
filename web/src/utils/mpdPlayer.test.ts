@@ -2,8 +2,8 @@
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
-const source=readFileSync(resolve(process.cwd(),'../internal/video/mpd_player.go'),'utf8');
-const script=source.slice(source.indexOf('const mpdPlayerJS=')>=0?source.indexOf('const mpdPlayerJS='):source.indexOf('const mpdPlayerJS =')).split('`')[1];
+// The player script is served by the Go server from its own file (internal/video/mpd_player.js).
+const script=readFileSync(resolve(process.cwd(),'../internal/video/mpd_player.js'),'utf8');
 let player:HTMLVideoElement;
 let paused=true;
 let request:ReturnType<typeof vi.fn>;

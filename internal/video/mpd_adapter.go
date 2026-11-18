@@ -36,6 +36,9 @@ type MPDServiceConfig struct {
 	// WatchShare adds video.playback_progress and watchedShare on
 	// video.playback_completed (MPD-460). Off until mpd-api accepts them.
 	WatchShare bool
+	// ClinicZone dates recordings on the staff preview, from MPD_CLINIC_TIMEZONE; nil means
+	// DefaultClinicZone.
+	ClinicZone *time.Location
 }
 
 type MPDMetadata struct {

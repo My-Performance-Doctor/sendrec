@@ -46,7 +46,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 					return
 				}
 				managedTokens[share] = true
-				if !published || deleted != nil || expires != nil && time.Now().After(*expires) {
+				if patientLinkClosed(published, deleted, expires, time.Now()) != "" {
 					httputil.WriteError(w, 403, "a playlist recording requires individual access")
 					return
 				}
@@ -72,7 +72,7 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 			if err == nil {
 				managedTokens[token] = true
 				w.Header().Set("Cache-Control", "private, no-store")
-				if !published || deleted != nil || expires != nil && time.Now().After(*expires) {
+				if patientLinkClosed(published, deleted, expires, time.Now()) != "" {
 					// The link itself, short or long, is opened by a person, so it gets a page, not JSON.
 					if r.URL.Path == "/watch/"+token || r.URL.Path == "/"+token {
 						writeMPDUnavailablePage(w, r, 404)
@@ -92,6 +92,27 @@ func (h *Handler) MPDPublicAccess(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mpdManagedTokensKey{}, managedTokens)))
 	})
+}
+
+// Why the patient watch gate refuses a managed recording's link.
+const (
+	linkUnpublished = "unpublished"
+	linkDeleted     = "deleted"
+	linkExpired     = "expired"
+)
+
+// patientLinkClosed is the patient watch gate's rule for a managed recording's link: why it is closed,
+// or "" when it opens, subject to the password and email gates. The staff preview reads the same rule.
+func patientLinkClosed(published bool, deleted, expires *time.Time, now time.Time) string {
+	switch {
+	case deleted != nil:
+		return linkDeleted
+	case !published:
+		return linkUnpublished
+	case expires != nil && now.After(*expires):
+		return linkExpired
+	}
+	return ""
 }
 
 type mpdManagedTokensKey struct{}

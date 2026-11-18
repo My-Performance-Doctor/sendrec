@@ -50,6 +50,32 @@ func signedFixture(t *testing.T) (*Handler, func(map[string]any) string) {
 	}
 	return h, sign
 }
+
+// An issuer whose keys cannot be fetched is a passing fault (ErrUnavailable), not a denial; a token
+// signed by an unknown key while the keys are reachable is still ErrDenied.
+func TestVerifyAccessTellsAKeyFetchFaultFromADenial(t *testing.T) {
+	signer, sign := signedFixture(t)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(502) }))
+	t.Cleanup(failing.Close)
+	h := &Handler{cfg: signer.cfg, client: failing.Client(), photos: newPhotoFetcher()}
+	h.verifier = oidc.NewVerifier(h.cfg.Issuer, faultReportingKeySet{oidc.NewRemoteKeySet(context.Background(), failing.URL)}, &oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{"RS256"}})
+	if _, e := h.VerifyAccess(context.Background(), sign(nil)); e != ErrUnavailable {
+		t.Fatalf("key fetch fault: %v, want ErrUnavailable", e)
+	}
+	other, e := rsa.GenerateKey(rand.Reader, 2048)
+	if e != nil {
+		t.Fatal(e)
+	}
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &other.PublicKey, KeyID: "synthetic", Algorithm: "RS256", Use: "sig"}}})
+	}))
+	t.Cleanup(keys.Close)
+	h.verifier = oidc.NewVerifier(h.cfg.Issuer, faultReportingKeySet{oidc.NewRemoteKeySet(context.Background(), keys.URL)}, &oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{"RS256"}})
+	if _, e := h.VerifyAccess(context.Background(), sign(nil)); e != ErrDenied {
+		t.Fatalf("wrong key: %v, want ErrDenied", e)
+	}
+}
+
 func TestCognitoAccessSignatureAndClaims(t *testing.T) {
 	h, sign := signedFixture(t)
 	for _, tc := range []struct {

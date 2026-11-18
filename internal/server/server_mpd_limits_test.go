@@ -86,7 +86,7 @@ func TestMPDAnonymousRoutesShareWatchRateLimit(t *testing.T) {
 func TestMPDPreviewRejectsOversizedRedeemBeforeDatabase(t *testing.T) {
 	srv, mock := newServerWithDB(t)
 	// A syntactically valid normal body reaches the handoff lookup.
-	mock.ExpectQuery("UPDATE mpd_preview_handoffs").WithArgs(pgxmock.AnyArg(), "synthetic", "https://localhost:8080").WillReturnRows(pgxmock.NewRows([]string{"video_id", "media_version", "session_id"}))
+	mock.ExpectQuery("FROM mpd_preview_handoffs").WithArgs(pgxmock.AnyArg(), "synthetic", "https://localhost:8080").WillReturnRows(pgxmock.NewRows([]string{"video_id", "media_version", "session_id"}))
 	request := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", "/api/mpd/preview/redeem", strings.NewReader(body))
 		req.Header.Set("Origin", "https://localhost:8080")
@@ -94,7 +94,7 @@ func TestMPDPreviewRejectsOversizedRedeemBeforeDatabase(t *testing.T) {
 		srv.ServeHTTP(w, req)
 		return w
 	}
-	if w := request(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://localhost:8080"}`); w.Code != 403 || !strings.Contains(w.Body.String(), "preview expired") {
+	if w := request(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://localhost:8080"}`); w.Code != 410 || !strings.Contains(w.Body.String(), "preview closed") {
 		t.Fatalf("normal body %d %s", w.Code, w.Body.String())
 	}
 	if w := request(`{"handoff":"` + strings.Repeat("x", 4096) + `"}`); w.Code != 400 || !strings.Contains(w.Body.String(), "invalid preview") {

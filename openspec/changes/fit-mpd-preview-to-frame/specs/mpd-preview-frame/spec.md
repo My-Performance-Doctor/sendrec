@@ -28,8 +28,67 @@ Opened outside a frame, once its media has loaded, the `/mpd-preview` page SHALL
 
 #### Scenario: Link no longer open to patients
 - **WHEN** the recording is unpublished or its link has expired
-- **THEN** the header says patients can't open the link yet, or that the patient link has expired
+- **THEN** the header says patients can't open the link, without "yet", since staff may have taken it down, or that the patient link has expired
 
 #### Scenario: Framed by Staff OS
 - **WHEN** Staff OS frames the preview
 - **THEN** the header is only visually hidden, and the video fills the frame
+
+#### Scenario: Link state changes while the tab is open
+- **WHEN** the link is taken down, expires or gains a gate while the preview is open
+- **THEN** the header shows the new state after the next media renewal, about every four minutes
+
+#### Scenario: Recording date in another browser zone
+- **WHEN** a browser set to en-US and Los Angeles opens a preview of a recording made at 22:30 UTC on 17 Nov 2026
+- **THEN** the header says "Recorded 18 Nov 2026", the clinic's day in Australia/Sydney, as Staff OS lists it
+
+#### Scenario: Long title
+- **WHEN** the title runs past two lines
+- **THEN** it is clamped, and a "Show full title" button shows it in full, without the title appearing in any attribute
+
+#### Scenario: Staff label
+- **WHEN** the header shows
+- **THEN** a "Staff preview" label sits above the title
+
+### Requirement: The staff preview stays usable by keyboard and after a refresh
+The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL tell staff to reopen the preview from Staff OS when its one-use handoff is already spent.
+
+#### Scenario: Keyboard focus on the player
+- **WHEN** the player takes keyboard focus
+- **THEN** it shows a 2 px ring, offset inside the player so it stays clear of the header's border
+
+#### Scenario: Refreshed or reopened tab
+- **WHEN** the preview tab is refreshed, or its handoff is already spent
+- **THEN** the page says "This preview has closed. Open it again from Staff OS." and shows no recording details
+
+#### Scenario: Inside SendRec's own video page
+- **WHEN** SendRec's own frame finds its handoff spent
+- **THEN** the page says "This preview has closed. Reload the page to open the preview again." without naming Staff OS
+
+#### Scenario: Staff session ended
+- **WHEN** the staff session has ended
+- **THEN** the page says "Access ended. Sign in again and open a new preview."
+
+#### Scenario: A passing fault while opening
+- **WHEN** the redeem meets a passing fault twice
+- **THEN** the handoff stays unspent and out of the address, and the page says "The preview isn't available right now. Open it again from Staff OS."
+
+#### Scenario: An invalid preview request
+- **WHEN** the redeem refuses the request itself, for a malformed body or an origin that is not allowed
+- **THEN** the page says "This preview link isn't valid. Open it again from Staff OS."
+
+#### Scenario: A renewal fails
+- **WHEN** a media renewal answers 409, 503 or nothing twice, or answers 410 or 403 once
+- **THEN** the page stops and says what to do, as it does for the redeem
+
+#### Scenario: A redeem that lost its answer
+- **WHEN** the first redeem gets no answer and its retry answers that the preview has closed
+- **THEN** the page says "The preview isn't available right now. Open it again from Staff OS."
+
+#### Scenario: The first playback session meets a passing fault
+- **WHEN** the first playback session request fails once with a passing fault
+- **THEN** the page tries it once more without loading the media again, and the preview keeps playing
+
+#### Scenario: Viewer acts while a renewal waits for its retry
+- **WHEN** a media renewal request fails once and the viewer pauses or seeks before the retry succeeds
+- **THEN** the preview keeps the viewer's paused state and position after the new media loads
