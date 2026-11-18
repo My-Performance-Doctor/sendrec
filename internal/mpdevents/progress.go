@@ -72,16 +72,15 @@ func marked(bitmap []byte) int {
 // the seconds since its playback started adds nothing, so neither bursts nor
 // a late report can claim play faster than that overall, and network jitter
 // loses nothing. Progress keeps the session open for sessionLife. It reports
-// completed, so the player stops reporting, once the link has completed and
-// either watchShare is off or the link's union holds the whole video; with
-// watchShare off, a session that has covered WatchedShare itself only stays
-// open after that.
+// completed, so the player stops reporting, once the link need hear no more
+// (linkWatch.stops); after that a report only keeps the session open.
 //
 // A non-preview session's coverage also joins its link's coverage, the union
-// across every play of that media version (mpd_video_watch). When the union
-// first reaches WatchedShare it enqueues video.playback_completed, once per
-// media version. With watchShare on it also enqueues video.playback_progress
-// each time the union passes a new 5% step, and both events carry
+// across every play of that media version (mpd_video_watch), under a pace
+// bound of its own. When the union first reaches WatchedShare it enqueues
+// video.playback_completed, once per media version. With watchShare on it also
+// enqueues video.playback_progress for the highest new 5% step the union has
+// reached, skipping any steps between, and both events carry
 // watchedShare; production mpd-api before MPD-460's change refuses those, so
 // the deploy setting mpdWatchShare keeps them off until it accepts them.
 func Played(ctx context.Context, db database.DBTX, videoID string, p Progress, watchShare bool) (Progressed, error) {
@@ -98,8 +97,9 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress, w
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// A shared lock is enough to fence deletion and media changes, and lets
-	// viewers of the same video report at once.
+	// A shared lock is enough to fence deletion and media changes. Viewers of
+	// the same video wait on each other only for the link's row, and only when
+	// a report can change it.
 	var version, duration int
 	var published bool
 	err = tx.QueryRow(ctx, `SELECT s.media_version,v.duration,s.published FROM videos v JOIN mpd_video_state s ON s.video_id=v.id
@@ -133,17 +133,15 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress, w
 	coverage = fit(coverage, duration)
 	counts := class != "staff_preview" && duration > 0
 
-	var link linkWatch
+	// Once the link need hear no more, a report only keeps the session open.
+	// That is read without the link's lock: completion and seeding never
+	// undo, so most viewers of a completed link never wait on each other.
 	if counts {
-		if link, err = lockWatch(ctx, tx, videoID, version, duration); err != nil {
+		link, found, err := readWatch(ctx, tx, videoID, version, duration, false)
+		if err != nil {
 			return Progressed{}, err
 		}
-		// Nothing a further report adds can be sent once the link has
-		// completed, unless the setting is on and its union can still grow.
-		// A link seeded as completed holds only plays since migration 000082,
-		// so its share is not reported: its sessions stop too.
-		seeded := link.seconds < int(math.Ceil(WatchedShare*float64(duration)))
-		if link.completed && (!watchShare || seeded || link.seconds >= duration) {
+		if found && link.stops(watchShare, duration) {
 			var expires time.Time
 			if err = tx.QueryRow(ctx, `UPDATE mpd_playback_sessions SET expires_at=GREATEST(expires_at,now()+$2::interval)
  WHERE session_id=$1 RETURNING expires_at`, p.SessionID, sessionLife.String()).Scan(&expires); err != nil {
@@ -169,19 +167,22 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress, w
 	if !counts {
 		return Progressed{ExpiresAt: expires}, tx.Commit(ctx)
 	}
+	// The link's row is locked, and made if missing, before this session
+	// records its own completion: the row's seed reads completed sessions.
+	link, err := lockWatch(ctx, tx, videoID, version, duration, age)
+	if err != nil {
+		return Progressed{}, err
+	}
 	if !completed && float64(played) >= WatchedShare*float64(duration) {
 		// The session's own record that it played 80% itself.
 		if _, err = tx.Exec(ctx, `UPDATE mpd_playback_sessions SET completed_at=clock_timestamp() WHERE session_id=$1`, p.SessionID); err != nil {
 			return Progressed{}, err
 		}
 	}
-	if link, err = watched(ctx, tx, videoID, version, duration, link, coverage, p.SessionID, class, watchShare); err != nil {
+	if link, err = watched(ctx, tx, videoID, version, duration, link, coverage, age, p.SessionID, class, watchShare); err != nil {
 		return Progressed{}, err
 	}
-	// With the setting on the player keeps reporting until the link's union
-	// is whole, so shares above 80% still reach mpd-api.
-	done := link.completed && (!watchShare || link.seconds >= duration)
-	return Progressed{ExpiresAt: expires, Completed: done}, tx.Commit(ctx)
+	return Progressed{ExpiresAt: expires, Completed: link.stops(watchShare, duration)}, tx.Commit(ctx)
 }
 
 // fit sizes a bitmap to a video's length, keeping the seconds it still has.
@@ -198,50 +199,87 @@ func fit(bitmap []byte, duration int) []byte {
 // starts there, whatever the setting, so its share never reads below 80%.
 const completedStep = 16
 
-// linkWatch is a link's row in mpd_video_watch: the union of its plays' seconds,
-// sized to the video, the last step reported, and whether it has completed.
+// linkWatch is a link's row in mpd_video_watch: the union of its plays'
+// seconds, sized to the video, the last step reported, whether it has
+// completed or was seeded as completed, and the seconds since its earliest
+// counted play started.
 type linkWatch struct {
 	coverage  []byte
 	seconds   int
 	step      int
 	completed bool
+	seeded    bool
+	age       float64
 }
 
-// lockWatch locks a link's row, creating it on first use. A link with a
-// completion already on record, in the outbox (under either rule) or on a
-// completed session not yet cleaned up, starts completed at completedStep, so
-// it is not completed twice. The row lock makes concurrent plays join in turn.
-func lockWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration int) (linkWatch, error) {
-	const read = `SELECT coverage,reported_step,completed_at IS NOT NULL FROM mpd_video_watch WHERE video_id=$1 AND media_version=$2 FOR UPDATE`
-	var w linkWatch
-	err := tx.QueryRow(ctx, read, videoID, version).Scan(&w.coverage, &w.step, &w.completed)
-	if errors.Is(err, pgx.ErrNoRows) {
-		if _, err = tx.Exec(ctx, `INSERT INTO mpd_video_watch(video_id,media_version,completed_at,reported_step)
- SELECT $1::uuid,$2::int,seed.at,CASE WHEN seed.at IS NULL THEN 0 ELSE $3::int END FROM (SELECT LEAST(
- (SELECT min(created_at) FROM mpd_event_outbox WHERE video_id=$1::uuid AND media_version=$2::int AND event_type='video.playback_completed'),
- (SELECT min(completed_at) FROM mpd_playback_sessions WHERE video_id=$1::uuid AND media_version=$2::int AND completed_at IS NOT NULL AND viewer_class<>'staff_preview')) AS at) seed
- ON CONFLICT DO NOTHING`, videoID, version, completedStep); err != nil {
-			return w, err
-		}
-		err = tx.QueryRow(ctx, read, videoID, version).Scan(&w.coverage, &w.step, &w.completed)
+// stops says whether the link's sessions need report no more: it has
+// completed, and either the setting is off, it was seeded (its union holds
+// only plays since migration 000082, so no share is reported for it), or its
+// union has reached the last 5% step below the whole video. Waiting for every
+// second would keep later plays reporting for one missed second.
+func (w linkWatch) stops(watchShare bool, duration int) bool {
+	return w.completed && (!watchShare || w.seeded || w.seconds*shareSteps >= (shareSteps-1)*duration)
+}
+
+const watchColumns = `coverage,reported_step,completed_at IS NOT NULL,seeded,EXTRACT(EPOCH FROM clock_timestamp()-started_at)::float8`
+
+// readWatch reads a link's row, locking it when lock is set.
+func readWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, lock bool) (linkWatch, bool, error) {
+	query := `SELECT ` + watchColumns + ` FROM mpd_video_watch WHERE video_id=$1 AND media_version=$2`
+	if lock {
+		query += ` FOR UPDATE`
 	}
-	if err != nil {
-		return w, err
+	var w linkWatch
+	err := tx.QueryRow(ctx, query, videoID, version).Scan(&w.coverage, &w.step, &w.completed, &w.seeded, &w.age)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return w, false, nil
+	} else if err != nil {
+		return w, false, err
 	}
 	w.coverage = fit(w.coverage, duration)
 	w.seconds = marked(w.coverage)
-	return w, nil
+	return w, true, nil
+}
+
+// lockWatch locks a link's row, creating it on first use with its earliest
+// play starting age seconds ago. A link with a completion already on record,
+// in the outbox (under either rule) or on a completed session not yet cleaned
+// up, starts completed and seeded at completedStep, so it is not completed
+// twice. The row lock makes concurrent plays join in turn.
+func lockWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, age float64) (linkWatch, error) {
+	w, found, err := readWatch(ctx, tx, videoID, version, duration, true)
+	if err != nil || found {
+		return w, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO mpd_video_watch(video_id,media_version,completed_at,reported_step,seeded,started_at)
+ SELECT $1::uuid,$2::int,seed.at,CASE WHEN seed.at IS NULL THEN 0 ELSE $3::int END,seed.at IS NOT NULL,clock_timestamp()-make_interval(secs=>$4::float8) FROM (SELECT LEAST(
+ (SELECT min(created_at) FROM mpd_event_outbox WHERE video_id=$1::uuid AND media_version=$2::int AND event_type='video.playback_completed'),
+ (SELECT min(completed_at) FROM mpd_playback_sessions WHERE video_id=$1::uuid AND media_version=$2::int AND completed_at IS NOT NULL AND viewer_class<>'staff_preview')) AS at) seed
+ ON CONFLICT DO NOTHING`, videoID, version, completedStep, age); err != nil {
+		return w, err
+	}
+	w, _, err = readWatch(ctx, tx, videoID, version, duration, true)
+	return w, err
 }
 
 // watched joins a session's coverage, sized to the video, to its link's
-// locked row, and sends the events the union now calls for.
-func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, link linkWatch, session []byte, sessionID, class string, watchShare bool) (linkWatch, error) {
+// locked row, and sends the events the union now calls for. The union may
+// hold no more than maxPace times the seconds since the link's earliest
+// counted play started, plus one, so parallel sessions on disjoint stretches
+// cannot reach 80% faster than one viewer could; a report that would pass
+// that adds nothing to the union yet, and a later report brings it in.
+func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, link linkWatch, session []byte, age float64, sessionID, class string, watchShare bool) (linkWatch, error) {
+	linkAge := max(link.age, age)
 	union := append([]byte(nil), link.coverage...)
 	for i := range union {
 		union[i] |= session[i]
 	}
 	seconds := marked(union)
+	if float64(seconds) > maxPace*linkAge+1 {
+		union, seconds = link.coverage, link.seconds
+	}
 	rounded := math.Round(float64(seconds)/float64(duration)*10000) / 10000
+	// Only the highest step reached is sent; steps between are skipped.
 	reached := min(seconds*shareSteps/duration, shareSteps)
 
 	step := link.step
@@ -280,9 +318,10 @@ func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration i
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE mpd_video_watch SET coverage=$3,reported_step=$4,
- completed_at=CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END WHERE video_id=$1 AND media_version=$2`,
-		videoID, version, union, step, complete); err != nil {
+ completed_at=CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
+ started_at=LEAST(started_at,clock_timestamp()-make_interval(secs=>$6::float8)) WHERE video_id=$1 AND media_version=$2`,
+		videoID, version, union, step, complete, linkAge); err != nil {
 		return link, err
 	}
-	return linkWatch{coverage: union, seconds: seconds, step: step, completed: link.completed || complete}, nil
+	return linkWatch{coverage: union, seconds: seconds, step: step, completed: link.completed || complete, seeded: link.seeded, age: linkAge}, nil
 }

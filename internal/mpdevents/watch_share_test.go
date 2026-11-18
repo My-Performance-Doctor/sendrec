@@ -249,13 +249,14 @@ func TestSharesAboveEightyStillReport(t *testing.T) {
 	if p.Completed {
 		t.Fatal("told to stop at 90% with the setting on")
 	}
-	watchShared(t, db, id, session, 90, 100, true)
+	watchShared(t, db, id, session, 90, 95, true)
 	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
-	if p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 99, CurrentTime: 100, ElapsedMilliseconds: 1000}, true); err != nil || !p.Completed {
-		t.Fatalf("whole union not complete: %v %v", p, err)
+	// At the last step below the whole video the player may stop.
+	if p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 95, CurrentTime: 97, ElapsedMilliseconds: 2000}, true); err != nil || !p.Completed {
+		t.Fatalf("not told to stop at 95%%: %v %v", p, err)
 	}
 	progress := eventData(t, db, "video.playback_progress")
-	if last := progress[len(progress)-1]["watchedShare"].(float64); last != 1 {
+	if last := progress[len(progress)-1]["watchedShare"].(float64); last != 0.95 {
 		t.Fatalf("last share %v", last)
 	}
 	if n := completions(t, db); n != 1 {
@@ -320,11 +321,16 @@ func TestASeededLinkWithTheSettingOff(t *testing.T) {
 	if n := count(t, db, `SELECT reported_step FROM mpd_video_watch WHERE video_id=$1`, id); n != completedStep {
 		t.Fatalf("seeded step %d", n)
 	}
-	if n := covered(t, db, session); n != 0 {
+	// The first report makes the row; later ones only keep the session open.
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	if _, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 5, CurrentTime: 10, ElapsedMilliseconds: 5000}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := covered(t, db, session); n != 5 {
 		t.Fatalf("covered %d after the short-circuit", n)
 	}
 	// Switched on later, it still sends nothing below 80%.
-	p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 0, CurrentTime: 5, ElapsedMilliseconds: 5000}, true)
+	p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 10, CurrentTime: 15, ElapsedMilliseconds: 5000}, true)
 	if err != nil || !p.Completed {
 		t.Fatalf("seeded link with the setting on: %v %v", p, err)
 	}
@@ -348,6 +354,64 @@ func TestACompletedLinkShortCircuits(t *testing.T) {
 	}
 	if got := linkSeconds(t, db, id); got != before {
 		t.Fatalf("union %d, was %d", got, before)
+	}
+}
+
+// Parallel sessions on disjoint stretches cannot fill the union faster than
+// the link's own pace allows.
+func TestParallelSessionsKeepTheLinksPace(t *testing.T) {
+	db := testDB(t)
+	id, first := published(t, db, 100, false)
+	sessions := []string{first, another(t, db, id, false), another(t, db, id, false), another(t, db, id, false)}
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '7 seconds' WHERE video_id=$1`, id)
+	report := func() {
+		for k := 0; k < 25; k += 5 {
+			for i, session := range sessions {
+				from := float64(i*25 + k)
+				if _, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: from, CurrentTime: from + 5, ElapsedMilliseconds: 5000}, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	report()
+	// Each session holds 25 seconds, within its own pace, but seven seconds
+	// after the first play started the link may hold at most 29.
+	if got := linkSeconds(t, db, id); got > 29 {
+		t.Fatalf("link coverage %d after 7 seconds", got)
+	}
+	if n := completions(t, db); n != 0 {
+		t.Fatalf("completed by parallel sessions: %d", n)
+	}
+	// Once enough time has passed the same reports bring the rest in.
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '100 seconds' WHERE video_id=$1`, id)
+	report()
+	if got := linkSeconds(t, db, id); got < 80 {
+		t.Fatalf("link coverage %d after 107 seconds", got)
+	}
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
+	}
+}
+
+// A link the union completed is not mistaken for a seeded one when the video's
+// length grows: with the setting on its sessions keep reporting.
+func TestALongerVideoIsNotReadAsSeeded(t *testing.T) {
+	db := testDB(t)
+	id, first := published(t, db, 100, false)
+	watchShared(t, db, id, first, 0, 85, true)
+	exec(t, db, `UPDATE videos SET duration=200 WHERE id=$1`, id)
+	second := another(t, db, id, false)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, second)
+	p, err := Played(context.Background(), db, id, Progress{SessionID: second, Playing: true, PreviousTime: 100, CurrentTime: 105, ElapsedMilliseconds: 5000}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Completed {
+		t.Fatal("a completed link with a longer video read as seeded")
+	}
+	if n := count(t, db, `SELECT count(*) FROM mpd_video_watch WHERE video_id=$1 AND NOT seeded`, id); n != 1 {
+		t.Fatal("link marked seeded")
 	}
 }
 
