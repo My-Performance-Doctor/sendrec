@@ -25,8 +25,8 @@ SendRec SHALL keep, per video and media version, the union of the distinct secon
 - **THEN** the union holds both and one completed event is enqueued
 
 #### Scenario: Parallel sessions on disjoint stretches
-- **WHEN** four sessions started seven seconds ago each report a different quarter of a 100-second video
-- **THEN** the union holds no more than 29 seconds and no completed event is enqueued
+- **WHEN** a link was first played a day ago, and four sessions started seven seconds ago each report a different quarter of a 100-second video
+- **THEN** the union grows by no more than four times the seven seconds plus one second per report, and no completed event is enqueued
 
 #### Scenario: A new media version
 - **WHEN** the video is replaced with a new media version after completing
@@ -46,7 +46,7 @@ When a link's union is first created, SendRec SHALL start it completed at the 80
 
 #### Scenario: A seeded link's sessions
 - **WHEN** a session reports on a link seeded as completed
-- **THEN** it is told it is complete and the union is not changed
+- **THEN** it is told it is complete; the report that creates the seeded row adds its stretch to the session and the union, and later reports change neither
 
 ### Requirement: Watched-share steps behind a deploy setting
 
