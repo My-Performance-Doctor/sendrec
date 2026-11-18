@@ -20,9 +20,21 @@ SendRec SHALL keep, per video and media version, the union of the distinct secon
 - **WHEN** a further session plays the whole video after the link completed
 - **THEN** no second completed event is enqueued for that media version
 
+#### Scenario: Concurrent plays
+- **WHEN** two sessions of one link report at the same time over different halves
+- **THEN** the union holds both and one completed event is enqueued
+
 #### Scenario: A new media version
 - **WHEN** the video is replaced with a new media version after completing
 - **THEN** the new version's union starts empty and completes on its own plays
+
+### Requirement: An earlier completion is not repeated
+
+When a link's union is first created, SendRec SHALL start it completed at the 80% step if a `video.playback_completed` event for that video and media version is in the outbox or a non-staff session of it has completed.
+
+#### Scenario: Completed before the union existed
+- **WHEN** the outbox holds a completion for the link and its session rows are gone, and a new session plays the whole video with the setting on
+- **THEN** no further completed event is enqueued and no progress event below 85% is sent
 
 ### Requirement: Watched-share steps behind a deploy setting
 
@@ -31,6 +43,10 @@ When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_prog
 #### Scenario: Setting on
 - **WHEN** the setting is on and the union grows from 12% to 33%
 - **THEN** progress events are enqueued at increasing shares, the last at 30% or more, and replaying covered seconds enqueues none
+
+#### Scenario: Shares above 80%
+- **WHEN** the setting is on and one session plays past 80%
+- **THEN** it is not told to stop until the union holds the whole video, and the last progress event reports 1
 
 #### Scenario: Setting off
 - **WHEN** the setting is off

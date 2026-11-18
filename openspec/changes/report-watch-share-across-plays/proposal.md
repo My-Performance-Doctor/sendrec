@@ -8,7 +8,9 @@ MPD-460 counts a video as watched when a patient has seen 80% of it, across ever
 - `video.playback_completed` is sent once per video and media version, when the union reaches 80%. Its fields are unchanged: `playbackSessionId` (the session whose report crossed 80%), `viewerClass`, `watchedSeconds` (the union's seconds) and `durationSeconds`. The per-session completion flag that tells the player to stop reporting stays.
 - New event `video.playback_progress` with `watchedSeconds`, `durationSeconds` and `watchedShare` (0 to 1, four decimals), sent each time the union crosses the next 5% step, never backwards. `video.playback_completed` gains `watchedShare`. Both are sent only when `MPD_WATCH_SHARE_ENABLED` is on.
 - `MPD_WATCH_SHARE_ENABLED` comes from the CDK context `mpdWatchShare`, `true` or `false`, required whenever the MPD integration is active and refused as `true` while dormant, like `mpdProcessingProgress`. Production mpd-api rejects unknown event types and fields, so it stays off until each environment's mpd-api accepts them.
-- The migration backfills links that already completed, so they are not completed again. Earlier partial plays are not carried into the union.
+- A link's row is created on its first report. If a completion is already on record, in the outbox or on a completed session not yet cleaned up, it starts completed at the 80% step, so it is not completed again and its share never reads below 80%. Earlier partial plays are not carried into the union.
+- With the setting on, a session keeps reporting past 80% until the union holds the whole video; with it off, the player stops once the link has completed.
+- Staff plays are excluded only when classified as a staff preview by the `mpd_classification` cookie; staff watching the patient link without it count as patient plays.
 - Contracts, producer fixtures, the MPD README and DEPLOYMENT.md's switch table are updated.
 
 ## Impact
