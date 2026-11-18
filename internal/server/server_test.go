@@ -1655,9 +1655,7 @@ func (db unmanagedDB) QueryRow(ctx context.Context, q string, args ...any) pgx.R
 	return db.DBTX.QueryRow(ctx, q, args...)
 }
 
-// Begin passes transactions through, as the preview redeem needs one.
+// Begin passes transactions through, for handlers that open one.
 func (db unmanagedDB) Begin(ctx context.Context) (pgx.Tx, error) {
-	return db.DBTX.(interface {
-		Begin(context.Context) (pgx.Tx, error)
-	}).Begin(ctx)
+	return db.DBTX.(database.Beginner).Begin(ctx)
 }

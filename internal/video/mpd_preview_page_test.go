@@ -85,7 +85,7 @@ func TestPreviewRecordedDateIsTheClinicsDay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := recordedLabel(parsed.In(time.FixedZone("Los Angeles", -8*3600)), nil); got != want {
+		if got := recordedLabel(parsed.In(time.FixedZone("Los Angeles", -8*3600)), (&Handler{}).MPDMedia(nil, MPDServiceConfig{}, nil).Config.ClinicZone); got != want {
 			t.Errorf("%s: %q, want %q", at, got, want)
 		}
 	}
@@ -107,16 +107,15 @@ func TestRedeemAnswers503WhenTheRecordingCannotBeRead(t *testing.T) {
 	h := &Handler{db: mock, baseURL: "https://sendrec.example.test"}
 	principal := &mpd.Principal{OrganizationID: "synthetic-org", TenantID: "synthetic-tenant", Capabilities: mpd.Capabilities{Read: true}}
 	media := h.MPDMedia(fixedIdentity{principal}, MPDServiceConfig{WorkspaceID: "synthetic-org", TenantID: "synthetic-tenant"}, nil)
-	mock.ExpectBegin()
 	mock.ExpectQuery("FROM mpd_preview_handoffs").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"video_id", "media_version", "session_id", "title", "created_at", "share_expires_at", "email_gate_enabled"}).
 		AddRow("synthetic-video", 1, "synthetic-session", "Synthetic", time.Now(), (*time.Time)(nil), false))
+	// Nothing spends the handoff after the fault: no further statement is expected.
 	mock.ExpectQuery("FROM mpd_video_state").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnError(errors.New("synthetic connection reset"))
-	mock.ExpectRollback()
 	request := httptest.NewRequest(http.MethodPost, "/api/mpd/preview/redeem", strings.NewReader(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://sendrec.example.test"}`))
 	request.Header.Set("Origin", "https://sendrec.example.test")
 	recorder := httptest.NewRecorder()
 	media.RedeemPreview(recorder, request)
-	if recorder.Code != 503 {
+	if recorder.Code != 503 || !strings.Contains(recorder.Body.String(), `"code":"unavailable"`) {
 		t.Fatalf("redeem with a database fault: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -134,7 +133,8 @@ func TestPreviewRecordedDateFollowsTheConfiguredZone(t *testing.T) {
 	if got := recordedLabel(at, perth); got != "Recorded 17 Nov 2026" {
 		t.Errorf("Perth: %q", got)
 	}
-	if got := recordedLabel(at, nil); got != "Recorded 18 Nov 2026" {
+	// A handler built without the setting uses the default zone.
+	if got := recordedLabel(at, (&Handler{}).MPDMedia(nil, MPDServiceConfig{}, nil).Config.ClinicZone); got != "Recorded 18 Nov 2026" {
 		t.Errorf("default: %q", got)
 	}
 }

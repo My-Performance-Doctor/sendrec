@@ -4,16 +4,19 @@ var player=document.getElementById('player');if(!player)return;
 var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null;
 function managed(){return preview||player.dataset.mpdManaged==='true';}
 function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
-var ENDED='Access ended. Sign in again and open a new preview.', UNAVAILABLE='The preview isn\'t available right now. Try again.', described=null;
+var ENDED='Access ended. Sign in again and open a new preview.', described=null, stopped=false;
 // SendRec's own video page frames the preview from the same origin; Staff OS frames it, or opens it in a tab, from its own.
 function ownFrame(){try{return window.parent!==window&&window.parent.location.origin===location.origin;}catch(e){return false;}}
-function closed(){return ownFrame()?'This preview has closed. Reload the page to open the preview again.':'This preview has closed. Open it again from Staff OS.';}
-// The server says why it refused: 410 the handoff or preview is spent, expired, or for a deleted or changed
-// recording; 403 the staff session ended; anything else may pass.
-function refusal(e){return e&&e.status===410?closed():e&&e.status===403?ENDED:UNAVAILABLE;}
-// A preview request that may pass (no answer, 409 not ready, 5xx) is tried once more before the page gives up.
+// Staff reopen the preview from Staff OS; inside SendRec's own video page, reloading the page opens a new one.
+function reopen(){return ownFrame()?'Reload the page to open the preview again.':'Open it again from Staff OS.';}
+function closed(){return 'This preview has closed. '+reopen();}
+// The server names why it refused in the body's code: closed (spent, expired, or a deleted or changed
+// recording), signed_out, invalid or unavailable. A bare status, or no answer at all, is read the same way.
+function reason(e){if(e&&typeof e.code==='string')return e.code;if(!e||!e.status)return 'unavailable';return e.status===410?'closed':e.status===403?'signed_out':e.status===400?'invalid':'unavailable';}
+function refusal(e){var why=reason(e);return why==='closed'?closed():why==='signed_out'||why==='denied'?ENDED:why==='invalid'?'This preview link isn\'t valid. '+reopen():'The preview isn\'t available right now. '+reopen();}
+// A preview step that may pass (no answer, not ready yet, a server fault) is tried once more before the page gives up.
 var RETRY_MS=2000;
-function passing(e){return !e||!e.status||e.status===409||e.status>=500;}
+function passing(e){return reason(e)==='unavailable';}
 function again(attempt){return attempt().catch(function(e){if(!passing(e))throw e;return new Promise(function(resolve){setTimeout(resolve,RETRY_MS);}).then(attempt);});}
 function el(id){return document.getElementById(id);}
 function forget(){described=null;var meta=el('mpd-meta');if(!meta)return;meta.classList.remove('shown','full');el('mpd-title').textContent='Staff preview';el('mpd-detail').textContent='';var more=el('mpd-more');more.hidden=true;more.setAttribute('aria-expanded','false');more.textContent='Show full title';}
@@ -26,26 +29,38 @@ function fold(){var meta=el('mpd-meta'),title=el('mpd-title');if(!described||!me
 var folding=0;function refold(){if(!folding)folding=requestAnimationFrame(function(){folding=0;fold();});}
 function describe(v){var meta=el('mpd-meta');if(!meta||!v||typeof v.title!=='string'||!v.title)return;described={recorded:v.recorded,linkState:v.linkState};el('mpd-title').textContent=v.title;detail();if(window.parent===window){meta.classList.add('shown');fold();}}
 function relink(state){if(!described||typeof state!=='string')return;described.linkState=state;detail();}
-function stop(message){player.pause();player.removeAttribute('src');player.load();forget();status(message||ENDED);if(timer)clearInterval(timer);}
+// Stopping a preview is final: nothing renews, reopens a session or arms the renewal timer after it.
+function stop(message){if(preview)stopped=true;player.pause();player.removeAttribute('src');player.load();forget();status(message||ENDED);if(timer)clearInterval(timer);timer=null;}
 if(preview){el('mpd-more').addEventListener('click',function(){more(!el('mpd-meta').classList.contains('full'));fold();});addEventListener('resize',refold);}
 function share(){if(player.dataset.shareToken)return player.dataset.shareToken;var parts=location.pathname.split('/');return parts.length===3?parts[2]:'';}
-async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',keepalive:body!==undefined});if(!response.ok){var failure=new Error('Access unavailable');failure.status=response.status;throw failure;}if(response.status===204)return {};return response.json();}
+async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',keepalive:body!==undefined});if(!response.ok){var failure=new Error('Access unavailable');failure.status=response.status;try{var answer=await response.json();if(answer&&typeof answer.code==='string')failure.code=answer.code;}catch(e){}throw failure;}if(response.status===204)return {};return response.json();}
 function endpoint(suffix){return preview?'/api/mpd/preview/'+suffix:'/api/watch/'+encodeURIComponent(share())+'/'+(suffix==='session'?'playback-session':suffix);}
 async function newSession(){if(!managed())return;var token=share();activeToken=token;session=null;sent=false;observed=null;var result=await request(endpoint('session'),{});if(!managed()||!preview&&share()!==token)return;session=result;}
-async function renew(){if(!managed())return;if(renewing)return renewing;var token=share();var attempt=async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return;if(preview)relink(media.linkState);var position=player.currentTime, paused=player.paused;await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});if(!paused)await player.play();if(session&&media.mediaVersion&&session.mediaVersion!==media.mediaVersion){await newSession();}if(media.transcriptUrl){var track=player.querySelector('track');if(!track){track=document.createElement('track');track.kind='subtitles';track.srclang='en';track.label='Subtitles';player.appendChild(track);}track.src=media.transcriptUrl;}return media;};renewing=(preview?again(attempt):attempt()).catch(function(e){if(managed()&&share()===token)stop(preview?refusal(e):undefined);}).finally(function(){renewing=null;});return renewing;}
+async function renew(){if(!managed()||stopped)return;if(renewing)return renewing;var token=share();
+ // Where the viewer was is read once, before any attempt: a failed load has already reset both.
+ var position=player.currentTime, paused=player.paused;
+ // A fresh media URL and its load go together, so a failed load is retried with a new URL; resuming,
+ // a new playback session and captions are separate steps after it.
+ var load=async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return null;if(preview)relink(media.linkState);await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});return media;};
+ renewing=(async function(){var media=await (preview?again(load):load());if(!media||stopped)return media;
+  // A browser may refuse to resume without a click; the preview stays usable, so that is not a failure.
+  if(!paused){if(preview)await player.play().catch(function(){});else await player.play();}
+  if(session&&media.mediaVersion&&session.mediaVersion!==media.mediaVersion){await (preview?again(newSession):newSession());}
+  if(media.transcriptUrl){var track=player.querySelector('track');if(!track){track=document.createElement('track');track.kind='subtitles';track.srclang='en';track.label='Subtitles';player.appendChild(track);}track.src=media.transcriptUrl;}
+  return media;})().catch(function(e){if(managed()&&share()===token)stop(preview?refusal(e):undefined);}).finally(function(){renewing=null;});return renewing;}
 async function start(){
- if(preview){var hash=location.hash.slice(1),values=new URLSearchParams(hash);history.replaceState(null,'',location.pathname);var body={handoff:values.get('handoff'),nonce:values.get('nonce'),parentOrigin:values.get('parentOrigin')};
+ if(preview){var values=new URLSearchParams(location.hash.slice(1));history.replaceState(null,'',location.pathname);var body={handoff:values.get('handoff'),nonce:values.get('nonce'),parentOrigin:values.get('parentOrigin')};
   if(window.parent!==window && !body.handoff && body.nonce && body.parentOrigin){body=await new Promise(function(resolve){var nonce=values.get('nonce'),origin=values.get('parentOrigin');function receive(event){if(event.origin!==origin||event.source!==window.parent||!event.data||event.data.nonce!==nonce||event.data.type!=='mpd-preview')return;window.removeEventListener('message',receive);resolve({handoff:event.data.handoff,nonce:nonce,parentOrigin:origin});}window.addEventListener('message',receive);window.parent.postMessage({type:'mpd-preview-ready',nonce:nonce},origin);});}
   // The handoff is good for one use, and the page drops it from the address as it starts, so a refresh or a
   // reopened tab has none left: staff are still signed in and need only open the preview again.
   if(!body.handoff){stop(closed());return;}
-  // A refused redeem leaves the handoff unspent unless it was already spent, so after a passing fault the
-  // address gets it back and a reload tries again.
-  var redeemed;try{redeemed=await again(function(){return request('/api/mpd/preview/redeem',body);});}catch(e){if(passing(e)&&hash)history.replaceState(null,'',location.pathname+'#'+hash);stop(refusal(e));return;}proof=redeemed.previewToken;await renew();if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
+  // The handoff never goes back into the address, where it would sit in history. A refused redeem leaves it
+  // unspent unless it was already spent, so Staff OS can open the preview again.
+  var redeemed;try{redeemed=await again(function(){return request('/api/mpd/preview/redeem',body);});}catch(e){stop(refusal(e));return;}proof=redeemed.previewToken;await renew();if(stopped)return;if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
  }
  await activate();
 }
-async function activate(){if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token)timer=setInterval(function(){renew();},240000);}
+async function activate(){if(stopped)return;if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token&&!stopped)timer=setInterval(function(){renew();},240000);}
 player.addEventListener('mpd-recording-change',function(){activate().catch(function(e){if(preview)stop(refusal(e));});});
 player.addEventListener('playing',function(){flush();observed={time:player.currentTime,wall:performance.now()};});
 player.addEventListener('seeking',function(){flush();observed=null;});

@@ -86,9 +86,7 @@ func TestMPDAnonymousRoutesShareWatchRateLimit(t *testing.T) {
 func TestMPDPreviewRejectsOversizedRedeemBeforeDatabase(t *testing.T) {
 	srv, mock := newServerWithDB(t)
 	// A syntactically valid normal body reaches the handoff lookup.
-	mock.ExpectBegin()
 	mock.ExpectQuery("FROM mpd_preview_handoffs").WithArgs(pgxmock.AnyArg(), "synthetic", "https://localhost:8080").WillReturnRows(pgxmock.NewRows([]string{"video_id", "media_version", "session_id"}))
-	mock.ExpectRollback()
 	request := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", "/api/mpd/preview/redeem", strings.NewReader(body))
 		req.Header.Set("Origin", "https://localhost:8080")

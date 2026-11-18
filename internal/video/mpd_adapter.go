@@ -37,7 +37,7 @@ type MPDServiceConfig struct {
 	// video.playback_completed (MPD-460). Off until mpd-api accepts them.
 	WatchShare bool
 	// ClinicZone dates recordings on the staff preview, from MPD_CLINIC_TIMEZONE; nil means
-	// Australia/Sydney (clinicZone).
+	// DefaultClinicZone.
 	ClinicZone *time.Location
 }
 

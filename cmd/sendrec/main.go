@@ -207,7 +207,7 @@ func main() {
 	go eventWorker.Run(cleanupCtx)
 	serviceConfig := video.MPDServiceConfig{Enabled: strictBool("MPD_SERVICE_ENABLED", false), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID"), TenantID: os.Getenv("MPD_TENANT_ID"), TokenHashes: splitConfigured("MPD_SERVICE_TOKEN_HASHES"), RequirePassword: strictBool("MPD_REQUIRE_PASSWORD", true), ProcessingProgress: strictBool("MPD_PROCESSING_PROGRESS_ENABLED", false), WatchShare: strictBool("MPD_WATCH_SHARE_ENABLED", false)}
 	// The staff preview dates recordings in the clinic's zone, as Staff OS lists them.
-	clinicZone, err := time.LoadLocation(getEnv("MPD_CLINIC_TIMEZONE", "Australia/Sydney"))
+	clinicZone, err := time.LoadLocation(getEnv("MPD_CLINIC_TIMEZONE", video.DefaultClinicZone))
 	if err != nil {
 		log.Fatalf("invalid MPD_CLINIC_TIMEZONE: %v", err)
 	}

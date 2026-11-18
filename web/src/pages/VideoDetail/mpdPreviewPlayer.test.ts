@@ -17,7 +17,8 @@ const ORIGIN = "https://sendrec.example.test";
 const CLOSED_STAFF_OS = "This preview has closed. Open it again from Staff OS.";
 const CLOSED_SENDREC = "This preview has closed. Reload the page to open the preview again.";
 const ENDED = "Access ended. Sign in again and open a new preview.";
-const UNAVAILABLE = "The preview isn't available right now. Try again.";
+const UNAVAILABLE = "The preview isn't available right now. Open it again from Staff OS.";
+const INVALID = "This preview link isn't valid. Open it again from Staff OS.";
 const HANDOFF = "#handoff=synthetic-handoff&nonce=synthetic-nonce&parentOrigin=" + encodeURIComponent("https://staff.example.test");
 const RETRY_WAIT = 2300;
 
@@ -36,7 +37,9 @@ afterEach(() => { while (pages.length) pages.pop()!.window.close(); });
 
 const settle = async (ms = 0) => { await new Promise(done => setTimeout(done, ms)); for (let i = 0; i < 8; i++) await new Promise(done => setTimeout(done, 0)); };
 
-function open(hash: string, routes: Routes, options: { parent?: unknown; autoLoad?: boolean } = {}) {
+type Playback = { time: number; paused: boolean; intervals: number; loads: number };
+
+function open(hash: string, routes: Routes, options: { parent?: unknown; autoLoad?: boolean; load?: (player: HTMLMediaElement, playback: Playback) => void } = {}) {
   const dom = new JSDOM("<!doctype html><html><body>" + pageBody + "</body></html>", { url: ORIGIN + "/mpd-preview" + hash, runScripts: "outside-only", pretendToBeVisual: true });
   pages.push(dom);
   const win = dom.window;
@@ -48,16 +51,26 @@ function open(hash: string, routes: Routes, options: { parent?: unknown; autoLoa
     if (reply === "network") throw new TypeError("Failed to fetch");
     return { ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
   }) as typeof fetch;
+  // The player's position and paused state, and the renewal timers armed, as the script sees them.
+  const playback: Playback = { time: 0, paused: true, intervals: 0, loads: 0 };
+  const element = win.document.getElementById("player") as HTMLVideoElement;
+  Object.defineProperty(element, "currentTime", { configurable: true, get: () => playback.time, set: (value: number) => { playback.time = value; } });
+  Object.defineProperty(element, "paused", { configurable: true, get: () => playback.paused });
   const media = win.HTMLMediaElement.prototype;
-  media.pause = () => {};
-  media.play = async () => {};
+  media.pause = () => { playback.paused = true; };
+  media.play = async () => { playback.paused = false; };
   media.load = function (this: HTMLMediaElement) {
-    if (options.autoLoad !== false && this.getAttribute("src")) queueMicrotask(() => this.dispatchEvent(new win.Event("loadedmetadata")));
+    if (!this.getAttribute("src")) return;
+    playback.loads++;
+    if (options.load) options.load(this, playback);
+    else if (options.autoLoad !== false) queueMicrotask(() => this.dispatchEvent(new win.Event("loadedmetadata")));
   };
+  const arm = win.setInterval.bind(win);
+  win.setInterval = ((handler: TimerHandler, ms?: number) => { if (ms === 240000) playback.intervals++; return arm(handler, ms); }) as typeof win.setInterval;
   if (options.parent) Object.defineProperty(win, "parent", { configurable: true, get: () => options.parent });
   win.eval(playerSource);
   const el = (id: string) => win.document.getElementById(id) as HTMLElement;
-  return { win, el, calls, player: el("player") as HTMLVideoElement };
+  return { win, el, calls, playback, player: el("player") as HTMLVideoElement };
 }
 
 describe("staff preview header", () => {
@@ -158,6 +171,56 @@ describe("staff preview renewals", () => {
     expect(page.el("mpd-meta").classList.contains("shown")).toBe(true);
   }, 10000);
 
+  it("resumes where the viewer was when a failed media load is retried", async () => {
+    let failNext = false;
+    const page = open(HANDOFF, opened(), {
+      load: (player, playback) => {
+        if (failNext) {
+          // As a browser does, a failed load resets the position and pauses.
+          failNext = false;
+          playback.time = 0;
+          playback.paused = true;
+          queueMicrotask(() => player.dispatchEvent(new page.win.Event("error")));
+        } else queueMicrotask(() => player.dispatchEvent(new page.win.Event("loadedmetadata")));
+      },
+    });
+    await settle();
+    page.playback.time = 12;
+    page.playback.paused = false;
+    failNext = true;
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle(RETRY_WAIT);
+    expect(page.playback.time).toBe(12);
+    expect(page.playback.paused).toBe(false);
+    expect(page.player.getAttribute("src")).toBeTruthy();
+  }, 10000);
+
+  it("retries only a new playback session that fails, not the media", async () => {
+    let sessions = 0;
+    const page = open(HANDOFF, opened({
+      "/api/mpd/preview/media": { status: 200, body: { videoUrl: "https://media.example.test/clip.webm", transcriptUrl: "", linkState: "Patients can open the link", mediaVersion: 2 } },
+      "/api/mpd/preview/session": () => (++sessions === 2 ? { status: 503, body: { code: "unavailable" } } : session),
+    }));
+    await settle();
+    const mediaBefore = page.calls.filter(path => path === "/api/mpd/preview/media").length;
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle(RETRY_WAIT);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/media").length).toBe(mediaBefore + 1);
+    expect(sessions).toBe(3);
+    expect(page.player.getAttribute("src")).toBeTruthy();
+  }, 10000);
+
+  it("stays stopped when the first media load is refused: no session, no renewal timer", async () => {
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": { status: 403, body: { code: "signed_out" } } }));
+    await settle();
+    expect(page.el("mpd-status").textContent).toBe(ENDED);
+    expect(page.calls).not.toContain("/api/mpd/preview/session");
+    expect(page.playback.intervals).toBe(0);
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle();
+    expect(page.calls.filter(path => path === "/api/mpd/preview/media")).toHaveLength(1);
+  });
+
   it("says the preview isn't available when a renewal fails twice", async () => {
     let fail = false;
     const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => (fail ? { status: 503 } : media()) }));
@@ -178,23 +241,26 @@ describe("staff preview refusals", () => {
     expect(page.calls).toHaveLength(0);
   });
 
-  it.each([
-    [410, CLOSED_STAFF_OS],
-    [403, ENDED],
-  ])("tells staff what to do when the redeem answers %i", async (status, message) => {
-    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status } }));
+  it.each<[string, Reply, string]>([
+    ["410 closed", { status: 410, body: { code: "closed" } }, CLOSED_STAFF_OS],
+    ["403 signed out", { status: 403, body: { code: "signed_out" } }, ENDED],
+    ["403 origin denied", { status: 403, body: { code: "invalid" } }, INVALID],
+    ["400 invalid", { status: 400, body: { code: "invalid" } }, INVALID],
+    ["410 without a code", { status: 410 }, CLOSED_STAFF_OS],
+  ])("tells staff what to do when the redeem answers %s", async (_name, reply, message) => {
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": reply }));
     await settle();
     expect(page.el("mpd-status").textContent).toBe(message);
     expect(page.el("mpd-meta").classList.contains("shown")).toBe(false);
     expect(page.win.location.hash).toBe("");
   });
 
-  it("retries a redeem that may pass, then gives the handoff back to the address so a reload tries again", async () => {
-    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 503 } }));
+  it("retries a redeem that may pass once, then sends staff back to Staff OS, keeping the handoff out of the address", async () => {
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 503, body: { code: "unavailable" } } }));
     await settle(RETRY_WAIT);
     expect(page.calls.filter(path => path === "/api/mpd/preview/redeem")).toHaveLength(2);
     expect(page.el("mpd-status").textContent).toBe(UNAVAILABLE);
-    expect(page.win.location.hash).toBe(HANDOFF);
+    expect(page.win.location.hash).toBe("");
   }, 10000);
 
   it("opens on the retry when the first redeem meets a passing fault", async () => {
