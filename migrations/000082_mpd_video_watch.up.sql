@@ -4,6 +4,12 @@
 -- playback sessions; `reported_step` is the last 5% step sent as
 -- video.playback_progress; `completed_at` is when the union first reached 80%
 -- and video.playback_completed was sent, once per media version.
+--
+-- Rows are created on a link's first progress report, not backfilled here.
+-- A link with a completion already on record, in the outbox or on a session
+-- not yet cleaned up, starts completed at the 80% step (mpdevents.watched).
+-- Earlier partial plays stay with their sessions; the union starts from plays
+-- after this migration.
 CREATE TABLE mpd_video_watch (
  video_id UUID NOT NULL,
  media_version INTEGER NOT NULL CHECK(media_version > 0),
@@ -12,11 +18,5 @@ CREATE TABLE mpd_video_watch (
  completed_at TIMESTAMPTZ,
  PRIMARY KEY(video_id, media_version)
 );
--- A link whose session already completed has had its completion event, so it
--- is not sent again under the across-plays rule. Earlier partial plays stay
--- with their sessions; the union starts from plays after this migration.
-INSERT INTO mpd_video_watch(video_id, media_version, completed_at)
-SELECT video_id, media_version, min(completed_at)
-FROM mpd_playback_sessions
-WHERE completed_at IS NOT NULL AND viewer_class <> 'staff_preview'
-GROUP BY video_id, media_version;
+-- The seed's lookup of a link's earlier completion events.
+CREATE INDEX mpd_outbox_completed ON mpd_event_outbox(video_id, media_version) WHERE event_type = 'video.playback_completed';

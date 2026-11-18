@@ -3,6 +3,7 @@ package mpdevents
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -154,6 +155,113 @@ func TestShareStepsAreSentOnlyWithTheSetting(t *testing.T) {
 	completed := eventData(t, db, "video.playback_completed")
 	if len(completed) != 1 || completed[0]["watchedShare"].(float64) < 0.8 {
 		t.Fatalf("completed %v", completed)
+	}
+}
+
+// Two plays of one link reporting at once both land in the union, and the
+// link completes once.
+func TestConcurrentPlaysJoinTheUnionInTurn(t *testing.T) {
+	db := testDB(t)
+	id, first := published(t, db, 100, false)
+	second := another(t, db, id, false)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '200 seconds' WHERE video_id=$1`, id)
+	runs := map[string][2]float64{first: {0, 45}, second: {50, 95}}
+	errs := make(chan error, len(runs))
+	var wg sync.WaitGroup
+	for session, run := range runs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for at := run[0]; at < run[1]; at += 5 {
+				if _, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: at, CurrentTime: at + 5, ElapsedMilliseconds: 5000}, true); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if got := linkSeconds(t, db, id); got != 90 {
+		t.Fatalf("link coverage %d, want 90", got)
+	}
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
+	}
+	progress := eventData(t, db, "video.playback_progress")
+	if len(progress) != 18 {
+		t.Fatalf("progress events %d, want one per step to 90%%", len(progress))
+	}
+}
+
+// A link completed under the per-session rule, whose session rows are gone,
+// is not completed again, and its share never reads below 80%.
+func TestAnEarlierCompletionInTheOutboxSeedsTheLink(t *testing.T) {
+	db := testDB(t)
+	id, old := published(t, db, 100, false)
+	exec(t, db, `SELECT mpd_enqueue_event($1::uuid,'video.playback_completed',(SELECT media_version FROM mpd_video_state WHERE video_id=$1::uuid),jsonb_build_object('playbackSessionId',$2::uuid),$2::text||':completed')`, id, old)
+	exec(t, db, `DELETE FROM mpd_playback_sessions WHERE session_id=$1`, old)
+	session := another(t, db, id, false)
+	watchShared(t, db, id, session, 0, 50, true)
+	if n := len(eventData(t, db, "video.playback_progress")); n != 0 {
+		t.Fatalf("progress below 80%% for a completed link: %d", n)
+	}
+	watchShared(t, db, id, session, 50, 100, true)
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completed again: %d", n)
+	}
+	var shares []float64
+	for _, data := range eventData(t, db, "video.playback_progress") {
+		shares = append(shares, data["watchedShare"].(float64))
+	}
+	if len(shares) != 4 || shares[0] < 0.85 || shares[3] != 1 {
+		t.Fatalf("progress shares %v", shares)
+	}
+}
+
+// A session completed before the union existed, still on record, seeds it too.
+func TestAnEarlierCompletedSessionSeedsTheLink(t *testing.T) {
+	db := testDB(t)
+	id, old := published(t, db, 100, false)
+	exec(t, db, `UPDATE mpd_playback_sessions SET completed_at=now() WHERE session_id=$1`, old)
+	session := another(t, db, id, false)
+	watchShared(t, db, id, session, 0, 90, false)
+	if n := completions(t, db); n != 0 {
+		t.Fatalf("completed again: %d", n)
+	}
+	if n := count(t, db, `SELECT reported_step FROM mpd_video_watch WHERE video_id=$1`, id); n != 16 {
+		t.Fatalf("seeded step %d", n)
+	}
+}
+
+// With the setting on, a session keeps reporting past 80% until the union is
+// whole, so mpd-api hears shares above 80%.
+func TestSharesAboveEightyStillReport(t *testing.T) {
+	db := testDB(t)
+	id, session := published(t, db, 100, false)
+	watchShared(t, db, id, session, 0, 85, true)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	p, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 85, CurrentTime: 90, ElapsedMilliseconds: 5000}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Completed {
+		t.Fatal("told to stop at 90% with the setting on")
+	}
+	watchShared(t, db, id, session, 90, 100, true)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	if p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 99, CurrentTime: 100, ElapsedMilliseconds: 1000}, true); err != nil || !p.Completed {
+		t.Fatalf("whole union not complete: %v %v", p, err)
+	}
+	progress := eventData(t, db, "video.playback_progress")
+	if last := progress[len(progress)-1]["watchedShare"].(float64); last != 1 {
+		t.Fatalf("last share %v", last)
+	}
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
 	}
 }
 
