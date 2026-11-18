@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	// The Alpine images ship no zoneinfo, so the clinic's zone is built in.
+	_ "time/tzdata"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -149,43 +151,94 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Named so a preview opened on its own reads as this recording (MPD-515). The title is the one the
 	// patient's watch page shows and can name the patient, so the page puts it only in its own header.
+	link := previewLink(metadata, expires, emailGate, time.Now())
 	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title, "recordedAt": recordedAt.UTC(),
+		"recorded": recordedLabel(recordedAt), "linkState": link.text(),
 		"published": metadata.Published, "passwordProtected": metadata.PasswordProtected, "emailGate": emailGate,
-		// The patient watch gate refuses an expired link, so the preview says so instead of "can open".
-		"linkExpired": expires != nil && time.Now().After(*expires)})
+		"linkExpired": link.expired})
 }
-func (m *MPDMedia) preview(r *http.Request) (string, int, error) {
+
+// clinicZone is where the clinic works. The preview's recording date is shown in it, not the
+// browser's zone, so it matches the date Staff OS lists beside the same video ("18 Nov 2026" for a
+// recording made at 22:30 UTC on 17 Nov) on a laptop set to another zone or locale. mpd-api
+// schedules its video reports in the same zone (video_report_timezone, Australia/Sydney).
+var clinicZone = func() *time.Location {
+	zone, err := time.LoadLocation("Australia/Sydney")
+	if err != nil {
+		panic("clinic time zone unavailable: " + err.Error())
+	}
+	return zone
+}()
+
+// recordedLabel is the preview's recording date: the clinic's day, written as en-AU writes it.
+func recordedLabel(at time.Time) string {
+	return "Recorded " + at.In(clinicZone).Format("2 Jan 2006")
+}
+
+// patientLink is whether patients can open a recording's link, as the patient watch gate decides.
+type patientLink struct {
+	published, expired, password, emailGate bool
+}
+
+func previewLink(metadata MPDMetadata, expires *time.Time, emailGate bool, now time.Time) patientLink {
+	// The patient watch gate refuses an expired link, so the preview says so instead of "can open".
+	return patientLink{published: metadata.Published, expired: expires != nil && now.After(*expires), password: metadata.PasswordProtected, emailGate: emailGate}
+}
+
+// text says it for the preview header. An unpublished link may never have been sent or may have
+// been taken down: publication clears published_at and keeps no history, so it does not say "yet".
+func (l patientLink) text() string {
+	switch {
+	case !l.published:
+		return "Patients can't open the link"
+	case l.expired:
+		return "The patient link has expired"
+	}
+	text := "Patients can open the link"
+	if l.password {
+		text += " with their code"
+	}
+	if l.emailGate {
+		text += " after giving their email"
+	}
+	return text
+}
+
+func (m *MPDMedia) preview(r *http.Request) (MPDMetadata, error) {
 	proof, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		return "", 0, mpd.ErrDenied
+		return MPDMetadata{}, mpd.ErrDenied
 	}
 	var id, sid string
 	var version int
 	err := m.h.db.QueryRow(r.Context(), `SELECT video_id,media_version,session_id FROM mpd_preview_sessions WHERE token_hash=$1 AND expires_at>now()`, tokenDigest(proof)).Scan(&id, &version, &sid)
 	if err != nil {
-		return "", 0, mpd.ErrDenied
+		return MPDMetadata{}, mpd.ErrDenied
 	}
 	p, err := m.Identity.ValidateSession(r.Context(), sid)
 	if err != nil {
-		return "", 0, err
+		return MPDMetadata{}, err
 	}
 	current, err := m.video(r.Context(), id, p, false)
 	if err != nil || current.MediaVersion != version {
-		return "", 0, mpd.ErrDenied
+		return MPDMetadata{}, mpd.ErrDenied
 	}
 	// Rolling preview expiry never extends authorization: each use revalidates MPD.
 	_, err = m.h.db.Exec(r.Context(), `UPDATE mpd_preview_sessions SET expires_at=now()+interval '5 minutes' WHERE token_hash=$1`, tokenDigest(proof))
-	return id, version, err
+	return current, err
 }
 func (m *MPDMedia) PreviewMedia(w http.ResponseWriter, r *http.Request) {
-	id, _, err := m.preview(r)
+	current, err := m.preview(r)
 	if err != nil {
 		httputil.WriteError(w, 403, "preview access ended")
 		return
 	}
+	id := current.VideoID
 	var key string
 	var transcript *string
-	if m.h.db.QueryRow(r.Context(), `SELECT file_key,transcript_key FROM videos WHERE id=$1 AND status='ready'`, id).Scan(&key, &transcript) != nil {
+	var expires *time.Time
+	var emailGate bool
+	if m.h.db.QueryRow(r.Context(), `SELECT file_key,transcript_key,share_expires_at,email_gate_enabled FROM videos WHERE id=$1 AND status='ready'`, id).Scan(&key, &transcript, &expires, &emailGate) != nil {
 		httputil.WriteError(w, 409, "recording not ready")
 		return
 	}
@@ -199,14 +252,18 @@ func (m *MPDMedia) PreviewMedia(w http.ResponseWriter, r *http.Request) {
 		captions, _ = m.h.storage.GenerateDownloadURL(r.Context(), *transcript, 5*time.Minute)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	httputil.WriteJSON(w, 200, map[string]any{"videoUrl": media, "transcriptUrl": captions, "expiresAt": time.Now().Add(5 * time.Minute)})
+	// Each renewal, about every four minutes, carries the link's state again, so a header left open
+	// follows a link that is taken down or expires. It reads the same rows the patient gate does.
+	httputil.WriteJSON(w, 200, map[string]any{"videoUrl": media, "transcriptUrl": captions, "expiresAt": time.Now().Add(5 * time.Minute),
+		"linkState": previewLink(current, expires, emailGate, time.Now()).text()})
 }
 func (m *MPDMedia) PreviewPlayback(w http.ResponseWriter, r *http.Request) {
-	id, _, err := m.preview(r)
+	current, err := m.preview(r)
 	if err != nil {
 		httputil.WriteError(w, 403, "preview access ended")
 		return
 	}
+	id := current.VideoID
 	if strings.HasSuffix(r.URL.Path, "/session") {
 		s, err := mpdevents.NewSession(r.Context(), m.h.db, id, true)
 		if err != nil {

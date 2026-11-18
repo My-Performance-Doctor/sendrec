@@ -344,7 +344,30 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			if _, ok := redeemed["passwordProtected"].(bool); !ok {
 				t.Fatalf("redeem did not describe the recording: %v", redeemed)
 			}
+			if redeemed["linkState"] != "Patients can't open the link" || !strings.HasPrefix(redeemed["recorded"].(string), "Recorded ") {
+				t.Fatalf("redeem header text: %v", redeemed)
+			}
 			call("POST", "/api/mpd/preview/redeem", redeemBody, "", 403)
+			// Each media renewal carries the link's state again, so an open header follows a change.
+			if renewal := call("GET", "/api/mpd/preview/media", "", previewToken, 200); renewal["linkState"] != "Patients can't open the link" {
+				t.Fatalf("renewal link state: %v", renewal["linkState"])
+			}
+			mustExec(t, db, `UPDATE mpd_video_state SET published=true,published_at=now() WHERE video_id=$1`, id)
+			mustExec(t, db, `UPDATE videos SET share_expires_at=now()-interval '1 hour',email_gate_enabled=true WHERE id=$1`, id)
+			if renewal := call("GET", "/api/mpd/preview/media", "", previewToken, 200); renewal["linkState"] != "The patient link has expired" {
+				t.Fatalf("renewal missed the expired link: %v", renewal["linkState"])
+			}
+			gated := call("POST", "/api/videos/"+id+"/mpd/preview", fmt.Sprintf(`{"origin":%q,"nonce":"synthetic-gated-nonce"}`, server.URL), "synthetic-staff", 201)
+			gatedRedeem := call("POST", "/api/mpd/preview/redeem", fmt.Sprintf(`{"handoff":%q,"nonce":"synthetic-gated-nonce","parentOrigin":%q}`, gated["handoff"], server.URL), "", 200)
+			if gatedRedeem["published"] != true || gatedRedeem["linkExpired"] != true || gatedRedeem["emailGate"] != true || gatedRedeem["linkState"] != "The patient link has expired" {
+				t.Fatalf("redeem misread an expired, email-gated link: %v", gatedRedeem)
+			}
+			mustExec(t, db, `UPDATE videos SET share_expires_at=now()+interval '1 day' WHERE id=$1`, id)
+			if renewal := call("GET", "/api/mpd/preview/media", "", gatedRedeem["previewToken"].(string), 200); !strings.Contains(renewal["linkState"].(string), "after giving their email") {
+				t.Fatalf("renewal missed the email gate: %v", renewal["linkState"])
+			}
+			mustExec(t, db, `UPDATE mpd_video_state SET published=false,published_at=NULL WHERE video_id=$1`, id)
+			mustExec(t, db, `UPDATE videos SET share_expires_at=NULL,email_gate_enabled=false WHERE id=$1`, id)
 			previewMedia := call("GET", "/api/mpd/preview/media", "", previewToken, 200)
 			response, err := server.Client().Get(previewMedia["videoUrl"].(string))
 			if err != nil {
