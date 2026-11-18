@@ -201,16 +201,21 @@ const completedStep = 16
 
 // linkWatch is a link's row in mpd_video_watch: the union of its plays'
 // seconds, sized to the video, the last step reported, whether it has
-// completed or was seeded as completed, and the seconds since its earliest
-// counted play started.
+// completed or was seeded as completed, and the seconds since its union last
+// grew.
 type linkWatch struct {
 	coverage  []byte
 	seconds   int
 	step      int
 	completed bool
 	seeded    bool
-	age       float64
+	idle      float64
 }
+
+// unionAllowance is the seconds a report may add to a link's union beyond its
+// pace, as a session's bound allows one second over its own. Tests that run
+// plays concurrently without a real clock raise it.
+var unionAllowance = 1.0
 
 // stops says whether the link's sessions need report no more: it has
 // completed, and either the setting is off, it was seeded (its union holds
@@ -221,7 +226,7 @@ func (w linkWatch) stops(watchShare bool, duration int) bool {
 	return w.completed && (!watchShare || w.seeded || w.seconds*shareSteps >= (shareSteps-1)*duration)
 }
 
-const watchColumns = `coverage,reported_step,completed_at IS NOT NULL,seeded,EXTRACT(EPOCH FROM clock_timestamp()-started_at)::float8`
+const watchColumns = `coverage,reported_step,completed_at IS NOT NULL,seeded,EXTRACT(EPOCH FROM clock_timestamp()-grown_at)::float8`
 
 // readWatch reads a link's row, locking it when lock is set.
 func readWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, lock bool) (linkWatch, bool, error) {
@@ -230,7 +235,7 @@ func readWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration
 		query += ` FOR UPDATE`
 	}
 	var w linkWatch
-	err := tx.QueryRow(ctx, query, videoID, version).Scan(&w.coverage, &w.step, &w.completed, &w.seeded, &w.age)
+	err := tx.QueryRow(ctx, query, videoID, version).Scan(&w.coverage, &w.step, &w.completed, &w.seeded, &w.idle)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, false, nil
 	} else if err != nil {
@@ -241,8 +246,8 @@ func readWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration
 	return w, true, nil
 }
 
-// lockWatch locks a link's row, creating it on first use with its earliest
-// play starting age seconds ago. A link with a completion already on record,
+// lockWatch locks a link's row, creating it on first use as if it last grew
+// when the reporting session's playback started, age seconds ago. A link with a completion already on record,
 // in the outbox (under either rule) or on a completed session not yet cleaned
 // up, starts completed and seeded at completedStep, so it is not completed
 // twice. The row lock makes concurrent plays join in turn.
@@ -251,7 +256,7 @@ func lockWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration
 	if err != nil || found {
 		return w, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO mpd_video_watch(video_id,media_version,completed_at,reported_step,seeded,started_at)
+	if _, err = tx.Exec(ctx, `INSERT INTO mpd_video_watch(video_id,media_version,completed_at,reported_step,seeded,grown_at)
  SELECT $1::uuid,$2::int,seed.at,CASE WHEN seed.at IS NULL THEN 0 ELSE $3::int END,seed.at IS NOT NULL,clock_timestamp()-make_interval(secs=>$4::float8) FROM (SELECT LEAST(
  (SELECT min(created_at) FROM mpd_event_outbox WHERE video_id=$1::uuid AND media_version=$2::int AND event_type='video.playback_completed'),
  (SELECT min(completed_at) FROM mpd_playback_sessions WHERE video_id=$1::uuid AND media_version=$2::int AND completed_at IS NOT NULL AND viewer_class<>'staff_preview')) AS at) seed
@@ -263,21 +268,26 @@ func lockWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration
 }
 
 // watched joins a session's coverage, sized to the video, to its link's
-// locked row, and sends the events the union now calls for. The union may
-// hold no more than maxPace times the seconds since the link's earliest
-// counted play started, plus one, so parallel sessions on disjoint stretches
-// cannot reach 80% faster than one viewer could; a report that would pass
-// that adds nothing to the union yet, and a later report brings it in.
+// locked row, and sends the events the union now calls for.
+//
+// The union grows at a pace of its own: a report adds at most maxPace times
+// the seconds since the union last grew, but no more than since the reporting
+// session's playback started, plus unionAllowance. So parallel sessions on
+// disjoint stretches cannot reach 80% faster than one viewer could, however
+// long ago the link was first played. Seconds over that budget wait, earliest
+// first; the session's later reports bring them in.
 func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, link linkWatch, session []byte, age float64, sessionID, class string, watchShare bool) (linkWatch, error) {
-	linkAge := max(link.age, age)
+	budget := int(maxPace*min(link.idle, age) + unionAllowance)
 	union := append([]byte(nil), link.coverage...)
-	for i := range union {
-		union[i] |= session[i]
+	for second := 0; second < duration && budget > 0; second++ {
+		bit := byte(1) << (second % 8)
+		if session[second/8]&bit != 0 && union[second/8]&bit == 0 {
+			union[second/8] |= bit
+			budget--
+		}
 	}
 	seconds := marked(union)
-	if float64(seconds) > maxPace*linkAge+1 {
-		union, seconds = link.coverage, link.seconds
-	}
+	grew := seconds > link.seconds
 	rounded := math.Round(float64(seconds)/float64(duration)*10000) / 10000
 	// Only the highest step reached is sent; steps between are skipped.
 	reached := min(seconds*shareSteps/duration, shareSteps)
@@ -319,9 +329,13 @@ func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration i
 	}
 	if _, err := tx.Exec(ctx, `UPDATE mpd_video_watch SET coverage=$3,reported_step=$4,
  completed_at=CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END,
- started_at=LEAST(started_at,clock_timestamp()-make_interval(secs=>$6::float8)) WHERE video_id=$1 AND media_version=$2`,
-		videoID, version, union, step, complete, linkAge); err != nil {
+ grown_at=CASE WHEN $6 THEN clock_timestamp() ELSE grown_at END WHERE video_id=$1 AND media_version=$2`,
+		videoID, version, union, step, complete, grew); err != nil {
 		return link, err
 	}
-	return linkWatch{coverage: union, seconds: seconds, step: step, completed: link.completed || complete, seeded: link.seeded, age: linkAge}, nil
+	idle := link.idle
+	if grew {
+		idle = 0
+	}
+	return linkWatch{coverage: union, seconds: seconds, step: step, completed: link.completed || complete, seeded: link.seeded, idle: idle}, nil
 }

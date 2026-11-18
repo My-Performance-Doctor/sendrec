@@ -28,7 +28,7 @@ func watchShared(t *testing.T, db *pgxpool.Pool, id, session string, from, to fl
 	t.Helper()
 	for at := from; at < to; at += 5 {
 		next := min(at+5, to)
-		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-make_interval(secs=>$2) WHERE session_id=$1`, session, next-at)
+		exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-make_interval(secs=>$2::float8) WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-make_interval(secs=>$2::float8) WHERE video_id IN (SELECT video_id FROM f)`, session, next-at)
 		if _, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: at, CurrentTime: next, ElapsedMilliseconds: int((next - at) * 1000)}, share); err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +165,11 @@ func TestConcurrentPlaysJoinTheUnionInTurn(t *testing.T) {
 	db := testDB(t)
 	id, first := published(t, db, 100, false)
 	second := another(t, db, id, false)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '200 seconds' WHERE video_id=$1`, id)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '200 seconds' WHERE video_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '200 seconds' WHERE video_id IN (SELECT video_id FROM f)`, id)
+	// Both plays report at once with no clock between reports, so the union's
+	// own pace is lifted here; TestParallelSessionsKeepTheLinksPace covers it.
+	unionAllowance = 1000
+	defer func() { unionAllowance = 1 }()
 	runs := map[string][2]float64{first: {0, 45}, second: {50, 95}}
 	errs := make(chan error, len(runs))
 	var wg sync.WaitGroup
@@ -241,7 +245,7 @@ func TestSharesAboveEightyStillReport(t *testing.T) {
 	db := testDB(t)
 	id, session := published(t, db, 100, false)
 	watchShared(t, db, id, session, 0, 85, true)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 	p, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 85, CurrentTime: 90, ElapsedMilliseconds: 5000}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +254,7 @@ func TestSharesAboveEightyStillReport(t *testing.T) {
 		t.Fatal("told to stop at 90% with the setting on")
 	}
 	watchShared(t, db, id, session, 90, 95, true)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 	// At the last step below the whole video the player may stop.
 	if p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 95, CurrentTime: 97, ElapsedMilliseconds: 2000}, true); err != nil || !p.Completed {
 		t.Fatalf("not told to stop at 95%%: %v %v", p, err)
@@ -310,7 +314,7 @@ func TestASeededLinkWithTheSettingOff(t *testing.T) {
 	id, old := published(t, db, 100, false)
 	exec(t, db, `UPDATE mpd_playback_sessions SET completed_at=now() WHERE session_id=$1`, old)
 	session := another(t, db, id, false)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 	p, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 0, CurrentTime: 5, ElapsedMilliseconds: 5000}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +326,7 @@ func TestASeededLinkWithTheSettingOff(t *testing.T) {
 		t.Fatalf("seeded step %d", n)
 	}
 	// The first report makes the row; later ones only keep the session open.
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 	if _, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 5, CurrentTime: 10, ElapsedMilliseconds: 5000}, false); err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +351,7 @@ func TestACompletedLinkShortCircuits(t *testing.T) {
 	watchShared(t, db, id, first, 0, 85, false)
 	before := linkSeconds(t, db, id)
 	second := another(t, db, id, false)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, second)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, second)
 	p, err := Played(context.Background(), db, id, Progress{SessionID: second, Playing: true, PreviousTime: 90, CurrentTime: 95, ElapsedMilliseconds: 5000}, false)
 	if err != nil || !p.Completed {
 		t.Fatalf("%v %v", p, err)
@@ -357,16 +361,25 @@ func TestACompletedLinkShortCircuits(t *testing.T) {
 	}
 }
 
-// Parallel sessions on disjoint stretches cannot fill the union faster than
-// the link's own pace allows.
+// Parallel sessions on disjoint stretches of a link first played long ago
+// cannot fill the union faster than one viewer could: the bound is on how
+// fast the union grows, not how much it holds.
 func TestParallelSessionsKeepTheLinksPace(t *testing.T) {
 	db := testDB(t)
-	id, first := published(t, db, 100, false)
-	sessions := []string{first, another(t, db, id, false), another(t, db, id, false), another(t, db, id, false)}
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '7 seconds' WHERE video_id=$1`, id)
-	report := func() {
+	id, old := published(t, db, 100, false)
+	watchShared(t, db, id, old, 95, 100, false)
+	// The link was first played a day ago.
+	exec(t, db, `UPDATE mpd_video_watch SET grown_at=grown_at-interval '1 day' WHERE video_id=$1`, id)
+	sessions := []string{another(t, db, id, false), another(t, db, id, false), another(t, db, id, false), another(t, db, id, false)}
+	for _, session := range sessions {
+		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '7 seconds' WHERE session_id=$1`, session)
+	}
+	report := func(elapse bool) {
 		for k := 0; k < 25; k += 5 {
 			for i, session := range sessions {
+				if elapse {
+					exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE video_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, id)
+				}
 				from := float64(i*25 + k)
 				if _, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: from, CurrentTime: from + 5, ElapsedMilliseconds: 5000}, false); err != nil {
 					t.Fatal(err)
@@ -374,20 +387,21 @@ func TestParallelSessionsKeepTheLinksPace(t *testing.T) {
 			}
 		}
 	}
-	report()
-	// Each session holds 25 seconds, within its own pace, but seven seconds
-	// after the first play started the link may hold at most 29.
-	if got := linkSeconds(t, db, id); got > 29 {
-		t.Fatalf("link coverage %d after 7 seconds", got)
+	report(false)
+	// Seven seconds into the four plays, each session holds 25 seconds within
+	// its own pace. The union may have grown by at most 4×7+1 for the first
+	// report and the one-second allowance for each of the other 19.
+	if got := linkSeconds(t, db, id); got > 5+29+19 {
+		t.Fatalf("link coverage %d seven seconds in", got)
 	}
 	if n := completions(t, db); n != 0 {
 		t.Fatalf("completed by parallel sessions: %d", n)
 	}
-	// Once enough time has passed the same reports bring the rest in.
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '100 seconds' WHERE video_id=$1`, id)
-	report()
+	// With five seconds between reports the same plays bring the rest in.
+	report(true)
+	// With the setting off the union stops growing once the link completes.
 	if got := linkSeconds(t, db, id); got < 80 {
-		t.Fatalf("link coverage %d after 107 seconds", got)
+		t.Fatalf("link coverage %d once time passed", got)
 	}
 	if n := completions(t, db); n != 1 {
 		t.Fatalf("completions %d", n)
@@ -402,7 +416,7 @@ func TestALongerVideoIsNotReadAsSeeded(t *testing.T) {
 	watchShared(t, db, id, first, 0, 85, true)
 	exec(t, db, `UPDATE videos SET duration=200 WHERE id=$1`, id)
 	second := another(t, db, id, false)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, second)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, second)
 	p, err := Played(context.Background(), db, id, Progress{SessionID: second, Playing: true, PreviousTime: 100, CurrentTime: 105, ElapsedMilliseconds: 5000}, true)
 	if err != nil {
 		t.Fatal(err)

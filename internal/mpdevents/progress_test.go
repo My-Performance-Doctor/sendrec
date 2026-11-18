@@ -32,7 +32,7 @@ func published(t *testing.T, db *pgxpool.Pool, seconds int, preview bool) (strin
 // moved back by the step's length first, so the server sees real-time pace.
 func step(t *testing.T, db *pgxpool.Pool, id, session string, from, to float64) error {
 	t.Helper()
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-make_interval(secs=>$2) WHERE session_id=$1`, session, to-from)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-make_interval(secs=>$2::float8) WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-make_interval(secs=>$2::float8) WHERE video_id IN (SELECT video_id FROM f)`, session, to-from)
 	_, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: from, CurrentTime: to, ElapsedMilliseconds: int((to - from) * 1000)}, false)
 	return err
 }
@@ -144,7 +144,7 @@ func TestALateReportStillCounts(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	id, session := published(t, db, 100, false)
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '10 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '10 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '10 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 
 	// Two five-second reports arrive back to back after ten seconds of play.
 	for _, from := range []float64{0, 5} {
@@ -190,7 +190,7 @@ func TestACompletedSessionOnlyStaysOpen(t *testing.T) {
 	id, session := published(t, db, 10, false)
 	watch(t, db, id, session, 0, 8)
 
-	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '5 seconds' WHERE video_id IN (SELECT video_id FROM f)`, session)
 	progressed, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 8, CurrentTime: 10, ElapsedMilliseconds: 2000}, false)
 	if err != nil {
 		t.Fatal(err)

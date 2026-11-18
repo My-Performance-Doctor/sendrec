@@ -522,7 +522,7 @@ func fixturesMatch(t *testing.T, file string, watchShare bool, outputEnv string)
 			t.Fatal(err)
 		}
 		// A one-second video played to 80% completes the anonymous session; a preview never does.
-		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1`, s.ID)
+		exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '1 second' WHERE video_id IN (SELECT video_id FROM f)`, s.ID)
 		if _, err = Played(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.8, ElapsedMilliseconds: 800}, watchShare); err != nil {
 			t.Fatal(err)
 		}
