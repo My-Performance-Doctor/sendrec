@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sendrec/sendrec/internal/mpd"
 )
@@ -75,5 +77,37 @@ func TestConcurrentRedeemsDoNotExhaustAsmallPool(t *testing.T) {
 	var spent int
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM mpd_preview_handoffs WHERE video_id=$1 AND used_at IS NOT NULL`, video).Scan(&spent); err != nil || spent != redeems {
 		t.Fatalf("%d handoffs spent, want %d: %v", spent, redeems, err)
+	}
+}
+
+// A recording deleted after the redeem's checks gets no preview session: the spend refuses it and leaves
+// the handoff unspent (desk 2, MPD-515).
+func TestSpendRefusesARecordingDeletedAfterTheChecks(t *testing.T) {
+	db := accountDB(t)
+	ctx := context.Background()
+	_, user, org := seedManagedLifecycle(t, db, "ready")
+	sid := mustID(t, db, `INSERT INTO mpd_sessions(user_id,access_encrypted,classification_hash,cognito_expires_at,expires_at,grant_json,grant_expires_at) VALUES($1,'synthetic-unused','synthetic-classification',now()+interval '1 hour',now()+interval '1 hour','{}',now()+interval '1 hour') RETURNING id`, user)
+	video := mustID(t, db, `INSERT INTO videos(user_id,organization_id,title,file_key,share_token,status,duration,content_type) VALUES($1,$2,'Synthetic','synthetic-spend.webm','synthetic-spend','ready',20,'video/webm') RETURNING id`, user, org)
+	base := "https://sendrec.example.test"
+	open := func(nonce string) string {
+		handoff := randomProof()
+		mustExec(t, db, `INSERT INTO mpd_preview_handoffs(token_hash,video_id,media_version,session_id,origin,nonce,expires_at) VALUES($1,$2,1,$3,$4,$5,now()+interval '60 seconds')`, tokenDigest(handoff), video, sid, base, nonce)
+		return handoff
+	}
+	live := open("synthetic-spend-live")
+	if err := spendHandoff(ctx, db, tokenDigest(live), "synthetic-spend-live", base, video, 1, tokenDigest(randomProof())); err != nil {
+		t.Fatalf("a live recording's handoff: %v", err)
+	}
+	gone := open("synthetic-spend-gone")
+	mustExec(t, db, `UPDATE videos SET status='deleted' WHERE id=$1`, video)
+	if err := spendHandoff(ctx, db, tokenDigest(gone), "synthetic-spend-gone", base, video, 1, tokenDigest(randomProof())); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("a deleted recording's handoff: %v, want pgx.ErrNoRows", err)
+	}
+	var spent, sessions int
+	if err := db.QueryRow(ctx, `SELECT count(*) FILTER (WHERE used_at IS NOT NULL) FROM mpd_preview_handoffs WHERE video_id=$1`, video).Scan(&spent); err != nil || spent != 1 {
+		t.Fatalf("%d handoffs spent, want 1: %v", spent, err)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM mpd_preview_sessions WHERE video_id=$1`, video).Scan(&sessions); err != nil || sessions != 1 {
+		t.Fatalf("%d preview sessions, want 1: %v", sessions, err)
 	}
 }

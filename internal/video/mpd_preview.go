@@ -175,6 +175,17 @@ func writeInvalidPreview(w http.ResponseWriter, status int, message string) {
 	httputil.WriteJSON(w, status, map[string]string{"error": message, "code": codeInvalid})
 }
 
+// spendHandoff spends a preview handoff and opens its 5-minute preview session in one statement, only while
+// the handoff is unspent, unexpired and for this recording and media version, and the recording is not deleted.
+// A recording deleted after the redeem's checks is refused here too (pgx.ErrNoRows), so it never gets a session.
+func spendHandoff(ctx context.Context, db database.DBTX, handoffDigest, nonce, origin, videoID string, version int, proofDigest string) error {
+	return db.QueryRow(ctx, `WITH spent AS (UPDATE mpd_preview_handoffs SET used_at=now()
+ WHERE token_hash=$1 AND nonce=$2 AND origin=$3 AND used_at IS NULL AND expires_at>now() AND video_id=$4 AND media_version=$5
+   AND EXISTS (SELECT 1 FROM videos WHERE id=$4 AND status <> 'deleted') RETURNING session_id)
+ INSERT INTO mpd_preview_sessions(token_hash,video_id,media_version,session_id,expires_at) SELECT $6,$4,$5,session_id,now()+interval '5 minutes' FROM spent RETURNING 1`,
+		handoffDigest, nonce, origin, videoID, version, proofDigest).Scan(new(int))
+}
+
 func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Origin") != m.h.baseURL {
 		writeInvalidPreview(w, 403, "preview origin denied")
@@ -225,10 +236,7 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	// One statement spends the handoff, if it is still unspent, unexpired and for the same recording, and
 	// opens the preview session. A refusal or a fault before it leaves the handoff for Staff OS to reopen.
 	proof := randomProof()
-	err = m.h.db.QueryRow(r.Context(), `WITH spent AS (UPDATE mpd_preview_handoffs SET used_at=now()
- WHERE token_hash=$1 AND nonce=$2 AND origin=$3 AND used_at IS NULL AND expires_at>now() AND video_id=$4 AND media_version=$5 RETURNING session_id)
- INSERT INTO mpd_preview_sessions(token_hash,video_id,media_version,session_id,expires_at) SELECT $6,$4,$5,session_id,now()+interval '5 minutes' FROM spent RETURNING 1`,
-		tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin, id, version, tokenDigest(proof)).Scan(new(int))
+	err = spendHandoff(r.Context(), m.h.db, tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin, id, version, tokenDigest(proof))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writePreviewRefusal(w, errPreviewClosed)
 		return
