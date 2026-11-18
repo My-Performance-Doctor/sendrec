@@ -378,6 +378,9 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			mustExec(t, db, `UPDATE mpd_video_state SET deleted_at=now() WHERE video_id=$1`, id)
 			call("POST", "/api/mpd/preview/redeem", fmt.Sprintf(`{"handoff":%q,"nonce":"synthetic-deleted-nonce","parentOrigin":%q}`, deleted["handoff"], server.URL), "", 410)
 			call("GET", "/api/mpd/preview/media", "", previewToken, 410)
+			// SendRec's own staff endpoints keep their 403 for a deleted recording; only the preview page reads it as closed.
+			call("GET", "/api/videos/"+id+"/mpd", "", "synthetic-staff", 403)
+			call("POST", "/api/videos/"+id+"/mpd/preview", fmt.Sprintf(`{"origin":%q,"nonce":"synthetic-deleted-again-nonce"}`, server.URL), "synthetic-staff", 403)
 			mustExec(t, db, `UPDATE mpd_video_state SET deleted_at=NULL WHERE video_id=$1`, id)
 			// Each media renewal carries the link's state again, so an open header follows a change.
 			if renewal := call("GET", "/api/mpd/preview/media", "", previewToken, 200); renewal["linkState"] != "Patients can't open the link" {

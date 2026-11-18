@@ -195,19 +195,45 @@ describe("staff preview renewals", () => {
     expect(page.player.getAttribute("src")).toBeTruthy();
   }, 10000);
 
-  it("retries only a new playback session that fails, not the media", async () => {
+  it("keeps a pause and seek made while a failed renewal request waits for its retry", async () => {
+    let failures = 0;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => (failures-- > 0 ? { status: 503 } : media()) }));
+    await settle();
+    page.playback.time = 12;
+    page.playback.paused = false;
+    failures = 1;
+    // The request fails; the old URL keeps playing while the page waits to try again.
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle();
+    page.playback.time = 30;
+    page.playback.paused = true;
+    await settle(RETRY_WAIT);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/media")).toHaveLength(3);
+    expect(page.playback.time).toBe(30);
+    expect(page.playback.paused).toBe(true);
+    expect(page.player.getAttribute("src")).toBeTruthy();
+  }, 10000);
+
+  it("retries a first playback session that fails once, without loading the media again, and keeps playing", async () => {
     let sessions = 0;
     const page = open(HANDOFF, opened({
-      "/api/mpd/preview/media": { status: 200, body: { videoUrl: "https://media.example.test/clip.webm", transcriptUrl: "", linkState: "Patients can open the link", mediaVersion: 2 } },
-      "/api/mpd/preview/session": () => (++sessions === 2 ? { status: 503, body: { code: "unavailable" } } : session),
+      "/api/mpd/preview/session": () => (++sessions === 1 ? { status: 503, body: { code: "unavailable" } } : session),
     }));
-    await settle();
-    const mediaBefore = page.calls.filter(path => path === "/api/mpd/preview/media").length;
-    page.player.dispatchEvent(new page.win.Event("error"));
     await settle(RETRY_WAIT);
-    expect(page.calls.filter(path => path === "/api/mpd/preview/media").length).toBe(mediaBefore + 1);
-    expect(sessions).toBe(3);
+    expect(sessions).toBe(2);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/media")).toHaveLength(1);
     expect(page.player.getAttribute("src")).toBeTruthy();
+    expect(page.el("mpd-status").textContent).toBe("Private staff preview. This does not mark a patient report watched.");
+    expect(page.playback.intervals).toBe(1);
+  }, 10000);
+
+  it("stops when the first playback session fails twice", async () => {
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/session": { status: 503, body: { code: "unavailable" } } }));
+    await settle(RETRY_WAIT);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/session")).toHaveLength(2);
+    expect(page.el("mpd-status").textContent).toBe(UNAVAILABLE);
+    expect(page.player.getAttribute("src")).toBeNull();
+    expect(page.playback.intervals).toBe(0);
   }, 10000);
 
   it("stays stopped when the first media load is refused: no session, no renewal timer", async () => {
@@ -269,6 +295,14 @@ describe("staff preview refusals", () => {
     await settle(RETRY_WAIT);
     expect(page.el("mpd-title").textContent).toBe("Synthetic recording");
     expect(page.win.location.hash).toBe("");
+  }, 10000);
+
+  it("reads a closed retry after a redeem that lost its answer as the first failure", async () => {
+    let first = true;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": () => (first ? ((first = false), "network") : { status: 410, body: { code: "closed" } }) }));
+    await settle(RETRY_WAIT);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/redeem")).toHaveLength(2);
+    expect(page.el("mpd-status").textContent).toBe(UNAVAILABLE);
   }, 10000);
 
   it("does not mention Staff OS inside SendRec's own frame", async () => {

@@ -37,11 +37,13 @@ async function request(path,body){var headers={};if(proof)headers.Authorization=
 function endpoint(suffix){return preview?'/api/mpd/preview/'+suffix:'/api/watch/'+encodeURIComponent(share())+'/'+(suffix==='session'?'playback-session':suffix);}
 async function newSession(){if(!managed())return;var token=share();activeToken=token;session=null;sent=false;observed=null;var result=await request(endpoint('session'),{});if(!managed()||!preview&&share()!==token)return;session=result;}
 async function renew(){if(!managed()||stopped)return;if(renewing)return renewing;var token=share();
- // Where the viewer was is read once, before any attempt: a failed load has already reset both.
- var position=player.currentTime, paused=player.paused;
+ // Where the viewer was is read just before the source changes, after the request succeeds: while a failed
+ // request waits to be retried the old URL keeps playing, and a pause or seek then is the viewer's. Only a
+ // failed load, which has already reset the element, keeps the values read before it.
+ var position=player.currentTime, paused=player.paused, swapped=false;
  // A fresh media URL and its load go together, so a failed load is retried with a new URL; resuming,
  // a new playback session and captions are separate steps after it.
- var load=async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return null;if(preview)relink(media.linkState);await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});return media;};
+ var load=async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return null;if(preview)relink(media.linkState);if(!swapped){position=player.currentTime;paused=player.paused;swapped=true;}await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});return media;};
  renewing=(async function(){var media=await (preview?again(load):load());if(!media||stopped)return media;
   // A browser may refuse to resume without a click; the preview stays usable, so that is not a failure.
   if(!paused){if(preview)await player.play().catch(function(){});else await player.play();}
@@ -56,11 +58,13 @@ async function start(){
   if(!body.handoff){stop(closed());return;}
   // The handoff never goes back into the address, where it would sit in history. A refused redeem leaves it
   // unspent unless it was already spent, so Staff OS can open the preview again.
-  var redeemed;try{redeemed=await again(function(){return request('/api/mpd/preview/redeem',body);});}catch(e){stop(refusal(e));return;}proof=redeemed.previewToken;await renew();if(stopped)return;if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
+  // A first redeem that failed in passing may still have spent the handoff and lost its answer, so the
+  // retry's "closed" is read as the first failure.
+  var redeemed,first=null;try{redeemed=await again(function(){return request('/api/mpd/preview/redeem',body).catch(function(e){if(first&&reason(e)==='closed')throw first;first=e;throw e;});});}catch(e){stop(refusal(e));return;}proof=redeemed.previewToken;await renew();if(stopped)return;if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
  }
  await activate();
 }
-async function activate(){if(stopped)return;if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token&&!stopped)timer=setInterval(function(){renew();},240000);}
+async function activate(){if(stopped)return;if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await (preview?again(newSession):newSession());}catch(e){if(preview)throw e;}if(managed()&&share()===token&&!stopped)timer=setInterval(function(){renew();},240000);}
 player.addEventListener('mpd-recording-change',function(){activate().catch(function(e){if(preview)stop(refusal(e));});});
 player.addEventListener('playing',function(){flush();observed={time:player.currentTime,wall:performance.now()};});
 player.addEventListener('seeking',function(){flush();observed=null;});

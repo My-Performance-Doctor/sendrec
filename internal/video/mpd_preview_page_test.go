@@ -11,6 +11,7 @@ import (
 	// cmd/sendrec builds the zone database in; the tests need it too on hosts without zoneinfo.
 	_ "time/tzdata"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/httputil"
 	"github.com/sendrec/sendrec/internal/mpd"
@@ -162,6 +163,59 @@ func TestPreviewLinkStateFollowsThePatientGate(t *testing.T) {
 		got := previewLinkState(MPDMetadata{Published: c.published, PasswordProtected: c.password}, c.expires, c.emailGate, now)
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// SendRec's own staff endpoints refuse a deleted or unknown recording with their own 403, not the
+// preview's 410, and check the staff capability before looking the recording up, so staff without it
+// get the same answer whether or not the recording exists.
+func TestStaffEndpointsRefuseAGoneRecordingAsBefore(t *testing.T) {
+	staff := func(c mpd.Capabilities) *mpd.Principal {
+		return &mpd.Principal{OrganizationID: "synthetic-org", TenantID: "synthetic-tenant", StaffID: "synthetic-staff", Capabilities: c}
+	}
+	endpoints := []struct {
+		name, method, message string
+		caps                  mpd.Capabilities
+		handle                func(*MPDMedia) http.HandlerFunc
+	}{
+		{"info", http.MethodGet, "recording unavailable", mpd.Capabilities{Read: true}, func(m *MPDMedia) http.HandlerFunc { return m.Info }},
+		{"create preview", http.MethodPost, "preview unavailable", mpd.Capabilities{Read: true}, func(m *MPDMedia) http.HandlerFunc { return m.CreatePreview }},
+		{"publish", http.MethodPut, "publication denied", mpd.Capabilities{ManageWorkspace: true}, func(m *MPDMedia) http.HandlerFunc { return m.Publish }},
+	}
+	metadataColumns := []string{"video_id", "owner_staff_id", "tenant_id", "media_version", "status", "published", "published_at", "password_protected", "share_token"}
+	for _, endpoint := range endpoints {
+		for _, gone := range []string{"unknown", "deleted", "no capability"} {
+			t.Run(endpoint.name+"/"+gone, func(t *testing.T) {
+				mock, err := pgxmock.NewPool()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer mock.Close()
+				caps := endpoint.caps
+				switch gone {
+				case "unknown":
+					mock.ExpectQuery("FROM mpd_video_state").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnError(pgx.ErrNoRows)
+				case "deleted":
+					mock.ExpectQuery("FROM mpd_video_state").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows(metadataColumns).
+						AddRow("synthetic-video", "synthetic-staff", "synthetic-tenant", 1, "deleted", false, (*time.Time)(nil), false, ""))
+				default:
+					// No query is expected: the capability is checked first.
+					caps = mpd.Capabilities{}
+				}
+				h := &Handler{db: mock, baseURL: "https://sendrec.example.test"}
+				media := h.MPDMedia(fixedIdentity{nil}, MPDServiceConfig{WorkspaceID: "synthetic-org", TenantID: "synthetic-tenant"}, nil)
+				request := httptest.NewRequest(endpoint.method, "/api/videos/synthetic-video/mpd", strings.NewReader(`{}`))
+				request = request.WithContext(mpd.ContextWithPrincipal(request.Context(), staff(caps)))
+				recorder := httptest.NewRecorder()
+				endpoint.handle(media)(recorder, request)
+				if recorder.Code != 403 || !strings.Contains(recorder.Body.String(), endpoint.message) {
+					t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
+				}
+				if err := mock.ExpectationsWereMet(); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }

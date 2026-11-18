@@ -54,20 +54,31 @@ func (m *MPDMedia) video(ctx context.Context, id string, p *mpd.Principal, write
 	if p == nil || p.OrganizationID != m.Config.WorkspaceID || p.TenantID != m.Config.TenantID {
 		return MPDMetadata{}, mpd.ErrDenied
 	}
+	// The capability is checked before the recording is looked up, so staff who may not read or manage
+	// recordings learn nothing about which ones exist.
+	if write && !p.Capabilities.ManageWorkspace && !p.Capabilities.ManageOwn || !write && !p.Capabilities.Read {
+		return MPDMetadata{}, mpd.ErrDenied
+	}
 	result, err := m.h.MPDAdapter(m.Config).metadata(ctx, m.h.db, id)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && result.Status == "deleted" {
 		return result, errRecordingGone
 	} else if err != nil {
 		return result, errPreviewUnavailable
 	}
-	if write {
-		if !p.Capabilities.ManageWorkspace && (!p.Capabilities.ManageOwn || result.OwnerStaffID != p.StaffID) {
-			return result, mpd.ErrDenied
-		}
-	} else if !p.Capabilities.Read {
+	if write && !p.Capabilities.ManageWorkspace && result.OwnerStaffID != p.StaffID {
 		return result, mpd.ErrDenied
 	}
 	return result, nil
+}
+
+// writeStaffRefusal answers SendRec's own staff endpoints (Info, CreatePreview, Publish). A deleted or
+// unknown recording is refused with the endpoint's own 403, as before previews could close; only the
+// preview page's redeem and renewal paths read it as a closed preview (410).
+func writeStaffRefusal(w http.ResponseWriter, err error, denied string) {
+	if errors.Is(err, errRecordingGone) {
+		err = mpd.ErrDenied
+	}
+	writeRefusal(w, err, denied, codeDenied)
 }
 func (m *MPDMedia) Info(w http.ResponseWriter, r *http.Request) {
 	p, ok := mpd.PrincipalFromContext(r.Context())
@@ -77,7 +88,7 @@ func (m *MPDMedia) Info(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := m.video(r.Context(), chi.URLParam(r, "id"), p, false)
 	if err != nil {
-		writeRefusal(w, err, "recording unavailable", codeDenied)
+		writeStaffRefusal(w, err, "recording unavailable")
 		return
 	}
 	httputil.WriteJSON(w, 200, map[string]any{"managed": true, "metadata": result})
@@ -87,7 +98,7 @@ func (m *MPDMedia) CreatePreview(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	metadata, err := m.video(r.Context(), id, p, false)
 	if err != nil {
-		writeRefusal(w, err, "preview unavailable", codeDenied)
+		writeStaffRefusal(w, err, "preview unavailable")
 		return
 	}
 	if metadata.Status != "ready" {
@@ -355,7 +366,7 @@ func (m *MPDMedia) Publish(w http.ResponseWriter, r *http.Request) {
 	p, _ := mpd.PrincipalFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 	if _, err := m.video(r.Context(), id, p, true); err != nil {
-		writeRefusal(w, err, "publication denied", codeDenied)
+		writeStaffRefusal(w, err, "publication denied")
 		return
 	}
 	var input struct {

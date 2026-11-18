@@ -80,3 +80,15 @@ The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL t
 #### Scenario: A renewal fails
 - **WHEN** a media renewal answers 409, 503 or nothing twice, or answers 410 or 403 once
 - **THEN** the page stops and says what to do, as it does for the redeem
+
+#### Scenario: A redeem that lost its answer
+- **WHEN** the first redeem gets no answer and its retry answers that the preview has closed
+- **THEN** the page says "The preview isn't available right now. Open it again from Staff OS."
+
+#### Scenario: The first playback session meets a passing fault
+- **WHEN** the first playback session request fails once with a passing fault
+- **THEN** the page tries it once more without loading the media again, and the preview keeps playing
+
+#### Scenario: Viewer acts while a renewal waits for its retry
+- **WHEN** a media renewal request fails once and the viewer pauses or seeks before the retry succeeds
+- **THEN** the preview keeps the viewer's paused state and position after the new media loads
