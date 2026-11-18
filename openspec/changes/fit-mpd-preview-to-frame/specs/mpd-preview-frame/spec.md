@@ -58,5 +58,13 @@ The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL t
 - **THEN** it shows a 2 px ring, offset inside the player so it stays clear of the header's border
 
 #### Scenario: Refreshed or reopened tab
-- **WHEN** the preview tab is refreshed, or redeeming its handoff fails
+- **WHEN** the preview tab is refreshed, or its handoff is already spent
 - **THEN** the page says "This preview has closed. Open it again from Staff OS." and shows no recording details
+
+#### Scenario: Inside SendRec's own video page
+- **WHEN** SendRec's own frame finds its handoff spent
+- **THEN** the page says "This preview has closed. Open the preview again." without naming Staff OS
+
+#### Scenario: Staff session ended or a passing fault
+- **WHEN** the staff session has ended, or the server cannot check it right now
+- **THEN** the page says "Access ended. Sign in again and open a new preview." or "The preview isn't available right now. Try again." respectively
