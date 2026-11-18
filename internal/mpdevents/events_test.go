@@ -487,7 +487,18 @@ func TestReceiverCommitLostResponseAndReorderedReplay(t *testing.T) {
 }
 
 func TestContractFixturesMatchProducer(t *testing.T) {
-	raw, err := os.ReadFile("testdata/events.json")
+	fixturesMatch(t, "testdata/events.json", false, "MPD_EVENT_CONFORMANCE_OUTPUT")
+}
+
+// With the watched-share setting on, the producer adds playback_progress and
+// watchedShare on playback_completed (MPD-460).
+func TestWatchShareFixturesMatchProducer(t *testing.T) {
+	fixturesMatch(t, "testdata/events_watch_share.json", true, "MPD_WATCH_SHARE_CONFORMANCE_OUTPUT")
+}
+
+func fixturesMatch(t *testing.T, file string, watchShare bool, outputEnv string) {
+	t.Helper()
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,8 +522,8 @@ func TestContractFixturesMatchProducer(t *testing.T) {
 			t.Fatal(err)
 		}
 		// A one-second video played to 80% completes the anonymous session; a preview never does.
-		exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1`, s.ID)
-		if _, err = Played(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.8, ElapsedMilliseconds: 800}); err != nil {
+		exec(t, db, `WITH f AS (UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '1 second' WHERE session_id=$1 RETURNING video_id) UPDATE mpd_video_watch SET grown_at=grown_at-interval '1 second' WHERE video_id IN (SELECT video_id FROM f)`, s.ID)
+		if _, err = Played(ctx, db, id, Progress{SessionID: s.ID, Playing: true, CurrentTime: 0.8, ElapsedMilliseconds: 800}, watchShare); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -567,7 +578,7 @@ func TestContractFixturesMatchProducer(t *testing.T) {
 	}
 	// Optional local handoff validates actual emitted bytes in the consumer's
 	// runtime without making the Go suite depend on another repository.
-	if output := os.Getenv("MPD_EVENT_CONFORMANCE_OUTPUT"); output != "" {
+	if output := os.Getenv(outputEnv); output != "" {
 		body, _ := json.MarshalIndent(emitted, "", "  ")
 		if err = os.WriteFile(output, body, 0600); err != nil {
 			t.Fatal(err)
