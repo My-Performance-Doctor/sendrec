@@ -36,9 +36,17 @@ When a link's union is first created, SendRec SHALL start it completed at the 80
 - **WHEN** the outbox holds a completion for the link and its session rows are gone, and a new session plays the whole video with the setting on
 - **THEN** no further completed event is enqueued and no progress event below 85% is sent
 
+#### Scenario: An old task completes after the row exists
+- **WHEN** the outbox gains a per-session completion for the link after its row was made, and the union then reaches 80%
+- **THEN** the row is marked completed and no further completed event is enqueued
+
+#### Scenario: A seeded link's sessions
+- **WHEN** a session reports on a link seeded as completed
+- **THEN** it is told it is complete and the union is not changed
+
 ### Requirement: Watched-share steps behind a deploy setting
 
-When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_progress` with `watchedSeconds`, `durationSeconds` and `watchedShare` (0 to 1, four decimals) each time the union crosses a 5% step above the last one reported, never for a lower step, and SHALL add `watchedShare` to `video.playback_completed`. When it is off, SendRec SHALL send neither and SHALL not advance the reported step.
+When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_progress` with `watchedSeconds`, `durationSeconds` and `watchedShare` (0 to 1, four decimals) each time the union crosses a 5% step above the last one reported, never for a lower step, and SHALL add `watchedShare` to `video.playback_completed`. When it is off, SendRec SHALL send neither, and plays SHALL not advance the reported step. A link seeded as completed SHALL start at the 80% step whatever the setting.
 
 #### Scenario: Setting on
 - **WHEN** the setting is on and the union grows from 12% to 33%

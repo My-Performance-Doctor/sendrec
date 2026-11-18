@@ -137,7 +137,7 @@
           ],
           "title": "Eventtype",
           "type": "string",
-          "description": "video.playback_completed is sent once per video and media version when the distinct seconds played across all of the link's non-staff playback sessions reach 80%. Its watchedSeconds is that union's seconds across plays; playbackSessionId and viewerClass name the session whose report crossed 80%. video.playback_progress, and watchedShare on video.playback_completed, are sent only with the deploy setting mpdWatchShare on."
+          "description": "video.playback_completed is sent once per video and media version when the distinct seconds played across all of the link's non-staff playback sessions reach 80%. Its watchedSeconds is that union's seconds across plays; playbackSessionId and viewerClass name the session whose report crossed 80%. During a rollout or after a rollback a task on the earlier per-session rule can send another for the same video and media version: treat repeated completions as one, keeping the first watched time. video.playback_progress, and watchedShare on video.playback_completed, are sent only with the deploy setting mpdWatchShare on. Steps are enqueued in increasing order but retries can deliver a lower one later: keep the highest watchedShare per video and media version."
         },
         "occurredAt": {
           "format": "date-time",

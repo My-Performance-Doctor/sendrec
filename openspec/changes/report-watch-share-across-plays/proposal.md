@@ -16,5 +16,5 @@ MPD-460 counts a video as watched when a patient has seen 80% of it, across ever
 ## Impact
 
 - Code: `internal/mpdevents/progress.go`, the video handler and server wiring, `cmd/sendrec/main.go`, `MpdIntegrationConfig.java`.
-- Data: one additive table; rollback drops it, and older code ignores it.
+- Data: one additive table and two partial indexes, built concurrently (000082 to 000084). Older code ignores them. Rolling back the code returns to per-session completion, which can send a second `video.playback_completed` for a link the union already completed; during the rollout an old task can do the same. The mitigation is the consumer rule: treat repeated completions for one video and media version as one, keeping the first watched time.
 - Consumers: mpd-api receives completion across plays with today's fields at once; the new event and field only after the setting is switched per environment.
