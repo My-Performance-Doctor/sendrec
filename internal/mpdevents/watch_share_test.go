@@ -73,8 +73,9 @@ func TestPlaysOfOneLinkAddUpToWatched(t *testing.T) {
 	if n := completions(t, db); n != 1 {
 		t.Fatalf("two plays of 45%% each made %d completions", n)
 	}
-	if got := linkSeconds(t, db, id); got != 90 {
-		t.Fatalf("link coverage %d, want 90", got)
+	// With the setting off the union stops growing once the link completes.
+	if got := linkSeconds(t, db, id); got < 80 || got > 85 {
+		t.Fatalf("link coverage %d, want 80 to 85", got)
 	}
 	data := eventData(t, db, "video.playback_completed")[0]
 	// It is sent as the union crosses 80%, partway through the second play.
@@ -213,12 +214,9 @@ func TestAnEarlierCompletionInTheOutboxSeedsTheLink(t *testing.T) {
 	if n := completions(t, db); n != 1 {
 		t.Fatalf("completed again: %d", n)
 	}
-	var shares []float64
-	for _, data := range eventData(t, db, "video.playback_progress") {
-		shares = append(shares, data["watchedShare"].(float64))
-	}
-	if len(shares) != 4 || shares[0] < 0.85 || shares[3] != 1 {
-		t.Fatalf("progress shares %v", shares)
+	// Its union holds only plays since the migration, so no share is sent.
+	if n := len(eventData(t, db, "video.playback_progress")); n != 0 {
+		t.Fatalf("progress for a seeded link: %d", n)
 	}
 }
 
@@ -262,6 +260,103 @@ func TestSharesAboveEightyStillReport(t *testing.T) {
 	}
 	if n := completions(t, db); n != 1 {
 		t.Fatalf("completions %d", n)
+	}
+}
+
+// A per-session completion an old task writes after the link's row exists
+// stops the union sending a second one.
+func TestAnOldTasksCompletionAfterTheRowExists(t *testing.T) {
+	db := testDB(t)
+	id, session := published(t, db, 100, false)
+	watchShared(t, db, id, session, 0, 40, false)
+	if n := count(t, db, `SELECT count(*) FROM mpd_video_watch WHERE video_id=$1 AND completed_at IS NULL`, id); n != 1 {
+		t.Fatalf("watch rows %d", n)
+	}
+	exec(t, db, `SELECT mpd_enqueue_event($1::uuid,'video.playback_completed',(SELECT media_version FROM mpd_video_state WHERE video_id=$1::uuid),jsonb_build_object('playbackSessionId',$2::uuid),$2::text||':completed')`, id, session)
+	watchShared(t, db, id, session, 40, 90, false)
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
+	}
+	if n := count(t, db, `SELECT count(*) FROM mpd_video_watch WHERE video_id=$1 AND completed_at IS NOT NULL`, id); n != 1 {
+		t.Fatal("row not marked completed")
+	}
+}
+
+// A link completed with the setting off reports only its current step once
+// switched on, never a lower one.
+func TestALinkCompletedBeforeTheSwitch(t *testing.T) {
+	db := testDB(t)
+	id, first := published(t, db, 100, false)
+	watchShared(t, db, id, first, 0, 85, false)
+	second := another(t, db, id, false)
+	watchShared(t, db, id, second, 85, 95, true)
+	var shares []float64
+	for _, data := range eventData(t, db, "video.playback_progress") {
+		shares = append(shares, data["watchedShare"].(float64))
+	}
+	if len(shares) != 2 || shares[0] < 0.85 || shares[1] < 0.9 {
+		t.Fatalf("progress shares %v", shares)
+	}
+	if n := completions(t, db); n != 1 {
+		t.Fatalf("completions %d", n)
+	}
+}
+
+// With the setting off a seeded link starts at the 80% step too, and its
+// sessions are told they are complete at once and add nothing.
+func TestASeededLinkWithTheSettingOff(t *testing.T) {
+	db := testDB(t)
+	id, old := published(t, db, 100, false)
+	exec(t, db, `UPDATE mpd_playback_sessions SET completed_at=now() WHERE session_id=$1`, old)
+	session := another(t, db, id, false)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, session)
+	p, err := Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 0, CurrentTime: 5, ElapsedMilliseconds: 5000}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Completed {
+		t.Fatal("a seeded link's session not told to stop")
+	}
+	if n := count(t, db, `SELECT reported_step FROM mpd_video_watch WHERE video_id=$1`, id); n != completedStep {
+		t.Fatalf("seeded step %d", n)
+	}
+	if n := covered(t, db, session); n != 0 {
+		t.Fatalf("covered %d after the short-circuit", n)
+	}
+	// Switched on later, it still sends nothing below 80%.
+	p, err = Played(context.Background(), db, id, Progress{SessionID: session, Playing: true, PreviousTime: 0, CurrentTime: 5, ElapsedMilliseconds: 5000}, true)
+	if err != nil || !p.Completed {
+		t.Fatalf("seeded link with the setting on: %v %v", p, err)
+	}
+	if n := len(eventData(t, db, "video.playback_progress")); n != 0 {
+		t.Fatalf("progress %d", n)
+	}
+}
+
+// Once the link has completed with the setting off, a report only keeps the
+// session open: the union is not touched.
+func TestACompletedLinkShortCircuits(t *testing.T) {
+	db := testDB(t)
+	id, first := published(t, db, 100, false)
+	watchShared(t, db, id, first, 0, 85, false)
+	before := linkSeconds(t, db, id)
+	second := another(t, db, id, false)
+	exec(t, db, `UPDATE mpd_playback_facts SET occurred_at=occurred_at-interval '5 seconds' WHERE session_id=$1`, second)
+	p, err := Played(context.Background(), db, id, Progress{SessionID: second, Playing: true, PreviousTime: 90, CurrentTime: 95, ElapsedMilliseconds: 5000}, false)
+	if err != nil || !p.Completed {
+		t.Fatalf("%v %v", p, err)
+	}
+	if got := linkSeconds(t, db, id); got != before {
+		t.Fatalf("union %d, was %d", got, before)
+	}
+}
+
+// The seed's indexes are built concurrently by golang-migrate on PG18.
+func TestTheSeedIndexesAreValid(t *testing.T) {
+	db := testDB(t)
+	if n := count(t, db, `SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+ WHERE c.relname IN ('mpd_outbox_completed','mpd_sessions_completed') AND i.indisvalid`); n != 2 {
+		t.Fatalf("valid seed indexes %d", n)
 	}
 }
 

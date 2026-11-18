@@ -18,5 +18,5 @@ CREATE TABLE mpd_video_watch (
  completed_at TIMESTAMPTZ,
  PRIMARY KEY(video_id, media_version)
 );
--- The seed's lookup of a link's earlier completion events.
-CREATE INDEX mpd_outbox_completed ON mpd_event_outbox(video_id, media_version) WHERE event_type = 'video.playback_completed';
+-- The seed's indexes come in 000083 and 000084, each built concurrently in a
+-- file of its own so the running tasks can keep writing.
