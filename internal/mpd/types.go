@@ -121,7 +121,13 @@ func NewHandler(ctx context.Context, db database.DBTX, cfg Config) (*Handler, er
 		return nil, errors.New("MPD OIDC discovery unavailable")
 	}
 	h.provider = p
-	h.verifier = p.Verifier(&oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{"RS256"}})
+	var discovery struct {
+		JWKSURL string `json:"jwks_uri"`
+	}
+	if p.Claims(&discovery) != nil || discovery.JWKSURL == "" {
+		return nil, errors.New("MPD OIDC discovery unavailable")
+	}
+	h.verifier = oidc.NewVerifier(cfg.Issuer, faultReportingKeySet{oidc.NewRemoteKeySet(ctx, discovery.JWKSURL)}, &oidc.Config{SkipClientIDCheck: true, SupportedSigningAlgs: []string{"RS256"}})
 	h.idVerifier = p.Verifier(&oidc.Config{ClientID: cfg.ClientID, SupportedSigningAlgs: []string{"RS256"}})
 	h.oauth = oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: strings.TrimRight(cfg.BaseURL, "/") + "/api/auth/mpd/callback", Endpoint: p.Endpoint(), Scopes: []string{"openid", "email", "profile"}}
 	return h, nil
@@ -134,12 +140,36 @@ func contains(xs []string, s string) bool {
 	}
 	return false
 }
+
+// faultReportingKeySet tells VerifyAccess when the issuer's signing keys could not be fetched. go-oidc's
+// verifier reports every signature failure only as text, but its remote key set wraps a failed fetch
+// ("fetching keys %w") and returns a key that does not verify as a plain error, so the two are told
+// apart here, before the verifier flattens them.
+type faultReportingKeySet struct{ oidc.KeySet }
+
+type keyFetchFault struct{}
+
+func (k faultReportingKeySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
+	payload, err := k.KeySet.VerifySignature(ctx, jwt)
+	if err != nil && errors.Unwrap(err) != nil {
+		if fault, ok := ctx.Value(keyFetchFault{}).(*bool); ok {
+			*fault = true
+		}
+	}
+	return payload, err
+}
+
+// VerifyAccess checks a Cognito access token. A token that fails is ErrDenied; when the issuer's keys
+// cannot be fetched it is ErrUnavailable, so callers answer "try again", not "sign in again".
 func (h *Handler) VerifyAccess(ctx context.Context, raw string) (*Identity, error) {
 	if !h.cfg.Enabled || h.verifier == nil {
 		return nil, ErrDenied
 	}
-	token, err := h.verifier.Verify(oidc.ClientContext(ctx, h.client), raw)
-	if err != nil {
+	fault := false
+	token, err := h.verifier.Verify(context.WithValue(oidc.ClientContext(ctx, h.client), keyFetchFault{}, &fault), raw)
+	if err != nil && fault {
+		return nil, ErrUnavailable
+	} else if err != nil {
 		return nil, ErrDenied
 	}
 	var c struct {

@@ -442,8 +442,8 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	id, e := h.VerifyAccess(ctx, token.AccessToken)
 	if e != nil {
-		// VerifyAccess cannot tell a bad token from an unreachable key set, so the
-		// session stays and only the rotated credential is kept.
+		// A bad token (401) and an unreachable key set (503) both leave the
+		// session in place; only the rotated credential is kept.
 		identityError(w, e)
 		return
 	}
