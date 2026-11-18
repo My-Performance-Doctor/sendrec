@@ -71,7 +71,11 @@ The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL t
 
 #### Scenario: A passing fault while opening
 - **WHEN** the redeem meets a passing fault twice
-- **THEN** the handoff stays unspent, the page puts it back in the address and says "The preview isn't available right now. Try again.", and a reload opens the preview
+- **THEN** the handoff stays unspent and out of the address, and the page says "The preview isn't available right now. Open it again from Staff OS."
+
+#### Scenario: An invalid preview request
+- **WHEN** the redeem refuses the request itself, for a malformed body or an origin that is not allowed
+- **THEN** the page says "This preview link isn't valid. Open it again from Staff OS."
 
 #### Scenario: A renewal fails
 - **WHEN** a media renewal answers 409, 503 or nothing twice, or answers 410 or 403 once
