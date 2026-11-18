@@ -148,6 +148,7 @@ func New(cfg Config) *Server {
 		}
 		s.videoHandler = video.NewHandler(cfg.DB, cfg.Storage, baseURL, cfg.MaxUploadBytes, cfg.MaxVideosPerMonth, cfg.MaxVideoDurationSeconds, cfg.MaxPlaylists, jwtSecret, secureCookies)
 		s.videoHandler.SetMaxOrgsOwned(cfg.MaxWorkspaces)
+		s.videoHandler.SetMPDWatchShare(cfg.MPDService.WatchShare)
 		if cfg.CommentNotifier != nil {
 			s.videoHandler.SetCommentNotifier(cfg.CommentNotifier)
 		}

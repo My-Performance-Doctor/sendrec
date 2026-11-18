@@ -46,6 +46,7 @@ type GeoResolver interface {
 
 type Handler struct {
 	db                      database.DBTX
+	mpdWatchShare           bool
 	storage                 ObjectStorage
 	baseURL                 string
 	maxUploadBytes          int64
@@ -107,6 +108,13 @@ func (h *Handler) SetBrandingEnabled(enabled bool) {
 
 func (h *Handler) SetAnalyticsScript(script string) {
 	h.analyticsScript = script
+}
+
+// SetMPDWatchShare turns on the watched share in MPD playback events
+// (video.playback_progress, and watchedShare on video.playback_completed).
+// Off until mpd-api accepts them (MPD-460).
+func (h *Handler) SetMPDWatchShare(enabled bool) {
+	h.mpdWatchShare = enabled
 }
 
 func (h *Handler) SetAIEnabled(enabled bool) {

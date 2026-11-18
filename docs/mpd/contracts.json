@@ -131,6 +131,7 @@
             "video.ready",
             "video.transcript_ready",
             "video.playback_started",
+            "video.playback_progress",
             "video.playback_completed",
             "video.deleted"
           ],
@@ -364,6 +365,38 @@
     "publicationRequest": {
       "mediaVersion": 1,
       "published": true
+    },
+    "playbackProgressEvent": {
+      "schemaVersion": 1,
+      "occurredAt": "2030-01-01T00:00:00Z",
+      "videoId": "11111111-1111-4111-8111-111111111111",
+      "mediaVersion": 1,
+      "ownerStaffId": "22222222-2222-4222-8222-222222222222",
+      "tenantId": "33333333-3333-4333-8333-333333333333",
+      "eventId": "44444444-4444-4444-8444-000000000101",
+      "eventType": "video.playback_progress",
+      "data": {
+        "watchedSeconds": 45,
+        "durationSeconds": 100,
+        "watchedShare": 0.45
+      }
+    },
+    "playbackCompletedWithShareEvent": {
+      "schemaVersion": 1,
+      "occurredAt": "2030-01-01T00:00:00Z",
+      "videoId": "11111111-1111-4111-8111-111111111111",
+      "mediaVersion": 1,
+      "ownerStaffId": "22222222-2222-4222-8222-222222222222",
+      "tenantId": "33333333-3333-4333-8333-333333333333",
+      "eventId": "44444444-4444-4444-8444-000000000102",
+      "eventType": "video.playback_completed",
+      "data": {
+        "playbackSessionId": "55555555-5555-4555-8555-555555555555",
+        "viewerClass": "anonymous",
+        "watchedSeconds": 80,
+        "durationSeconds": 100,
+        "watchedShare": 0.8
+      }
     }
   },
   "mutationHeaders": {

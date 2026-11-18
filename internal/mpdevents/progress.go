@@ -11,9 +11,13 @@ import (
 	"github.com/sendrec/sendrec/internal/database"
 )
 
-// WatchedShare is the share of a video one playback session must play for MPD
-// to count the video as watched (MPD-460).
+// WatchedShare is the share of a video its link's patients must have played,
+// across every play of the link, for MPD to count the video as watched
+// (MPD-460). A single session that plays it also stops reporting.
 const WatchedShare = 0.8
+
+// shareSteps divides a video into 5% steps for video.playback_progress.
+const shareSteps = 20
 
 // sessionLife is how long a playback session stays open after its last
 // accepted progress, so a viewer can pause and come back without losing it.
@@ -68,11 +72,17 @@ func marked(bitmap []byte) int {
 // the seconds since its playback started adds nothing, so neither bursts nor
 // a late report can claim play faster than that overall, and network jitter
 // loses nothing. Progress keeps the session open for sessionLife; once the
-// session has completed it only does that, and reports completed.
-// Once a non-preview session covers WatchedShare of the video it enqueues
-// video.playback_completed, once per session. It returns when the session now
-// expires.
-func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (Progressed, error) {
+// session itself has covered WatchedShare it only does that, and reports
+// completed, so the player stops reporting.
+//
+// A non-preview session's coverage also joins its link's coverage, the union
+// across every play of that media version (mpd_video_watch). When the union
+// first reaches WatchedShare it enqueues video.playback_completed, once per
+// media version. With watchShare on it also enqueues video.playback_progress
+// each time the union passes a new 5% step, and both events carry
+// watchedShare; production mpd-api before MPD-460's change refuses those, so
+// the deploy setting mpdWatchShare keeps them off until it accepts them.
+func Played(ctx context.Context, db database.DBTX, videoID string, p Progress, watchShare bool) (Progressed, error) {
 	if !p.Valid() {
 		return Progressed{}, ErrInvalidProgress
 	}
@@ -152,11 +162,66 @@ func Played(ctx context.Context, db database.DBTX, videoID string, p Progress) (
 		if _, err = tx.Exec(ctx, `UPDATE mpd_playback_sessions SET completed_at=clock_timestamp() WHERE session_id=$1`, p.SessionID); err != nil {
 			return Progressed{}, err
 		}
-		if _, err = tx.Exec(ctx, `SELECT mpd_enqueue_event($1,'video.playback_completed',$2,
- jsonb_build_object('playbackSessionId',$3::uuid,'viewerClass',$4::text,'watchedSeconds',$5::float8,'durationSeconds',$6::float8),
- $3::text||':completed')`, videoID, version, p.SessionID, class, float64(played), float64(duration)); err != nil {
+	}
+	if class != "staff_preview" && duration > 0 {
+		if err = watched(ctx, tx, videoID, version, duration, coverage, p.SessionID, class, watchShare); err != nil {
 			return Progressed{}, err
 		}
 	}
 	return Progressed{ExpiresAt: expires, Completed: done}, tx.Commit(ctx)
+}
+
+// watched joins a session's coverage to its link's coverage across every play
+// of the media version, and sends the events the union now calls for.
+func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, session []byte, sessionID, class string, watchShare bool) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO mpd_video_watch(video_id,media_version) VALUES($1,$2) ON CONFLICT DO NOTHING`, videoID, version); err != nil {
+		return err
+	}
+	var union []byte
+	var step int
+	var completed bool
+	if err := tx.QueryRow(ctx, `SELECT coverage,reported_step,completed_at IS NOT NULL FROM mpd_video_watch
+ WHERE video_id=$1 AND media_version=$2 FOR UPDATE`, videoID, version).Scan(&union, &step, &completed); err != nil {
+		return err
+	}
+	sized := make([]byte, (duration+7)/8)
+	copy(sized, union)
+	for i := range sized {
+		if i < len(session) {
+			sized[i] |= session[i]
+		}
+	}
+	if duration%8 != 0 {
+		sized[len(sized)-1] &= byte(1<<(duration%8)) - 1
+	}
+	union = sized
+	seconds := marked(union)
+	share := float64(seconds) / float64(duration)
+	rounded := math.Round(share*10000) / 10000
+	reached := min(int(math.Floor(share*shareSteps+1e-9)), shareSteps)
+
+	if watchShare && reached > step {
+		if _, err := tx.Exec(ctx, `SELECT mpd_enqueue_event($1::uuid,'video.playback_progress',$2::int,
+ jsonb_build_object('watchedSeconds',$3::float8,'durationSeconds',$4::float8,'watchedShare',$5::float8),
+ $1::uuid::text||':progress:'||$2::int::text||':'||$6::int::text)`, videoID, version, float64(seconds), float64(duration), rounded, reached); err != nil {
+			return err
+		}
+		step = reached
+	}
+	complete := !completed && float64(seconds) >= WatchedShare*float64(duration)
+	if complete {
+		base := `jsonb_build_object('playbackSessionId',$3::uuid,'viewerClass',$4::text,'watchedSeconds',$5::float8,'durationSeconds',$6::float8)`
+		args := []any{videoID, version, sessionID, class, float64(seconds), float64(duration)}
+		if watchShare {
+			base += `||jsonb_build_object('watchedShare',$7::float8)`
+			args = append(args, rounded)
+		}
+		if _, err := tx.Exec(ctx, `SELECT mpd_enqueue_event($1::uuid,'video.playback_completed',$2::int,`+base+`,$1::uuid::text||':completed:'||$2::int::text)`, args...); err != nil {
+			return err
+		}
+	}
+	_, err := tx.Exec(ctx, `UPDATE mpd_video_watch SET coverage=$3,reported_step=$4,
+ completed_at=CASE WHEN $5 THEN clock_timestamp() ELSE completed_at END WHERE video_id=$1 AND media_version=$2`,
+		videoID, version, union, step, complete)
+	return err
 }
