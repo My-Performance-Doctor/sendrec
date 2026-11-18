@@ -24,6 +24,10 @@ SendRec SHALL keep, per video and media version, the union of the distinct secon
 - **WHEN** two sessions of one link report at the same time over different halves
 - **THEN** the union holds both and one completed event is enqueued
 
+#### Scenario: Parallel sessions on disjoint stretches
+- **WHEN** four sessions started seven seconds ago each report a different quarter of a 100-second video
+- **THEN** the union holds no more than 29 seconds and no completed event is enqueued
+
 #### Scenario: A new media version
 - **WHEN** the video is replaced with a new media version after completing
 - **THEN** the new version's union starts empty and completes on its own plays
@@ -46,7 +50,7 @@ When a link's union is first created, SendRec SHALL start it completed at the 80
 
 ### Requirement: Watched-share steps behind a deploy setting
 
-When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_progress` with `watchedSeconds`, `durationSeconds` and `watchedShare` (0 to 1, four decimals) each time the union crosses a 5% step above the last one reported, never for a lower step, and SHALL add `watchedShare` to `video.playback_completed`. When it is off, SendRec SHALL send neither, and plays SHALL not advance the reported step. A link seeded as completed SHALL start at the 80% step whatever the setting.
+When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_progress` (`watchedSeconds`, `durationSeconds`, `watchedShare`) for the highest 5% step reached above the last one reported, and MAY skip steps between; the consumer keeps the highest share. SendRec SHALL add `watchedShare` to `video.playback_completed`. When it is off, SendRec SHALL send neither, and plays SHALL not advance the reported step. A link seeded as completed SHALL start at the 80% step whatever the setting.
 
 #### Scenario: Setting on
 - **WHEN** the setting is on and the union grows from 12% to 33%
@@ -54,7 +58,7 @@ When `MPD_WATCH_SHARE_ENABLED` is on, SendRec SHALL enqueue `video.playback_prog
 
 #### Scenario: Shares above 80%
 - **WHEN** the setting is on and one session plays past 80%
-- **THEN** it is not told to stop until the union holds the whole video, and the last progress event reports 1
+- **THEN** it is not told to stop until the union reaches 95%, and the last progress event reports 0.95
 
 #### Scenario: Setting off
 - **WHEN** the setting is off
