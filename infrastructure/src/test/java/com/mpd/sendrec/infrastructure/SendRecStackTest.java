@@ -107,6 +107,7 @@ class SendRecStackTest {
     assertTrue(allTasks.contains("MPD_IDENTITY_ENABLED, Value=false"));
     assertTrue(allTasks.contains("MPD_EVENTS_ENABLED, Value=false"));
     assertTrue(allTasks.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    assertTrue(allTasks.contains("MPD_WATCH_SHARE_ENABLED, Value=false"));
     assertFalse(allTasks.contains("MPD_SESSION_ENCRYPTION_KEY"));
     template.hasResourceProperties("AWS::IAM::Policy", Map.of("PolicyDocument", Match.objectLike(Map.of(
         "Statement", Match.arrayWith(List.of(Match.objectLike(Map.of("Action", "ecr:GetAuthorizationToken"))))))));
@@ -220,7 +221,41 @@ class SendRecStackTest {
         "MPD_EVENT_KEY_ID", "synthetic-1"));
     context.put("MPD_ALLOWED_ORIGINS", origins);
     context.put("mpdProcessingProgress", "false");
+    context.put("mpdWatchShare", "false");
     return context;
+  }
+
+  // MPD-460: the watched-share events are a required deploy setting too, so a deploy cannot send
+  // an mpd-api events it does not accept, nor quietly drop them.
+  @Test void watchShareIsARequiredDeploySetting() {
+    String off = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(off.contains("MPD_WATCH_SHARE_ENABLED, Value=false"));
+    Map<String, Object> on = activation("https://staff.example.test");
+    on.put("mpdWatchShare", "true");
+    String enabled = Template.fromStack(stack(on)).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(enabled.contains("MPD_WATCH_SHARE_ENABLED, Value=true"));
+    assertFalse(enabled.contains("MPD_WATCH_SHARE_ENABLED, Value=false"));
+    // The two settings are independent.
+    assertTrue(enabled.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));
+    Map<String, Object> missing = activation("https://staff.example.test");
+    missing.remove("mpdWatchShare");
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(missing)).getMessage().contains("mpdWatchShare"));
+    Map<String, Object> bad = activation("https://staff.example.test");
+    bad.put("mpdWatchShare", "yes");
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(bad)).getMessage().contains("mpdWatchShare must be true or false"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdWatchShare", "true"))).getMessage().contains("needs activateMpdIntegration"));
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "false", "mpdWatchShare", "true"))).getMessage().contains("needs activateMpdIntegration"));
+    String dormant = Template.fromStack(stack(Map.of("activateMpdIntegration", "false", "mpdWatchShare", "false"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(dormant.contains("MPD_WATCH_SHARE_ENABLED, Value=false"));
+    Map<String, Object> release = activation("https://staff.example.test");
+    release.put("mpdWatchShare", "true");
+    release.put("releaseImage", "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64));
+    for (var entry : Template.fromStack(stack(release)).findResources("AWS::ECS::TaskDefinition").entrySet()) {
+      boolean migration = entry.getKey().startsWith("MigrationTaskDefinition");
+      boolean carries = entry.getValue().toString().contains("MPD_WATCH_SHARE_ENABLED, Value=true");
+      assertEquals(!migration, carries, entry.getKey() + (migration ? " must not" : " must") + " carry the setting");
+    }
+    assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdWatchShare", "FALSE"))).getMessage().contains("must be true or false"));
   }
 
   // An active deploy must state processing progress, so leaving it out can neither turn it off
