@@ -28,8 +28,35 @@ Opened outside a frame, once its media has loaded, the `/mpd-preview` page SHALL
 
 #### Scenario: Link no longer open to patients
 - **WHEN** the recording is unpublished or its link has expired
-- **THEN** the header says patients can't open the link yet, or that the patient link has expired
+- **THEN** the header says patients can't open the link, without "yet", since staff may have taken it down, or that the patient link has expired
 
 #### Scenario: Framed by Staff OS
 - **WHEN** Staff OS frames the preview
 - **THEN** the header is only visually hidden, and the video fills the frame
+
+#### Scenario: Link state changes while the tab is open
+- **WHEN** the link is taken down, expires or gains a gate while the preview is open
+- **THEN** the header shows the new state after the next media renewal, about every four minutes
+
+#### Scenario: Recording date in another browser zone
+- **WHEN** a browser set to en-US and Los Angeles opens a preview of a recording made at 22:30 UTC on 17 Nov 2026
+- **THEN** the header says "Recorded 18 Nov 2026", the clinic's day in Australia/Sydney, as Staff OS lists it
+
+#### Scenario: Long title
+- **WHEN** the title runs past two lines
+- **THEN** it is clamped, and a "Show full title" button shows it in full, without the title appearing in any attribute
+
+#### Scenario: Staff label
+- **WHEN** the header shows
+- **THEN** a "Staff preview" label sits above the title
+
+### Requirement: The staff preview stays usable by keyboard and after a refresh
+The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL tell staff to reopen the preview from Staff OS when its one-use handoff is already spent.
+
+#### Scenario: Keyboard focus on the player
+- **WHEN** the player takes keyboard focus
+- **THEN** it shows a 2 px ring, offset inside the player so it stays clear of the header's border
+
+#### Scenario: Refreshed or reopened tab
+- **WHEN** the preview tab is refreshed, or redeeming its handoff fails
+- **THEN** the page says "This preview has closed. Open it again from Staff OS." and shows no recording details
