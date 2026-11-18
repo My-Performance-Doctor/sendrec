@@ -33,6 +33,9 @@ type MPDServiceConfig struct {
 	// default: mpd-api before its add-video-processing-progress refuses a
 	// metadata field it does not know (add-mpd-processing-progress).
 	ProcessingProgress bool
+	// WatchShare adds video.playback_progress and watchedShare on
+	// video.playback_completed (MPD-460). Off until mpd-api accepts them.
+	WatchShare bool
 	// ClinicZone dates recordings on the staff preview, from MPD_CLINIC_TIMEZONE; nil means
 	// Australia/Sydney (clinicZone).
 	ClinicZone *time.Location

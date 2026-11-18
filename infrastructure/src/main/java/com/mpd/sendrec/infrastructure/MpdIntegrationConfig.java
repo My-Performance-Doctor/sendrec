@@ -20,8 +20,13 @@ final class MpdIntegrationConfig {
     // active, whatever this says. An active deploy must state it, true or false, so a deploy that
     // leaves it out cannot quietly turn it off or change the application task definition.
     boolean active = isActive(scope);
-    boolean progress = processingProgress(scope, active);
+    boolean progress = requiredSwitch(scope, active, "mpdProcessingProgress");
     environment.put("MPD_PROCESSING_PROGRESS_ENABLED", String.valueOf(progress));
+    // `mpdWatchShare` sends video.playback_progress and adds watchedShare to
+    // video.playback_completed (MPD-460). An mpd-api that does not know them rejects the event,
+    // so it is required in the same way and stays off until the receiving mpd-api accepts both.
+    boolean watchShare = requiredSwitch(scope, active, "mpdWatchShare");
+    environment.put("MPD_WATCH_SHARE_ENABLED", String.valueOf(watchShare));
     if (!active) return;
     String secretArn = required(scope, "mpdIntegrationSecretArn");
     if (!secretArn.matches("arn:aws:secretsmanager:ap-southeast-2:" + scope.getAccount() + ":secret:[A-Za-z0-9/_+=.@-]+"))
@@ -47,19 +52,18 @@ final class MpdIntegrationConfig {
     return true;
   }
 
-  private static boolean processingProgress(Stack scope, boolean active) {
-    Object value = scope.getNode().tryGetContext("mpdProcessingProgress");
+  /** A true or false setting every active deploy must state; a dormant one may only say false. */
+  private static boolean requiredSwitch(Stack scope, boolean active, String name) {
+    Object value = scope.getNode().tryGetContext(name);
     if (value != null && !"true".equals(value.toString()) && !"false".equals(value.toString()))
-      throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
+      throw new IllegalArgumentException(name + " must be true or false");
     if (!active) {
       if ("true".equals(String.valueOf(value)))
-        throw new IllegalArgumentException("mpdProcessingProgress needs activateMpdIntegration=true");
+        throw new IllegalArgumentException(name + " needs activateMpdIntegration=true");
       return false;
     }
-    if (value == null) throw new IllegalArgumentException("Missing activation setting mpdProcessingProgress (true or false)");
-    if ("true".equals(value.toString())) return true;
-    if ("false".equals(value.toString())) return false;
-    throw new IllegalArgumentException("mpdProcessingProgress must be true or false");
+    if (value == null) throw new IllegalArgumentException("Missing activation setting " + name + " (true or false)");
+    return "true".equals(value.toString());
   }
 
   /**

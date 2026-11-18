@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS mpd_outbox_completed;

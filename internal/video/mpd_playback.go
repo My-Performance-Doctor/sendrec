@@ -66,7 +66,7 @@ func (h *Handler) MPDPlaybackProgress(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 400, "invalid playback observation")
 		return
 	}
-	progressed, err := mpdevents.Played(r.Context(), h.db, id, p)
+	progressed, err := mpdevents.Played(r.Context(), h.db, id, p, h.mpdWatchShare)
 	if errors.Is(err, mpdevents.ErrPlaybackClosed) || errors.Is(err, mpdevents.ErrInvalidProgress) {
 		httputil.WriteError(w, 403, "invalid or expired playback observation")
 		return
