@@ -33,7 +33,7 @@ const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff
 	`#mpd-meta{flex:none;padding:12px 16px;border-bottom:1px solid #333}` +
 	`#mpd-meta{max-height:30vh;overflow:hidden}#mpd-title{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}#mpd-detail{margin:2px 0 0;color:#bbb}` +
 	`#mpd-label{margin:0 0 2px;color:#9ecbff;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}` +
-	`#mpd-meta.full{max-height:60vh;overflow:auto}#mpd-meta.full #mpd-title{display:block}` +
+	`#mpd-meta.full{max-height:60vh;overflow:auto}#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none;overflow:visible}` +
 	`#mpd-more{margin:2px 0 0;padding:0;border:0;background:none;color:#9ecbff;font:inherit;text-decoration:underline;cursor:pointer}#mpd-more[hidden]{display:none}` +
 	`#mpd-more:focus-visible{outline:2px solid #ffd54a;outline-offset:2px}video:focus-visible{outline:2px solid #ffd54a;outline-offset:-4px}` +
 	`#mpd-status{position:absolute;top:50%;right:16px;left:16px;margin:0;text-align:center;transform:translateY(-50%)}` +
@@ -51,7 +51,8 @@ function el(id){return document.getElementById(id);}
 function forget(){described=null;var meta=el('mpd-meta');if(!meta)return;meta.classList.remove('shown','full');el('mpd-title').textContent='Staff preview';el('mpd-detail').textContent='';var more=el('mpd-more');more.hidden=true;more.setAttribute('aria-expanded','false');more.textContent='Show full title';}
 // The server writes the date (in the clinic's zone) and the link state, so the header reads the same in any browser.
 function detail(){if(!described)return;el('mpd-detail').textContent=[described.recorded,described.linkState].filter(function(part){return typeof part==='string'&&part;}).join(' \u00b7 ');}
-function fold(){var meta=el('mpd-meta'),title=el('mpd-title'),more=el('mpd-more');if(!described||!meta.classList.contains('shown'))return;more.hidden=!meta.classList.contains('full')&&title.scrollHeight<=title.clientHeight+1;}
+// Chromium's line-clamp leaves scrollHeight equal to the clamped height, so the title is measured both ways.
+function fold(){var meta=el('mpd-meta'),title=el('mpd-title'),more=el('mpd-more');if(!described||!meta.classList.contains('shown'))return;var full=meta.classList.contains('full');meta.classList.add('full');var whole=title.getBoundingClientRect().height;if(!full)meta.classList.remove('full');more.hidden=!full&&whole<=title.getBoundingClientRect().height+1;}
 function describe(v){var meta=el('mpd-meta');if(!meta||!v||typeof v.title!=='string'||!v.title)return;described={recorded:v.recorded,linkState:v.linkState};el('mpd-title').textContent=v.title;detail();if(window.parent===window){meta.classList.add('shown');fold();}}
 function relink(state){if(!described||typeof state!=='string')return;described.linkState=state;detail();}
 function stop(message){player.pause();player.removeAttribute('src');player.load();forget();status(message||ENDED);if(timer)clearInterval(timer);}

@@ -43,7 +43,7 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 	if strings.Index(header, `id="mpd-label"`) > strings.Index(header, `id="mpd-title"`) {
 		t.Error("the Staff preview label must sit above the title")
 	}
-	for _, want := range []string{"#mpd-meta:not(.shown)", "video:focus-visible{outline:2px solid", "#mpd-meta.full #mpd-title{display:block}"} {
+	for _, want := range []string{"#mpd-meta:not(.shown)", "video:focus-visible{outline:2px solid", "#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none"} {
 		if !strings.Contains(mpdPreviewCSS, want) {
 			t.Errorf("preview styles missing %q", want)
 		}
