@@ -33,6 +33,9 @@ type MPDServiceConfig struct {
 	// default: mpd-api before its add-video-processing-progress refuses a
 	// metadata field it does not know (add-mpd-processing-progress).
 	ProcessingProgress bool
+	// ClinicZone dates recordings on the staff preview, from MPD_CLINIC_TIMEZONE; nil means
+	// Australia/Sydney (clinicZone).
+	ClinicZone *time.Location
 }
 
 type MPDMetadata struct {

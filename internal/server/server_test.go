@@ -1654,3 +1654,10 @@ func (db unmanagedDB) QueryRow(ctx context.Context, q string, args ...any) pgx.R
 	}
 	return db.DBTX.QueryRow(ctx, q, args...)
 }
+
+// Begin passes transactions through, as the preview redeem needs one.
+func (db unmanagedDB) Begin(ctx context.Context) (pgx.Tx, error) {
+	return db.DBTX.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}).Begin(ctx)
+}

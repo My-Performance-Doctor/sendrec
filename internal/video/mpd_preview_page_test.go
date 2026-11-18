@@ -1,6 +1,8 @@
 package video
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,7 +11,9 @@ import (
 	// cmd/sendrec builds the zone database in; the tests need it too on hosts without zoneinfo.
 	_ "time/tzdata"
 
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/httputil"
+	"github.com/sendrec/sendrec/internal/mpd"
 )
 
 func TestMPDPreviewPageStylesCarryTheCSPNonce(t *testing.T) {
@@ -50,11 +54,12 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 		}
 		at += found + len(want)
 	}
-	// Only the title is capped, so the link state is never clipped in a short window.
+	// Collapsed, the header is not capped, so the link state is never clipped in a short window; expanded,
+	// it scrolls within a cap so the video keeps most of the window.
 	if strings.Contains(mpdPreviewCSS, "#mpd-meta{max-height") {
 		t.Error("the header itself is capped")
 	}
-	for _, want := range []string{"#mpd-meta:not(.shown)", "video:focus-visible{outline:2px solid", "#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none"} {
+	for _, want := range []string{"#mpd-meta:not(.shown)", "video:focus-visible{outline:2px solid", "#mpd-meta.full{max-height:40vh;overflow-y:auto}", "#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none"} {
 		if !strings.Contains(mpdPreviewCSS, want) {
 			t.Errorf("preview styles missing %q", want)
 		}
@@ -80,9 +85,57 @@ func TestPreviewRecordedDateIsTheClinicsDay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := recordedLabel(parsed.In(time.FixedZone("Los Angeles", -8*3600))); got != want {
+		if got := recordedLabel(parsed.In(time.FixedZone("Los Angeles", -8*3600)), nil); got != want {
 			t.Errorf("%s: %q, want %q", at, got, want)
 		}
+	}
+}
+
+type fixedIdentity struct{ principal *mpd.Principal }
+
+func (f fixedIdentity) ValidateSession(context.Context, string) (*mpd.Principal, error) {
+	return f.principal, nil
+}
+
+// A fault reading the recording is 503 and leaves the handoff unspent, so the page can try again.
+func TestRedeemAnswers503WhenTheRecordingCannotBeRead(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	h := &Handler{db: mock, baseURL: "https://sendrec.example.test"}
+	principal := &mpd.Principal{OrganizationID: "synthetic-org", TenantID: "synthetic-tenant", Capabilities: mpd.Capabilities{Read: true}}
+	media := h.MPDMedia(fixedIdentity{principal}, MPDServiceConfig{WorkspaceID: "synthetic-org", TenantID: "synthetic-tenant"}, nil)
+	mock.ExpectBegin()
+	mock.ExpectQuery("FROM mpd_preview_handoffs").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"video_id", "media_version", "session_id", "title", "created_at", "share_expires_at", "email_gate_enabled"}).
+		AddRow("synthetic-video", 1, "synthetic-session", "Synthetic", time.Now(), (*time.Time)(nil), false))
+	mock.ExpectQuery("FROM mpd_video_state").WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnError(errors.New("synthetic connection reset"))
+	mock.ExpectRollback()
+	request := httptest.NewRequest(http.MethodPost, "/api/mpd/preview/redeem", strings.NewReader(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://sendrec.example.test"}`))
+	request.Header.Set("Origin", "https://sendrec.example.test")
+	recorder := httptest.NewRecorder()
+	media.RedeemPreview(recorder, request)
+	if recorder.Code != 503 {
+		t.Fatalf("redeem with a database fault: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// MPD_CLINIC_TIMEZONE moves the clinic's day.
+func TestPreviewRecordedDateFollowsTheConfiguredZone(t *testing.T) {
+	perth, err := time.LoadLocation("Australia/Perth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 17, 15, 30, 0, 0, time.UTC)
+	if got := recordedLabel(at, perth); got != "Recorded 17 Nov 2026" {
+		t.Errorf("Perth: %q", got)
+	}
+	if got := recordedLabel(at, nil); got != "Recorded 18 Nov 2026" {
+		t.Errorf("default: %q", got)
 	}
 }
 
@@ -106,7 +159,7 @@ func TestPreviewLinkStateFollowsThePatientGate(t *testing.T) {
 		{"published with code and email", true, true, nil, true, "Patients can open the link with their code after giving their email"},
 		{"expired", true, true, &past, true, "The patient link has expired"},
 	} {
-		got := previewLink(MPDMetadata{Published: c.published, PasswordProtected: c.password}, c.expires, c.emailGate, now).text()
+		got := previewLinkState(MPDMetadata{Published: c.published, PasswordProtected: c.password}, c.expires, c.emailGate, now)
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}

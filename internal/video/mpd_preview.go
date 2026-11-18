@@ -48,8 +48,10 @@ func (m *MPDMedia) video(ctx context.Context, id string, p *mpd.Principal, write
 		return MPDMetadata{}, mpd.ErrDenied
 	}
 	result, err := m.h.MPDAdapter(m.Config).metadata(ctx, m.h.db, id)
-	if err != nil || result.Status == "deleted" {
-		return result, mpd.ErrDenied
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && result.Status == "deleted" {
+		return result, errRecordingGone
+	} else if err != nil {
+		return result, errPreviewUnavailable
 	}
 	if write {
 		if !p.Capabilities.ManageWorkspace && (!p.Capabilities.ManageOwn || result.OwnerStaffID != p.StaffID) {
@@ -107,6 +109,35 @@ func (m *MPDMedia) CreatePreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	httputil.WriteJSON(w, 201, map[string]any{"previewUrl": m.h.baseURL + "/mpd-preview#" + fragment, "handoff": proof, "nonce": input.Nonce})
 }
+
+// Why a preview request was refused. The page tells staff what to do from the status:
+// 410 open the preview again, 403 sign in again, 503 try again.
+var (
+	// errPreviewClosed: the handoff or preview session is spent, expired or for an older recording.
+	errPreviewClosed = errors.New("preview closed")
+	// errRecordingGone: the recording is deleted or no longer in this workspace.
+	errRecordingGone = errors.New("recording gone")
+	// errPreviewUnavailable: a passing fault; the same request may work in a moment.
+	errPreviewUnavailable = errors.New("preview unavailable")
+)
+
+// writePreviewRefusal answers a refused preview request; anything else, an ended or denied staff
+// session included, is 403.
+func writePreviewRefusal(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errPreviewClosed), errors.Is(err, errRecordingGone):
+		httputil.WriteError(w, 410, "preview closed")
+	case errors.Is(err, errPreviewUnavailable), errors.Is(err, mpd.ErrUnavailable):
+		httputil.WriteError(w, 503, "preview unavailable")
+	default:
+		httputil.WriteError(w, 403, "preview access ended")
+	}
+}
+
+type previewBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Origin") != m.h.baseURL {
 		httputil.WriteError(w, 403, "preview origin denied")
@@ -121,57 +152,74 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, 400, "invalid preview")
 		return
 	}
+	db, ok := m.h.db.(previewBeginner)
+	if !ok {
+		writePreviewRefusal(w, errPreviewUnavailable)
+		return
+	}
+	tx, err := db.Begin(r.Context())
+	if err != nil {
+		writePreviewRefusal(w, errPreviewUnavailable)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var id, sid, title string
 	var version int
 	var recordedAt time.Time
 	var expires *time.Time
 	var emailGate bool
-	// The title and recording date come back with the one-use handoff, so naming the recording adds
-	// no step that could fail after the handoff is spent.
-	// The page tells staff what to do from the status: 410 the handoff is spent, expired or for an older
-	// recording (open the preview again), 403 the staff session ended (sign in again), 503 try again.
-	err := m.h.db.QueryRow(r.Context(), `UPDATE mpd_preview_handoffs h SET used_at=now() FROM videos v WHERE v.id=h.video_id AND h.token_hash=$1 AND h.nonce=$2 AND h.origin=$3 AND h.used_at IS NULL AND h.expires_at>now() RETURNING h.video_id,h.media_version,h.session_id,v.title,v.created_at,v.share_expires_at,v.email_gate_enabled`, tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin).Scan(&id, &version, &sid, &title, &recordedAt, &expires, &emailGate)
+	// The handoff is locked, not spent, while the staff session and the recording are checked. It is
+	// spent only in the transaction that opens the preview, so a passing fault leaves it for a retry.
+	// The title and recording date come back with it, so naming the recording adds no later step.
+	err = tx.QueryRow(r.Context(), `SELECT h.video_id,h.media_version,h.session_id,v.title,v.created_at,v.share_expires_at,v.email_gate_enabled
+ FROM mpd_preview_handoffs h JOIN videos v ON v.id=h.video_id
+ WHERE h.token_hash=$1 AND h.nonce=$2 AND h.origin=$3 AND h.used_at IS NULL AND h.expires_at>now() FOR UPDATE OF h`,
+		tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin).Scan(&id, &version, &sid, &title, &recordedAt, &expires, &emailGate)
 	if errors.Is(err, pgx.ErrNoRows) {
-		httputil.WriteError(w, 410, "preview closed")
+		writePreviewRefusal(w, errPreviewClosed)
 		return
 	} else if err != nil {
-		httputil.WriteError(w, 503, "preview unavailable")
+		writePreviewRefusal(w, errPreviewUnavailable)
 		return
 	}
 	p, err := m.Identity.ValidateSession(r.Context(), sid)
-	if errors.Is(err, mpd.ErrUnavailable) {
-		httputil.WriteError(w, 503, "preview unavailable")
-		return
-	} else if err != nil {
-		httputil.WriteError(w, 403, "preview access ended")
+	if err != nil {
+		writePreviewRefusal(w, err)
 		return
 	}
 	metadata, err := m.video(r.Context(), id, p, false)
 	if err != nil {
-		httputil.WriteError(w, 403, "preview access ended")
+		writePreviewRefusal(w, err)
 		return
 	}
 	if metadata.MediaVersion != version {
-		httputil.WriteError(w, 410, "preview changed")
+		writePreviewRefusal(w, errPreviewClosed)
 		return
 	}
 	proof := randomProof()
-	_, err = m.h.db.Exec(r.Context(), `INSERT INTO mpd_preview_sessions(token_hash,video_id,media_version,session_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')`, tokenDigest(proof), id, version, sid)
+	_, err = tx.Exec(r.Context(), `UPDATE mpd_preview_handoffs SET used_at=now() WHERE token_hash=$1`, tokenDigest(input.Handoff))
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO mpd_preview_sessions(token_hash,video_id,media_version,session_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '5 minutes')`, tokenDigest(proof), id, version, sid)
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
+	}
 	if err != nil {
-		httputil.WriteError(w, 503, "preview unavailable")
+		writePreviewRefusal(w, errPreviewUnavailable)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	// Named so a preview opened on its own reads as this recording (MPD-515). The title is the one the
 	// patient's watch page shows and can name the patient, so the page puts it only in its own header.
 	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title,
-		"recorded": recordedLabel(recordedAt), "linkState": previewLink(metadata, expires, emailGate, time.Now()).text()})
+		"recorded": recordedLabel(recordedAt, m.Config.ClinicZone), "linkState": previewLinkState(metadata, expires, emailGate, time.Now())})
 }
 
-// clinicZone is where the clinic works. The preview's recording date is shown in it, not the
-// browser's zone, so it matches the date Staff OS lists beside the same video ("18 Nov 2026" for a
-// recording made at 22:30 UTC on 17 Nov) on a laptop set to another zone or locale. mpd-api
-// schedules its video reports in the same zone (video_report_timezone, Australia/Sydney).
+// clinicZone is where the clinic works, unless MPD_CLINIC_TIMEZONE says otherwise. The preview's
+// recording date is shown in it, not the browser's zone, so it matches the date Staff OS lists beside
+// the same video ("18 Nov 2026" for a recording made at 22:30 UTC on 17 Nov) on a laptop set to
+// another zone or locale. mpd-api schedules its video reports in the same zone
+// (video_report_timezone, Australia/Sydney).
 //
 // The Alpine images ship no zoneinfo; cmd/sendrec builds the zone database in (time/tzdata), and so
 // do this package's tests. It is loaded on first use, after every package has initialised.
@@ -185,36 +233,30 @@ var clinicZone = sync.OnceValue(func() *time.Location {
 })
 
 // recordedLabel is the preview's recording date: the clinic's day, written as en-AU writes it.
-func recordedLabel(at time.Time) string {
-	return "Recorded " + at.In(clinicZone()).Format("2 Jan 2006")
+func recordedLabel(at time.Time, zone *time.Location) string {
+	if zone == nil {
+		zone = clinicZone()
+	}
+	return "Recorded " + at.In(zone).Format("2 Jan 2006")
 }
 
-// patientLink is whether patients can open a recording's link, decided by the patient watch gate's
-// own rule (patientLinkClosed), and the gates they pass on the way.
-type patientLink struct {
-	closed              string
-	password, emailGate bool
-}
-
-// previewLink reads a recording the preview may show, which is never deleted.
-func previewLink(metadata MPDMetadata, expires *time.Time, emailGate bool, now time.Time) patientLink {
-	return patientLink{closed: patientLinkClosed(metadata.Published, nil, expires, now), password: metadata.PasswordProtected, emailGate: emailGate}
-}
-
-// text says it for the preview header. An unpublished link may never have been sent or may have
-// been taken down: publication clears published_at and keeps no history, so it does not say "yet".
-func (l patientLink) text() string {
-	switch l.closed {
-	case linkUnpublished, linkDeleted:
+// previewLinkState says, for the preview header, whether patients can open the recording's link,
+// by the patient watch gate's own rule (patientLinkClosed), and the gates they pass on the way. The
+// preview shows only recordings that are not deleted. An unpublished link may never have been sent
+// or may have been taken down: publication clears published_at and keeps no history, so it does not
+// say "yet".
+func previewLinkState(metadata MPDMetadata, expires *time.Time, emailGate bool, now time.Time) string {
+	switch patientLinkClosed(metadata.Published, nil, expires, now) {
+	case linkUnpublished:
 		return "Patients can't open the link"
 	case linkExpired:
 		return "The patient link has expired"
 	}
 	text := "Patients can open the link"
-	if l.password {
+	if metadata.PasswordProtected {
 		text += " with their code"
 	}
-	if l.emailGate {
+	if emailGate {
 		text += " after giving their email"
 	}
 	return text
@@ -228,25 +270,32 @@ func (m *MPDMedia) preview(r *http.Request) (MPDMetadata, error) {
 	var id, sid string
 	var version int
 	err := m.h.db.QueryRow(r.Context(), `SELECT video_id,media_version,session_id FROM mpd_preview_sessions WHERE token_hash=$1 AND expires_at>now()`, tokenDigest(proof)).Scan(&id, &version, &sid)
-	if err != nil {
-		return MPDMetadata{}, mpd.ErrDenied
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MPDMetadata{}, errPreviewClosed
+	} else if err != nil {
+		return MPDMetadata{}, errPreviewUnavailable
 	}
 	p, err := m.Identity.ValidateSession(r.Context(), sid)
 	if err != nil {
 		return MPDMetadata{}, err
 	}
 	current, err := m.video(r.Context(), id, p, false)
-	if err != nil || current.MediaVersion != version {
-		return MPDMetadata{}, mpd.ErrDenied
+	if err != nil {
+		return MPDMetadata{}, err
+	}
+	if current.MediaVersion != version {
+		return MPDMetadata{}, errPreviewClosed
 	}
 	// Rolling preview expiry never extends authorization: each use revalidates MPD.
-	_, err = m.h.db.Exec(r.Context(), `UPDATE mpd_preview_sessions SET expires_at=now()+interval '5 minutes' WHERE token_hash=$1`, tokenDigest(proof))
-	return current, err
+	if _, err = m.h.db.Exec(r.Context(), `UPDATE mpd_preview_sessions SET expires_at=now()+interval '5 minutes' WHERE token_hash=$1`, tokenDigest(proof)); err != nil {
+		return MPDMetadata{}, errPreviewUnavailable
+	}
+	return current, nil
 }
 func (m *MPDMedia) PreviewMedia(w http.ResponseWriter, r *http.Request) {
 	current, err := m.preview(r)
 	if err != nil {
-		httputil.WriteError(w, 403, "preview access ended")
+		writePreviewRefusal(w, err)
 		return
 	}
 	id := current.VideoID
@@ -271,19 +320,19 @@ func (m *MPDMedia) PreviewMedia(w http.ResponseWriter, r *http.Request) {
 	// Each renewal, about every four minutes, carries the link's state again, so a header left open
 	// follows a link that is taken down or expires. It reads the same rows the patient gate does.
 	httputil.WriteJSON(w, 200, map[string]any{"videoUrl": media, "transcriptUrl": captions, "expiresAt": time.Now().Add(5 * time.Minute),
-		"linkState": previewLink(current, expires, emailGate, time.Now()).text()})
+		"linkState": previewLinkState(current, expires, emailGate, time.Now())})
 }
 func (m *MPDMedia) PreviewPlayback(w http.ResponseWriter, r *http.Request) {
 	current, err := m.preview(r)
 	if err != nil {
-		httputil.WriteError(w, 403, "preview access ended")
+		writePreviewRefusal(w, err)
 		return
 	}
 	id := current.VideoID
 	if strings.HasSuffix(r.URL.Path, "/session") {
 		s, err := mpdevents.NewSession(r.Context(), m.h.db, id, true)
 		if err != nil {
-			httputil.WriteError(w, 403, "preview unavailable")
+			writePreviewRefusal(w, errPreviewUnavailable)
 			return
 		}
 		httputil.WriteJSON(w, 201, s)

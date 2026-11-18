@@ -368,7 +368,17 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 				if recorder.Code != refusal.want {
 					t.Fatalf("redeem with %v: %d, want %d", refusal.err, recorder.Code, refusal.want)
 				}
+				// A refusal never spends the handoff, so after a passing fault the same handoff still opens.
+				if refusal.want == 503 {
+					call("POST", "/api/mpd/preview/redeem", fmt.Sprintf(`{"handoff":%q,"nonce":%q,"parentOrigin":%q}`, handoff["handoff"], nonce, server.URL), "", 200)
+				}
 			}
+			// A deleted recording closes the preview (410), so the page says to open it again.
+			deleted := call("POST", "/api/videos/"+id+"/mpd/preview", fmt.Sprintf(`{"origin":%q,"nonce":"synthetic-deleted-nonce"}`, server.URL), "synthetic-staff", 201)
+			mustExec(t, db, `UPDATE mpd_video_state SET deleted_at=now() WHERE video_id=$1`, id)
+			call("POST", "/api/mpd/preview/redeem", fmt.Sprintf(`{"handoff":%q,"nonce":"synthetic-deleted-nonce","parentOrigin":%q}`, deleted["handoff"], server.URL), "", 410)
+			call("GET", "/api/mpd/preview/media", "", previewToken, 410)
+			mustExec(t, db, `UPDATE mpd_video_state SET deleted_at=NULL WHERE video_id=$1`, id)
 			// Each media renewal carries the link's state again, so an open header follows a change.
 			if renewal := call("GET", "/api/mpd/preview/media", "", previewToken, 200); renewal["linkState"] != "Patients can't open the link" {
 				t.Fatalf("renewal link state: %v", renewal["linkState"])

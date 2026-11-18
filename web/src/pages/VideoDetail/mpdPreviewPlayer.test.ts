@@ -1,56 +1,29 @@
 /// <reference types="node" />
 // Runs the staff preview's real player script (internal/video/mpd_player.js) against the real page
-// markup (internal/video/mpd_preview.html) in a DOM, with the server's answers stubbed.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// markup (internal/video/mpd_preview.html), each test in a fresh jsdom window, so nothing one test's
+// script leaves behind (listeners, timers) reaches another. The server's answers are stubbed.
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { JSDOM } from "jsdom";
 
 const playerSource = readFileSync(resolve(process.cwd(), "../internal/video/mpd_player.js"), "utf8");
 const pageBody = readFileSync(resolve(process.cwd(), "../internal/video/mpd_preview.html"), "utf8");
 
-type Reply = { status: number; body?: unknown };
+type Reply = { status: number; body?: unknown } | "network";
 type Routes = Record<string, Reply | (() => Reply)>;
 
+const ORIGIN = "https://sendrec.example.test";
 const CLOSED_STAFF_OS = "This preview has closed. Open it again from Staff OS.";
-const CLOSED_SENDREC = "This preview has closed. Open the preview again.";
+const CLOSED_SENDREC = "This preview has closed. Reload the page to open the preview again.";
 const ENDED = "Access ended. Sign in again and open a new preview.";
 const UNAVAILABLE = "The preview isn't available right now. Try again.";
 const HANDOFF = "#handoff=synthetic-handoff&nonce=synthetic-nonce&parentOrigin=" + encodeURIComponent("https://staff.example.test");
+const RETRY_WAIT = 2300;
 
 const redeemed = { previewToken: "synthetic-token", videoId: "synthetic", title: "Synthetic recording", recorded: "Recorded 18 Nov 2026", linkState: "Patients can open the link" };
-const media = (linkState = "Patients can open the link") => ({ status: 200, body: { videoUrl: "https://media.example.test/clip.webm", transcriptUrl: "", linkState } });
-const session = { status: 201, body: { playbackSessionId: "synthetic-session", mediaVersion: 1, expiresAt: new Date(Date.now() + 60000).toISOString() } };
-
-let autoLoad = true;
-const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
-const el = (id: string) => document.getElementById(id) as HTMLElement;
-const player = () => el("player") as HTMLVideoElement;
-
-function start(hash: string, routes: Routes, parent?: unknown) {
-  document.body.innerHTML = pageBody;
-  history.replaceState(null, "", "/mpd-preview" + hash);
-  if (parent) vi.spyOn(window, "parent", "get").mockReturnValue(parent as Window);
-  const fetchMock = vi.fn(async (path: string) => {
-    const route = routes[path];
-    const reply = typeof route === "function" ? route() : route ?? { status: 500 };
-    return { ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body };
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  new Function(playerSource)();
-  return fetchMock;
-}
-
-beforeEach(() => {
-  autoLoad = true;
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0));
-  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
-  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
-  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(function (this: HTMLMediaElement) {
-    if (autoLoad && this.getAttribute("src")) queueMicrotask(() => this.dispatchEvent(new Event("loadedmetadata")));
-  });
-});
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-
+const media = (linkState = "Patients can open the link"): Reply => ({ status: 200, body: { videoUrl: "https://media.example.test/clip.webm", transcriptUrl: "", linkState } });
+const session: Reply = { status: 201, body: { playbackSessionId: "synthetic-session", mediaVersion: 1, expiresAt: new Date(Date.now() + 60000).toISOString() } };
 const opened = (overrides: Routes = {}): Routes => ({
   "/api/mpd/preview/redeem": { status: 200, body: redeemed },
   "/api/mpd/preview/media": media(),
@@ -58,109 +31,184 @@ const opened = (overrides: Routes = {}): Routes => ({
   ...overrides,
 });
 
+const pages: JSDOM[] = [];
+afterEach(() => { while (pages.length) pages.pop()!.window.close(); });
+
+const settle = async (ms = 0) => { await new Promise(done => setTimeout(done, ms)); for (let i = 0; i < 8; i++) await new Promise(done => setTimeout(done, 0)); };
+
+function open(hash: string, routes: Routes, options: { parent?: unknown; autoLoad?: boolean } = {}) {
+  const dom = new JSDOM("<!doctype html><html><body>" + pageBody + "</body></html>", { url: ORIGIN + "/mpd-preview" + hash, runScripts: "outside-only", pretendToBeVisual: true });
+  pages.push(dom);
+  const win = dom.window;
+  const calls: string[] = [];
+  win.fetch = (async (path: string) => {
+    calls.push(path);
+    const route = routes[path];
+    const reply = typeof route === "function" ? route() : route ?? { status: 500 };
+    if (reply === "network") throw new TypeError("Failed to fetch");
+    return { ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
+  }) as typeof fetch;
+  const media = win.HTMLMediaElement.prototype;
+  media.pause = () => {};
+  media.play = async () => {};
+  media.load = function (this: HTMLMediaElement) {
+    if (options.autoLoad !== false && this.getAttribute("src")) queueMicrotask(() => this.dispatchEvent(new win.Event("loadedmetadata")));
+  };
+  if (options.parent) Object.defineProperty(win, "parent", { configurable: true, get: () => options.parent });
+  win.eval(playerSource);
+  const el = (id: string) => win.document.getElementById(id) as HTMLElement;
+  return { win, el, calls, player: el("player") as HTMLVideoElement };
+}
+
 describe("staff preview header", () => {
   it("names the recording as text, only once its media loads, in its own tab", async () => {
-    autoLoad = false;
     const title = "<img src=x onerror=alert(1)> Synthetic";
-    start(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 200, body: { ...redeemed, title } } }));
-    await flush();
-    expect(el("mpd-meta").classList.contains("shown")).toBe(false);
-    expect(el("mpd-title").textContent).toBe("Staff preview");
-    player().dispatchEvent(new Event("loadedmetadata"));
-    await flush();
-    expect(el("mpd-meta").classList.contains("shown")).toBe(true);
-    expect(el("mpd-title").textContent).toBe(title);
-    expect(el("mpd-meta").querySelector("img")).toBeNull();
-    expect(el("mpd-detail").textContent).toBe("Recorded 18 Nov 2026 · Patients can open the link");
-    expect(document.title).not.toContain("Synthetic");
-    expect(location.hash).toBe("");
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 200, body: { ...redeemed, title } } }), { autoLoad: false });
+    await settle();
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(false);
+    expect(page.el("mpd-title").textContent).toBe("Staff preview");
+    page.player.dispatchEvent(new page.win.Event("loadedmetadata"));
+    await settle();
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(true);
+    expect(page.el("mpd-title").textContent).toBe(title);
+    expect(page.el("mpd-meta").querySelector("img")).toBeNull();
+    expect(page.el("mpd-detail").textContent).toBe("Recorded 18 Nov 2026 · Patients can open the link");
+    expect(page.win.document.title).not.toContain("Synthetic");
+    expect(page.win.location.hash).toBe("");
   });
 
-  it("stays visually hidden when framed", async () => {
-    const parent = { location: { origin: "https://staff.example.test" }, postMessage: vi.fn() };
-    Object.defineProperty(parent, "location", { get: () => { throw new DOMException("cross-origin", "SecurityError"); } });
-    start(HANDOFF, opened(), parent);
-    await flush();
-    expect(player().getAttribute("src")).toBeTruthy();
-    expect(el("mpd-title").textContent).toBe("Synthetic recording");
-    expect(el("mpd-meta").classList.contains("shown")).toBe(false);
+  it("stays visually hidden when framed by Staff OS", async () => {
+    const parent = { postMessage: vi.fn() };
+    Object.defineProperty(parent, "location", { get: () => { throw new Error("cross-origin"); } });
+    const page = open(HANDOFF, opened(), { parent });
+    await settle();
+    expect(page.player.getAttribute("src")).toBeTruthy();
+    expect(page.el("mpd-title").textContent).toBe("Synthetic recording");
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(false);
   });
 
   it("follows the link state on each media renewal", async () => {
     let state = "Patients can open the link";
-    start(HANDOFF, opened({ "/api/mpd/preview/media": () => media(state) }));
-    await flush();
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => media(state) }));
+    await settle();
     state = "Patients can't open the link";
-    player().dispatchEvent(new Event("error"));
-    await flush();
-    expect(el("mpd-detail").textContent).toBe("Recorded 18 Nov 2026 · Patients can't open the link");
-  });
-
-  it("clears the header and says access ended when a renewal is refused", async () => {
-    let refuse = false;
-    start(HANDOFF, opened({ "/api/mpd/preview/media": () => (refuse ? { status: 403 } : media()) }));
-    await flush();
-    refuse = true;
-    player().dispatchEvent(new Event("error"));
-    await flush();
-    expect(el("mpd-status").textContent).toBe(ENDED);
-    expect(el("mpd-meta").classList.contains("shown")).toBe(false);
-    expect(el("mpd-title").textContent).toBe("Staff preview");
-    expect(el("mpd-detail").textContent).toBe("");
-    expect(player().getAttribute("src")).toBeNull();
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle();
+    expect(page.el("mpd-detail").textContent).toBe("Recorded 18 Nov 2026 · Patients can't open the link");
   });
 
   it("shows the full-title toggle only while the title is longer than two lines", async () => {
-    start(HANDOFF, opened());
-    await flush();
-    const title = el("mpd-title");
+    const page = open(HANDOFF, opened());
+    await settle();
+    const title = page.el("mpd-title");
     let whole = 90;
-    vi.spyOn(title, "getBoundingClientRect").mockReturnValue({ height: 45 } as DOMRect);
+    title.getBoundingClientRect = () => ({ height: 45 }) as DOMRect;
     Object.defineProperty(title, "scrollHeight", { configurable: true, get: () => whole });
-    window.dispatchEvent(new Event("resize"));
-    await flush();
-    const toggle = el("mpd-more") as HTMLButtonElement;
+    page.win.dispatchEvent(new page.win.Event("resize"));
+    await settle(30);
+    const toggle = page.el("mpd-more") as HTMLButtonElement;
     expect(toggle.hidden).toBe(false);
     toggle.click();
-    await flush();
-    expect(el("mpd-meta").classList.contains("full")).toBe(true);
+    await settle();
+    expect(page.el("mpd-meta").classList.contains("full")).toBe(true);
     expect(toggle.textContent).toBe("Show less");
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(toggle.getAttribute("title")).toBeNull();
-    // Wider window: the whole title now fits in two lines.
+    // A wider window: the whole title now fits in two lines.
     whole = 45;
-    window.dispatchEvent(new Event("resize"));
-    window.dispatchEvent(new Event("resize"));
-    await flush();
+    page.win.dispatchEvent(new page.win.Event("resize"));
+    page.win.dispatchEvent(new page.win.Event("resize"));
+    await settle(30);
     expect(toggle.hidden).toBe(true);
-    expect(el("mpd-meta").classList.contains("full")).toBe(false);
+    expect(page.el("mpd-meta").classList.contains("full")).toBe(false);
     expect(toggle.textContent).toBe("Show full title");
   });
 });
 
+describe("staff preview renewals", () => {
+  it.each([
+    [403, ENDED],
+    [410, CLOSED_STAFF_OS],
+  ])("stops at once and says what to do when a renewal answers %i", async (status, message) => {
+    let refuse = false;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => (refuse ? { status } : media()) }));
+    await settle();
+    refuse = true;
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle();
+    expect(page.el("mpd-status").textContent).toBe(message);
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(false);
+    expect(page.el("mpd-title").textContent).toBe("Staff preview");
+    expect(page.player.getAttribute("src")).toBeNull();
+    expect(page.calls.filter(path => path === "/api/mpd/preview/media")).toHaveLength(2);
+  });
+
+  it.each<[string, Reply]>([
+    ["409 not ready", { status: 409 }],
+    ["503", { status: 503 }],
+    ["no answer", "network"],
+  ])("tries a renewal that may pass (%s) once more, and keeps playing when it does", async (_name, failure) => {
+    let failures = 0;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => (failures-- > 0 ? failure : media()) }));
+    await settle();
+    failures = 1;
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle(RETRY_WAIT);
+    expect(page.player.getAttribute("src")).toBeTruthy();
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(true);
+  }, 10000);
+
+  it("says the preview isn't available when a renewal fails twice", async () => {
+    let fail = false;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/media": () => (fail ? { status: 503 } : media()) }));
+    await settle();
+    fail = true;
+    page.player.dispatchEvent(new page.win.Event("error"));
+    await settle(RETRY_WAIT);
+    expect(page.el("mpd-status").textContent).toBe(UNAVAILABLE);
+    expect(page.player.getAttribute("src")).toBeNull();
+  }, 10000);
+});
+
 describe("staff preview refusals", () => {
   it("says the preview has closed after a refresh, without asking the server", async () => {
-    const fetchMock = start("", opened());
-    await flush();
-    expect(el("mpd-status").textContent).toBe(CLOSED_STAFF_OS);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const page = open("", opened());
+    await settle();
+    expect(page.el("mpd-status").textContent).toBe(CLOSED_STAFF_OS);
+    expect(page.calls).toHaveLength(0);
   });
 
   it.each([
     [410, CLOSED_STAFF_OS],
     [403, ENDED],
-    [503, UNAVAILABLE],
   ])("tells staff what to do when the redeem answers %i", async (status, message) => {
-    start(HANDOFF, opened({ "/api/mpd/preview/redeem": { status } }));
-    await flush();
-    expect(el("mpd-status").textContent).toBe(message);
-    expect(el("mpd-meta").classList.contains("shown")).toBe(false);
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status } }));
+    await settle();
+    expect(page.el("mpd-status").textContent).toBe(message);
+    expect(page.el("mpd-meta").classList.contains("shown")).toBe(false);
+    expect(page.win.location.hash).toBe("");
   });
 
+  it("retries a redeem that may pass, then gives the handoff back to the address so a reload tries again", async () => {
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 503 } }));
+    await settle(RETRY_WAIT);
+    expect(page.calls.filter(path => path === "/api/mpd/preview/redeem")).toHaveLength(2);
+    expect(page.el("mpd-status").textContent).toBe(UNAVAILABLE);
+    expect(page.win.location.hash).toBe(HANDOFF);
+  }, 10000);
+
+  it("opens on the retry when the first redeem meets a passing fault", async () => {
+    let first = true;
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": () => (first ? ((first = false), { status: 503 }) : { status: 200, body: redeemed }) }));
+    await settle(RETRY_WAIT);
+    expect(page.el("mpd-title").textContent).toBe("Synthetic recording");
+    expect(page.win.location.hash).toBe("");
+  }, 10000);
+
   it("does not mention Staff OS inside SendRec's own frame", async () => {
-    const parent = { location: { origin: location.origin }, postMessage: vi.fn() };
-    start(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 410 } }), parent);
-    await flush();
-    expect(el("mpd-status").textContent).toBe(CLOSED_SENDREC);
+    const parent = { location: { origin: ORIGIN }, postMessage: vi.fn() };
+    const page = open(HANDOFF, opened({ "/api/mpd/preview/redeem": { status: 410 } }), { parent });
+    await settle();
+    expect(page.el("mpd-status").textContent).toBe(CLOSED_SENDREC);
   });
 });

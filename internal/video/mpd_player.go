@@ -10,7 +10,7 @@ import (
 )
 
 // The player script and the preview page's markup are files of their own, so web/'s tests run the
-// real script against the real markup in a DOM (web/src/test/mpdPreviewPlayer.test.ts).
+// real script against the real markup in a DOM (web/src/pages/VideoDetail/mpdPreviewPlayer.test.ts).
 var (
 	//go:embed mpd_player.js
 	mpdPlayerJS string
@@ -39,14 +39,15 @@ func (h *Handler) MPDPreviewPage(w http.ResponseWriter, r *http.Request) {
 // already, the header is only visually hidden (screen readers still get it) and the video fills the frame.
 // A small "Staff preview" label sits above the title, so the tab never reads as the patient's page. A
 // title longer than two lines is clamped, and a toggle under the link state shows it in full without putting
-// it in an attribute. Only the title is capped, so the label, date and link state are never clipped.
+// it in an attribute. Collapsed, nothing is capped, so the label, date and link state are never clipped;
+// expanded, the header scrolls within 40% of the window so the video keeps most of it.
 // Focus shows a 2px yellow ring, inset on the video so it stays clear of the header's border.
 const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff;font:14px/1.4 system-ui,sans-serif}` +
 	`body{display:flex;flex-direction:column}` +
 	`#mpd-meta{flex:none;padding:12px 16px;border-bottom:1px solid #333}` +
 	`#mpd-title{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}#mpd-detail{margin:2px 0 0;color:#bbb}` +
 	`#mpd-label{margin:0 0 2px;color:#9ecbff;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}` +
-	`#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none;max-height:35vh;overflow:auto}` +
+	`#mpd-meta.full{max-height:40vh;overflow-y:auto}#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none}` +
 	`#mpd-more{margin:2px 0 0;padding:0;border:0;background:none;color:#9ecbff;font:inherit;text-decoration:underline;cursor:pointer}#mpd-more[hidden]{display:none}` +
 	`#mpd-more:focus-visible{outline:2px solid #ffd54a;outline-offset:2px}video:focus-visible{outline:2px solid #ffd54a;outline-offset:-4px}` +
 	`#mpd-status{position:absolute;top:50%;right:16px;left:16px;margin:0;text-align:center;transform:translateY(-50%)}` +
