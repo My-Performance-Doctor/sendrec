@@ -63,8 +63,16 @@ The `/mpd-preview` page SHALL show a clear focus ring on the player, and SHALL t
 
 #### Scenario: Inside SendRec's own video page
 - **WHEN** SendRec's own frame finds its handoff spent
-- **THEN** the page says "This preview has closed. Open the preview again." without naming Staff OS
+- **THEN** the page says "This preview has closed. Reload the page to open the preview again." without naming Staff OS
 
-#### Scenario: Staff session ended or a passing fault
-- **WHEN** the staff session has ended, or the server cannot check it right now
-- **THEN** the page says "Access ended. Sign in again and open a new preview." or "The preview isn't available right now. Try again." respectively
+#### Scenario: Staff session ended
+- **WHEN** the staff session has ended
+- **THEN** the page says "Access ended. Sign in again and open a new preview."
+
+#### Scenario: A passing fault while opening
+- **WHEN** the redeem meets a passing fault twice
+- **THEN** the handoff stays unspent, the page puts it back in the address and says "The preview isn't available right now. Try again.", and a reload opens the preview
+
+#### Scenario: A renewal fails
+- **WHEN** a media renewal answers 409, 503 or nothing twice, or answers 410 or 403 once
+- **THEN** the page stops and says what to do, as it does for the redeem

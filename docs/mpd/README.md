@@ -39,6 +39,8 @@ Managed recordings start unpublished. The standalone UI offers a private preview
 
 Preview URLs carry a one-use handoff and nonce in the fragment. The preview redeems them with a same-origin POST, then uses a short video/version/session-bound proof. A future client may open that URL directly or pass its handoff through the exact-origin, nonce-bound embed exchange. The proof grants private preview; the native classification cookie only identifies staff viewing context. Every preview renewal repeats current staff authorization.
 
+The redeem checks the staff session and the recording before it spends the handoff, in one transaction, and answers 410 when the handoff is spent, expired or for a deleted or changed recording, 403 when the staff session has ended, and 503 for a passing fault, which leaves the handoff unspent. Renewals answer the same way, and the page retries 409, 503 or no answer once before it stops. Opened on its own, the preview names the recording with its date in the clinic's time zone, `MPD_CLINIC_TIMEZONE`, default `Australia/Sydney`; an invalid zone stops the service at startup. The CDK stack does not set it, so deployed services use the default.
+
 ## Public access inventory
 
 Persisted media policy remains active when the integration switches or deployment workspace configuration are removed. Rollback must never restore public access to an unpublished recording.
