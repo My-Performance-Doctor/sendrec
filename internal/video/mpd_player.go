@@ -1,10 +1,22 @@
 package video
 
 import (
+	_ "embed"
 	"html"
 	"net/http"
+	"strings"
 
 	"github.com/sendrec/sendrec/internal/httputil"
+)
+
+// The player script and the preview page's markup are files of their own, so web/'s tests run the
+// real script against the real markup in a DOM (web/src/test/mpdPreviewPlayer.test.ts).
+var (
+	//go:embed mpd_player.js
+	mpdPlayerJS string
+	//go:embed mpd_preview.html
+	mpdPreviewHTML string
+	mpdPreviewBody = strings.TrimSpace(mpdPreviewHTML)
 )
 
 func (h *Handler) MPDPlayerScript(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +29,7 @@ func (h *Handler) MPDPreviewPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	nonce := html.EscapeString(httputil.NonceFromContext(r.Context()))
-	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><style nonce="` + nonce + `">` + mpdPreviewCSS + `</style><body><header id="mpd-meta"><p id="mpd-label">Staff preview</p><h1 id="mpd-title">Staff preview</h1><button type="button" id="mpd-more" aria-controls="mpd-title" aria-expanded="false" hidden>Show full title</button><p id="mpd-detail"></p></header><p id="mpd-status">Checking access...</p><video id="player" controls playsinline crossorigin="anonymous"></video><script src="/api/mpd/player.js" defer></script></body></html>`))
+	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Staff recording preview</title><style nonce="` + nonce + `">` + mpdPreviewCSS + `</style><body>` + mpdPreviewBody + `<script src="/api/mpd/player.js" defer></script></body></html>`))
 }
 
 // The preview fills its window, framed by Staff OS or opened in a tab, and letterboxes the recording. The status shows
@@ -26,91 +38,17 @@ func (h *Handler) MPDPreviewPage(w http.ResponseWriter, r *http.Request) {
 // Opened in its own tab, the page names the recording in a header above the video; framed in Staff OS, which names it
 // already, the header is only visually hidden (screen readers still get it) and the video fills the frame.
 // A small "Staff preview" label sits above the title, so the tab never reads as the patient's page. A
-// title longer than two lines is clamped, and a toggle shows it in full without putting it in an attribute.
+// title longer than two lines is clamped, and a toggle under the link state shows it in full without putting
+// it in an attribute. Only the title is capped, so the label, date and link state are never clipped.
 // Focus shows a 2px yellow ring, inset on the video so it stays clear of the header's border.
 const mpdPreviewCSS = `html,body{height:100%;margin:0;background:#000;color:#fff;font:14px/1.4 system-ui,sans-serif}` +
 	`body{display:flex;flex-direction:column}` +
 	`#mpd-meta{flex:none;padding:12px 16px;border-bottom:1px solid #333}` +
-	`#mpd-meta{max-height:30vh;overflow:hidden}#mpd-title{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}#mpd-detail{margin:2px 0 0;color:#bbb}` +
+	`#mpd-title{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}#mpd-detail{margin:2px 0 0;color:#bbb}` +
 	`#mpd-label{margin:0 0 2px;color:#9ecbff;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}` +
-	`#mpd-meta.full{max-height:60vh;overflow:auto}#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none;overflow:visible}` +
+	`#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none;max-height:35vh;overflow:auto}` +
 	`#mpd-more{margin:2px 0 0;padding:0;border:0;background:none;color:#9ecbff;font:inherit;text-decoration:underline;cursor:pointer}#mpd-more[hidden]{display:none}` +
 	`#mpd-more:focus-visible{outline:2px solid #ffd54a;outline-offset:2px}video:focus-visible{outline:2px solid #ffd54a;outline-offset:-4px}` +
 	`#mpd-status{position:absolute;top:50%;right:16px;left:16px;margin:0;text-align:center;transform:translateY(-50%)}` +
 	`#mpd-meta:not(.shown),body:has(video[src]) #mpd-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}` +
 	`video{display:block;flex:1;min-height:0;width:100%;object-fit:contain}video:not([src]){visibility:hidden}`
-
-const mpdPlayerJS = `(function(){
-'use strict';
-var player=document.getElementById('player');if(!player)return;
-var preview=location.pathname==='/mpd-preview', proof='', session=null, sent=false, observed=null, renewing=null, activeToken='', timer=null;
-function managed(){return preview||player.dataset.mpdManaged==='true';}
-function status(text){var el=document.getElementById('mpd-status');if(el)el.textContent=text;}
-var CLOSED='This preview has closed. Open it again from Staff OS.', ENDED='Access ended. Sign in again and open a new preview.', described=null;
-function el(id){return document.getElementById(id);}
-function forget(){described=null;var meta=el('mpd-meta');if(!meta)return;meta.classList.remove('shown','full');el('mpd-title').textContent='Staff preview';el('mpd-detail').textContent='';var more=el('mpd-more');more.hidden=true;more.setAttribute('aria-expanded','false');more.textContent='Show full title';}
-// The server writes the date (in the clinic's zone) and the link state, so the header reads the same in any browser.
-function detail(){if(!described)return;el('mpd-detail').textContent=[described.recorded,described.linkState].filter(function(part){return typeof part==='string'&&part;}).join(' \u00b7 ');}
-// Chromium's line-clamp leaves scrollHeight equal to the clamped height, so the title is measured both ways.
-function fold(){var meta=el('mpd-meta'),title=el('mpd-title'),more=el('mpd-more');if(!described||!meta.classList.contains('shown'))return;var full=meta.classList.contains('full');meta.classList.add('full');var whole=title.getBoundingClientRect().height;if(!full)meta.classList.remove('full');more.hidden=!full&&whole<=title.getBoundingClientRect().height+1;}
-function describe(v){var meta=el('mpd-meta');if(!meta||!v||typeof v.title!=='string'||!v.title)return;described={recorded:v.recorded,linkState:v.linkState};el('mpd-title').textContent=v.title;detail();if(window.parent===window){meta.classList.add('shown');fold();}}
-function relink(state){if(!described||typeof state!=='string')return;described.linkState=state;detail();}
-function stop(message){player.pause();player.removeAttribute('src');player.load();forget();status(message||ENDED);if(timer)clearInterval(timer);}
-if(preview){el('mpd-more').addEventListener('click',function(){var meta=el('mpd-meta'),full=meta.classList.toggle('full');this.setAttribute('aria-expanded',String(full));this.textContent=full?'Show less':'Show full title';fold();});addEventListener('resize',fold);}
-function share(){if(player.dataset.shareToken)return player.dataset.shareToken;var parts=location.pathname.split('/');return parts.length===3?parts[2]:'';}
-async function request(path,body){var headers={};if(proof)headers.Authorization='Bearer '+proof;if(body!==undefined)headers['Content-Type']='application/json';var response=await fetch(path,{method:body===undefined?'GET':'POST',headers:headers,body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin',cache:'no-store',keepalive:body!==undefined});if(!response.ok)throw new Error('Access unavailable');if(response.status===204)return {};return response.json();}
-function endpoint(suffix){return preview?'/api/mpd/preview/'+suffix:'/api/watch/'+encodeURIComponent(share())+'/'+(suffix==='session'?'playback-session':suffix);}
-async function newSession(){if(!managed())return;var token=share();activeToken=token;session=null;sent=false;observed=null;var result=await request(endpoint('session'),{});if(!managed()||!preview&&share()!==token)return;session=result;}
-async function renew(){if(!managed())return;if(renewing)return renewing;var token=share();renewing=(async function(){var media=await request(preview?'/api/mpd/preview/media':endpoint('renew'),preview?{}:undefined);if(!managed()||share()!==token)return;if(preview)relink(media.linkState);var position=player.currentTime, paused=player.paused;await new Promise(function(resolve,reject){player.addEventListener('loadedmetadata',function(){player.currentTime=position;resolve();},{once:true});player.addEventListener('error',reject,{once:true});player.src=media.videoUrl;player.load();});if(!paused)await player.play();if(session&&media.mediaVersion&&session.mediaVersion!==media.mediaVersion){await newSession();}if(media.transcriptUrl){var track=player.querySelector('track');if(!track){track=document.createElement('track');track.kind='subtitles';track.srclang='en';track.label='Subtitles';player.appendChild(track);}track.src=media.transcriptUrl;}return media;})().catch(function(){if(managed()&&share()===token)stop();}).finally(function(){renewing=null;});return renewing;}
-async function start(){
- if(preview){var values=new URLSearchParams(location.hash.slice(1));history.replaceState(null,'',location.pathname);var body={handoff:values.get('handoff'),nonce:values.get('nonce'),parentOrigin:values.get('parentOrigin')};
-  if(window.parent!==window && !body.handoff){body=await new Promise(function(resolve){var nonce=values.get('nonce'),origin=values.get('parentOrigin');function receive(event){if(event.origin!==origin||event.source!==window.parent||!event.data||event.data.nonce!==nonce||event.data.type!=='mpd-preview')return;window.removeEventListener('message',receive);resolve({handoff:event.data.handoff,nonce:nonce,parentOrigin:origin});}window.addEventListener('message',receive);window.parent.postMessage({type:'mpd-preview-ready',nonce:nonce},origin);});}
-  // The handoff is good for one use, and the page drops it from the address as it starts, so a refresh or a
-  // reopened tab has none left: staff are still signed in and need only open the preview again from Staff OS.
-  if(!body.handoff){stop(CLOSED);return;}
-  var redeemed;try{redeemed=await request('/api/mpd/preview/redeem',body);}catch(e){stop(CLOSED);return;}proof=redeemed.previewToken;await renew();if(player.getAttribute('src')){describe(redeemed);status('Private staff preview. This does not mark a patient report watched.');}
- }
- await activate();
-}
-async function activate(){if(timer)clearInterval(timer);timer=null;session=null;sent=false;observed=null;activeToken=share();var token=activeToken;if(!managed())return;try{await newSession();}catch(e){if(preview)throw e;}if(managed()&&share()===token)timer=setInterval(function(){renew();},240000);}
-player.addEventListener('mpd-recording-change',function(){activate().catch(function(){if(preview)stop();});});
-player.addEventListener('playing',function(){flush();observed={time:player.currentTime,wall:performance.now()};});
-player.addEventListener('seeking',function(){flush();observed=null;});
-player.addEventListener('pause',function(){flush();observed=null;});
-player.addEventListener('error',function(){if(session&&!renewing)renew();});
-player.addEventListener('timeupdate',async function(){
- if(!preview&&activeToken!==share()){await activate();return;}
- if(!managed())return;
- if(!session||sent||player.paused||player.seeking||renewing)return;
- var now=performance.now();if(!observed){observed={time:player.currentTime,wall:now};return;}var elapsed=now-observed.wall,delta=player.currentTime-observed.time;
- if(elapsed<300||delta<0.2)return;
- if(delta>elapsed/1000*2.1){observed=null;return;}
- try{if(Date.parse(session.expiresAt)<=Date.now()){await newSession();return;}await request(endpoint('playback-start'),{playbackSessionId:session.playbackSessionId,previousTime:observed.time,currentTime:player.currentTime,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false});sent=true;seen={time:player.currentTime,wall:performance.now()};}catch(e){observed=null;}
-});
-// After the start, a patient's link reports the stretch it has played every few seconds, and the stretch since the last
-// report when playback pauses or seeks, so MPD can tell when a session has played most of the video. A preview never
-// counts, so it reports nothing more.
-var seen=null, done=false, refused=0;
-function report(from,to){
- if(preview||done||!managed()||!session||!sent||!from||!to)return;
- var elapsed=to.wall-from.wall,delta=to.time-from.time;
- if(elapsed<250||elapsed>10000||delta<0.2||delta>elapsed/1000*2.1)return;
- request(endpoint('playback-progress'),{playbackSessionId:session.playbackSessionId,previousTime:from.time,currentTime:to.time,elapsedMilliseconds:Math.round(elapsed),playing:true,seeking:false})
-  .then(function(answer){refused=0;if(answer&&answer.expiresAt)session.expiresAt=answer.expiresAt;if(answer&&answer.completed)done=true;})
-  // Two refusals in a row, or a session past its time, mean the server closed it: open a new one, which starts again.
-  .catch(function(){refused++;if(session&&(refused>=2||Date.parse(session.expiresAt)<=Date.now())){refused=0;done=false;newSession().catch(function(){});}});
-}
-function flush(){if(observed&&seen&&seen.time>observed.time)report(observed,seen);seen=null;}
-// Closing or hiding the page reports the stretch since the last report; keepalive lets it outlive the page.
-addEventListener('pagehide',function(){flush();observed=null;});
-document.addEventListener('visibilitychange',function(){if(document.visibilityState==='hidden'){flush();observed=null;}});
-player.addEventListener('timeupdate',function(){
- if(preview||!managed()||!session||!sent||player.paused||player.seeking||renewing)return;
- var now={time:player.currentTime,wall:performance.now()};
- if(!observed||!seen){if(!observed)observed=now;seen=now;return;}
- if(now.time<seen.time||now.time-seen.time>(now.wall-seen.wall)/1000*2.1+0.5){flush();observed=now;seen=now;return;}
- seen=now;
- if(now.wall-observed.wall>=5000){report(observed,now);observed=now;}
-});
-start().catch(function(){if(preview)stop();});
-})();`

@@ -94,7 +94,7 @@ func TestMPDPreviewRejectsOversizedRedeemBeforeDatabase(t *testing.T) {
 		srv.ServeHTTP(w, req)
 		return w
 	}
-	if w := request(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://localhost:8080"}`); w.Code != 403 || !strings.Contains(w.Body.String(), "preview expired") {
+	if w := request(`{"handoff":"synthetic","nonce":"synthetic","parentOrigin":"https://localhost:8080"}`); w.Code != 410 || !strings.Contains(w.Body.String(), "preview closed") {
 		t.Fatalf("normal body %d %s", w.Code, w.Body.String())
 	}
 	if w := request(`{"handoff":"` + strings.Repeat("x", 4096) + `"}`); w.Code != 400 || !strings.Contains(w.Body.String(), "invalid preview") {

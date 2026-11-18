@@ -36,6 +36,13 @@ func (s syntheticRecordingIdentity) ValidateSession(ctx context.Context, id stri
 	return s.principal, nil
 }
 
+// refusingIdentity refuses every staff session with one error.
+type refusingIdentity struct{ err error }
+
+func (r refusingIdentity) ValidateSession(context.Context, string) (*mpd.Principal, error) {
+	return nil, r.err
+}
+
 type recordingObjectGrant struct {
 	key, content, method string
 	immutable            bool
@@ -335,19 +342,33 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			redeemed := call("POST", "/api/mpd/preview/redeem", redeemBody, "", 200)
 			previewToken := redeemed["previewToken"].(string)
 			// A preview opened on its own names the recording (MPD-515): its title, when it was made and whether patients can open it.
-			if redeemed["title"] != "Synthetic" || redeemed["recordedAt"] == nil || redeemed["published"] != false {
+			if redeemed["title"] != "Synthetic" || redeemed["linkState"] != "Patients can't open the link" || !strings.HasPrefix(redeemed["recorded"].(string), "Recorded ") {
 				t.Fatalf("redeem did not describe the recording: %v", redeemed)
 			}
-			if redeemed["linkExpired"] != false || redeemed["emailGate"] != false {
-				t.Fatalf("redeem misread the link's gate: %v", redeemed)
+			// The header reads only these; the raw link fields stay off the response.
+			for _, unread := range []string{"recordedAt", "published", "passwordProtected", "emailGate", "linkExpired"} {
+				if _, ok := redeemed[unread]; ok {
+					t.Errorf("redeem still returns %s", unread)
+				}
 			}
-			if _, ok := redeemed["passwordProtected"].(bool); !ok {
-				t.Fatalf("redeem did not describe the recording: %v", redeemed)
+			// A spent handoff is 410, so the page says to open the preview again rather than sign in.
+			call("POST", "/api/mpd/preview/redeem", redeemBody, "", 410)
+			// An ended staff session is 403, and an identity outage is 503, so the page can say which.
+			for _, refusal := range []struct {
+				err  error
+				want int
+			}{{mpd.ErrDenied, 403}, {mpd.ErrUnavailable, 503}} {
+				nonce := fmt.Sprintf("synthetic-refused-%d-nonce", refusal.want)
+				handoff := call("POST", "/api/videos/"+id+"/mpd/preview", fmt.Sprintf(`{"origin":%q,"nonce":%q}`, server.URL, nonce), "synthetic-staff", 201)
+				refusing := h.MPDMedia(refusingIdentity{refusal.err}, MPDServiceConfig{Enabled: true, WorkspaceID: org, TenantID: principal.TenantID, RequirePassword: true}, nil)
+				request := httptest.NewRequest("POST", "/api/mpd/preview/redeem", strings.NewReader(fmt.Sprintf(`{"handoff":%q,"nonce":%q,"parentOrigin":%q}`, handoff["handoff"], nonce, server.URL)))
+				request.Header.Set("Origin", server.URL)
+				recorder := httptest.NewRecorder()
+				refusing.RedeemPreview(recorder, request)
+				if recorder.Code != refusal.want {
+					t.Fatalf("redeem with %v: %d, want %d", refusal.err, recorder.Code, refusal.want)
+				}
 			}
-			if redeemed["linkState"] != "Patients can't open the link" || !strings.HasPrefix(redeemed["recorded"].(string), "Recorded ") {
-				t.Fatalf("redeem header text: %v", redeemed)
-			}
-			call("POST", "/api/mpd/preview/redeem", redeemBody, "", 403)
 			// Each media renewal carries the link's state again, so an open header follows a change.
 			if renewal := call("GET", "/api/mpd/preview/media", "", previewToken, 200); renewal["linkState"] != "Patients can't open the link" {
 				t.Fatalf("renewal link state: %v", renewal["linkState"])
@@ -359,7 +380,7 @@ func TestMPDStandaloneRecordingClientHTTP(t *testing.T) {
 			}
 			gated := call("POST", "/api/videos/"+id+"/mpd/preview", fmt.Sprintf(`{"origin":%q,"nonce":"synthetic-gated-nonce"}`, server.URL), "synthetic-staff", 201)
 			gatedRedeem := call("POST", "/api/mpd/preview/redeem", fmt.Sprintf(`{"handoff":%q,"nonce":"synthetic-gated-nonce","parentOrigin":%q}`, gated["handoff"], server.URL), "", 200)
-			if gatedRedeem["published"] != true || gatedRedeem["linkExpired"] != true || gatedRedeem["emailGate"] != true || gatedRedeem["linkState"] != "The patient link has expired" {
+			if gatedRedeem["linkState"] != "The patient link has expired" {
 				t.Fatalf("redeem misread an expired, email-gated link: %v", gatedRedeem)
 			}
 			mustExec(t, db, `UPDATE videos SET share_expires_at=now()+interval '1 day' WHERE id=$1`, id)

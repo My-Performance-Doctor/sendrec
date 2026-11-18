@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// The Alpine images ship no zoneinfo; the staff preview dates recordings in the clinic's zone.
+	_ "time/tzdata"
 
 	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/email"

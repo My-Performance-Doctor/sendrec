@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	// cmd/sendrec builds the zone database in; the tests need it too on hosts without zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/sendrec/sendrec/internal/httputil"
 )
@@ -33,15 +35,24 @@ func TestMPDPreviewPageNamesTheRecording(t *testing.T) {
 	w := httptest.NewRecorder()
 	(&Handler{}).MPDPreviewPage(w, r)
 	body := w.Body.String()
-	header := body[strings.Index(body, `<header id="mpd-meta">`):strings.Index(body, `</header>`)]
-	for _, want := range []string{`<p id="mpd-label">Staff preview</p>`, `<h1 id="mpd-title">Staff preview</h1>`,
-		`<button type="button" id="mpd-more" aria-controls="mpd-title" aria-expanded="false" hidden>`, `<p id="mpd-detail"></p>`} {
-		if !strings.Contains(header, want) {
-			t.Errorf("preview header missing %q", want)
-		}
+	_, rest, opened := strings.Cut(body, `<header id="mpd-meta">`)
+	header, _, closed := strings.Cut(rest, `</header>`)
+	if !opened || !closed {
+		t.Fatalf("preview page has no complete mpd-meta header: %s", body)
 	}
-	if strings.Index(header, `id="mpd-label"`) > strings.Index(header, `id="mpd-title"`) {
-		t.Error("the Staff preview label must sit above the title")
+	// In reading order: the label, the title, the date and link state, then the toggle.
+	at := 0
+	for _, want := range []string{`<p id="mpd-label">Staff preview</p>`, `<h1 id="mpd-title">Staff preview</h1>`, `<p id="mpd-detail"></p>`,
+		`<button type="button" id="mpd-more" aria-controls="mpd-title" aria-expanded="false" hidden>`} {
+		found := strings.Index(header[at:], want)
+		if found < 0 {
+			t.Fatalf("preview header missing %q after the parts before it: %s", want, header)
+		}
+		at += found + len(want)
+	}
+	// Only the title is capped, so the link state is never clipped in a short window.
+	if strings.Contains(mpdPreviewCSS, "#mpd-meta{max-height") {
+		t.Error("the header itself is capped")
 	}
 	for _, want := range []string{"#mpd-meta:not(.shown)", "video:focus-visible{outline:2px solid", "#mpd-meta.full #mpd-title{display:block;-webkit-line-clamp:none"} {
 		if !strings.Contains(mpdPreviewCSS, want) {

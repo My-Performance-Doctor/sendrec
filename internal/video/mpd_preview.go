@@ -6,12 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
-	// The Alpine images ship no zoneinfo, so the clinic's zone is built in.
-	_ "time/tzdata"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -127,19 +128,31 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	var emailGate bool
 	// The title and recording date come back with the one-use handoff, so naming the recording adds
 	// no step that could fail after the handoff is spent.
+	// The page tells staff what to do from the status: 410 the handoff is spent, expired or for an older
+	// recording (open the preview again), 403 the staff session ended (sign in again), 503 try again.
 	err := m.h.db.QueryRow(r.Context(), `UPDATE mpd_preview_handoffs h SET used_at=now() FROM videos v WHERE v.id=h.video_id AND h.token_hash=$1 AND h.nonce=$2 AND h.origin=$3 AND h.used_at IS NULL AND h.expires_at>now() RETURNING h.video_id,h.media_version,h.session_id,v.title,v.created_at,v.share_expires_at,v.email_gate_enabled`, tokenDigest(input.Handoff), input.Nonce, input.ParentOrigin).Scan(&id, &version, &sid, &title, &recordedAt, &expires, &emailGate)
-	if err != nil {
-		httputil.WriteError(w, 403, "preview expired")
+	if errors.Is(err, pgx.ErrNoRows) {
+		httputil.WriteError(w, 410, "preview closed")
+		return
+	} else if err != nil {
+		httputil.WriteError(w, 503, "preview unavailable")
 		return
 	}
 	p, err := m.Identity.ValidateSession(r.Context(), sid)
-	if err != nil {
+	if errors.Is(err, mpd.ErrUnavailable) {
+		httputil.WriteError(w, 503, "preview unavailable")
+		return
+	} else if err != nil {
 		httputil.WriteError(w, 403, "preview access ended")
 		return
 	}
 	metadata, err := m.video(r.Context(), id, p, false)
-	if err != nil || metadata.MediaVersion != version {
-		httputil.WriteError(w, 403, "preview changed")
+	if err != nil {
+		httputil.WriteError(w, 403, "preview access ended")
+		return
+	}
+	if metadata.MediaVersion != version {
+		httputil.WriteError(w, 410, "preview changed")
 		return
 	}
 	proof := randomProof()
@@ -151,47 +164,50 @@ func (m *MPDMedia) RedeemPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Named so a preview opened on its own reads as this recording (MPD-515). The title is the one the
 	// patient's watch page shows and can name the patient, so the page puts it only in its own header.
-	link := previewLink(metadata, expires, emailGate, time.Now())
-	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title, "recordedAt": recordedAt.UTC(),
-		"recorded": recordedLabel(recordedAt), "linkState": link.text(),
-		"published": metadata.Published, "passwordProtected": metadata.PasswordProtected, "emailGate": emailGate,
-		"linkExpired": link.expired})
+	httputil.WriteJSON(w, 200, map[string]any{"previewToken": proof, "videoId": id, "title": title,
+		"recorded": recordedLabel(recordedAt), "linkState": previewLink(metadata, expires, emailGate, time.Now()).text()})
 }
 
 // clinicZone is where the clinic works. The preview's recording date is shown in it, not the
 // browser's zone, so it matches the date Staff OS lists beside the same video ("18 Nov 2026" for a
 // recording made at 22:30 UTC on 17 Nov) on a laptop set to another zone or locale. mpd-api
 // schedules its video reports in the same zone (video_report_timezone, Australia/Sydney).
-var clinicZone = func() *time.Location {
+//
+// The Alpine images ship no zoneinfo; cmd/sendrec builds the zone database in (time/tzdata), and so
+// do this package's tests. It is loaded on first use, after every package has initialised.
+var clinicZone = sync.OnceValue(func() *time.Location {
 	zone, err := time.LoadLocation("Australia/Sydney")
 	if err != nil {
-		panic("clinic time zone unavailable: " + err.Error())
+		slog.Error("clinic time zone unavailable; preview dates use UTC", "error", err)
+		return time.UTC
 	}
 	return zone
-}()
+})
 
 // recordedLabel is the preview's recording date: the clinic's day, written as en-AU writes it.
 func recordedLabel(at time.Time) string {
-	return "Recorded " + at.In(clinicZone).Format("2 Jan 2006")
+	return "Recorded " + at.In(clinicZone()).Format("2 Jan 2006")
 }
 
-// patientLink is whether patients can open a recording's link, as the patient watch gate decides.
+// patientLink is whether patients can open a recording's link, decided by the patient watch gate's
+// own rule (patientLinkClosed), and the gates they pass on the way.
 type patientLink struct {
-	published, expired, password, emailGate bool
+	closed              string
+	password, emailGate bool
 }
 
+// previewLink reads a recording the preview may show, which is never deleted.
 func previewLink(metadata MPDMetadata, expires *time.Time, emailGate bool, now time.Time) patientLink {
-	// The patient watch gate refuses an expired link, so the preview says so instead of "can open".
-	return patientLink{published: metadata.Published, expired: expires != nil && now.After(*expires), password: metadata.PasswordProtected, emailGate: emailGate}
+	return patientLink{closed: patientLinkClosed(metadata.Published, nil, expires, now), password: metadata.PasswordProtected, emailGate: emailGate}
 }
 
 // text says it for the preview header. An unpublished link may never have been sent or may have
 // been taken down: publication clears published_at and keeps no history, so it does not say "yet".
 func (l patientLink) text() string {
-	switch {
-	case !l.published:
+	switch l.closed {
+	case linkUnpublished, linkDeleted:
 		return "Patients can't open the link"
-	case l.expired:
+	case linkExpired:
 		return "The patient link has expired"
 	}
 	text := "Patients can open the link"
