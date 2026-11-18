@@ -362,8 +362,9 @@ func TestACompletedLinkShortCircuits(t *testing.T) {
 }
 
 // Parallel sessions on disjoint stretches of a link first played long ago
-// cannot fill the union faster than one viewer could: the bound is on how
-// fast the union grows, not how much it holds.
+// are held to the union's growth pace, not to how much it holds: a day-old
+// link gives them no head start. Each report still adds its one-second
+// allowance, so they can beat one viewer by about the number of reports.
 func TestParallelSessionsKeepTheLinksPace(t *testing.T) {
 	db := testDB(t)
 	id, old := published(t, db, 100, false)

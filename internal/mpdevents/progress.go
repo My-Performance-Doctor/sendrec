@@ -272,9 +272,11 @@ func lockWatch(ctx context.Context, tx pgx.Tx, videoID string, version, duration
 //
 // The union grows at a pace of its own: a report adds at most maxPace times
 // the seconds since the union last grew, but no more than since the reporting
-// session's playback started, plus unionAllowance. So parallel sessions on
-// disjoint stretches cannot reach 80% faster than one viewer could, however
-// long ago the link was first played. Seconds over that budget wait, earliest
+// session's playback started, plus unionAllowance per report. The allowance
+// is per report, so parallel sessions on disjoint stretches can fill the union
+// faster than one viewer: two tabs reporting often reach 80% about twice as
+// fast, and more sessions or IPs faster still. How long ago the link was
+// first played no longer matters. Seconds over that budget wait, earliest
 // first; the session's later reports bring them in.
 func watched(ctx context.Context, tx pgx.Tx, videoID string, version, duration int, link linkWatch, session []byte, age float64, sessionID, class string, watchShare bool) (linkWatch, error) {
 	budget := int(maxPace*min(link.idle, age) + unionAllowance)
