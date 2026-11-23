@@ -1,0 +1,24 @@
+## 1. Migrations inside each deploy
+
+- [x] 1.1 Add `migration-runner.py`: run the migration definition once, wait for exit 0, stop and fail before the Lambda limit, do nothing on delete or while the stack rolls back.
+- [x] 1.2 Add the `MigrationRun` custom resource to controlled releases, after the database and before the service, with only the grants it needs.
+- [x] 1.3 Test the runner (Python) and the resource's wiring and grants (CDK).
+
+## 2. Pipeline
+
+- [x] 2.1 Add `PipelineConfig`: read the settings and both stage contexts, refuse pipeline-owned keys and bootstrap mode, build both image URIs from the digest.
+- [x] 2.2 Add `PipelineStack`: source, Build (image then synth, named role, lookup roles), staging stage with Verify, `ApproveProduction`, production stage with PromoteImage and Verify.
+- [x] 2.3 Add `infrastructure/pipeline/build-image.sh`, `promote-image.sh` and `verify-version.sh`, with tests.
+- [x] 2.4 Add the `pipeline` target to `SendRecApp` and write `sendrec-release.json` into the assembly.
+- [x] 2.5 Test the stage order, the configuration checks, the image URIs, the steps' roles and grants, and that no per-commit value enters the pipeline definition.
+
+## 3. Nightly release
+
+- [x] 3.1 Port the staff app's `nightly_release.py` to `NightlyRelease.java` with SendRec's names and 17:20 Sydney.
+- [x] 3.2 Test it by running the synthesized definition against a fake pipeline: approve, hold, supersede, transitions, deploying, changed pipeline, one release per firing, read cap; and the schedule, triggers, topics and grants.
+- [x] 3.3 Check the synthesized definition against the staff app's, with names substituted.
+
+## 4. Workflows and documentation
+
+- [x] 4.1 Remove `mpd-build-candidate.yml` and `mpd-promote.yml`.
+- [x] 4.2 Document the pipeline, the nightly release, the hold and the one-time deploy steps in `infrastructure/README.md`; mark the hand runbook as the fallback; note the change in `DEPLOYMENT.md`.
