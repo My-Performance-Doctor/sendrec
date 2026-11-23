@@ -73,6 +73,8 @@ import software.constructs.Construct;
  */
 public class SendRecStack extends Stack {
   private static final int CONTAINER_PORT = 8080;
+  /** The public base URL, which the pipeline reads to check the version a deploy shipped. */
+  private CfnOutput baseUrlOutput;
   private static final String WHISPER_MODEL_URL =
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin";
   private static final String WHISPER_MODEL_SHA256 =
@@ -459,10 +461,17 @@ public class SendRecStack extends Stack {
       migrationEnvironment.put("MIGRATIONS_MODE", "only");
       Map<String, Secret> migrationSecrets = new HashMap<>();
       for (String name : List.of("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD")) migrationSecrets.put(name, secrets.get(name));
-      migration.addContainer("migration", ContainerDefinitionOptions.builder().image(releaseImage)
+      migration.addContainer(MigrationRun.CONTAINER, ContainerDefinitionOptions.builder().image(releaseImage)
           .environment(migrationEnvironment).secrets(migrationSecrets)
           .logging(LogDrivers.awsLogs(AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("migration").build())).build());
       CfnOutput.Builder.create(this, "MigrationTaskDefinitionArn").value(migration.getTaskDefinitionArn()).build();
+      // The app runs with MIGRATIONS_MODE=skip, so every deploy migrates first: once the database
+      // exists, and before the service moves to the new definition.
+      var migrationRun = MigrationRun.add(this, cluster, migration, vpc.selectSubnets(
+          SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build()).getSubnetIds(),
+          serviceSecurityGroup, logGroup);
+      migrationRun.getNode().addDependency(database);
+      service.getNode().addDependency(migrationRun);
       if (config.production()) addProductionAlarms(config, database, service, targetGroup, logGroup);
     }
     CfnOutput.Builder.create(this, "ClusterArn").value(cluster.getClusterArn()).build();
@@ -471,7 +480,7 @@ public class SendRecStack extends Stack {
     CfnOutput.Builder.create(this, "ServiceSecurityGroupId").value(serviceSecurityGroup.getSecurityGroupId()).build();
     CfnOutput.Builder.create(this, "PrivateSubnetIds").value(String.join(",", vpc.selectSubnets(
         SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build()).getSubnetIds())).build();
-    CfnOutput.Builder.create(this, "BaseUrl").value(baseUrl).build();
+    baseUrlOutput = CfnOutput.Builder.create(this, "BaseUrl").value(baseUrl).build();
     CfnOutput.Builder.create(this, "AlbDnsName").value(alb.getLoadBalancerDnsName()).build();
     CfnOutput.Builder.create(this, "DistributionId").value(distribution.getDistributionId()).build();
     CfnOutput.Builder.create(this, "ClusterName").value(cluster.getClusterName()).build();
@@ -488,6 +497,10 @@ public class SendRecStack extends Stack {
       }
     }
   }
+  CfnOutput baseUrlOutput() {
+    return baseUrlOutput;
+  }
+
   private void addProductionAlarms(EnvironmentConfig config, DatabaseInstance database,
       FargateService service, ApplicationTargetGroup targets, LogGroup logs) {
     String probeCode;
