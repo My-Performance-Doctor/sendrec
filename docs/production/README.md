@@ -8,7 +8,7 @@ Operator decisions on the production account, network, alerts, hostname, image, 
 
 ## Release
 
-`MPD immutable candidate` builds a main-branch image into an ECR repository that enforces immutable tags. It records the source revision and digest without deploying. The inherited upstream Docker Hub/Coolify release workflow only runs in the upstream repository.
+`SendRecPipeline` replaces this manual release once it is deployed: it builds each `main` commit inside AWS, deploys staging, and releases production nightly at 17:20 Sydney (`infrastructure/README.md`, "Deployment pipeline"). Until its first production release, the release below is the way to production. Images are built from `main` into ECR repositories that enforce immutable tags, tagged with the full source revision. The `MPD immutable candidate` workflow was removed on 23 November 2026, and the inherited upstream Docker Hub/Coolify release workflow only runs in the upstream repository.
 
 The operator prepares a reviewed manifest with these fields:
 

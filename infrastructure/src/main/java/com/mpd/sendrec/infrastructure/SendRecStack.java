@@ -73,6 +73,8 @@ import software.constructs.Construct;
  */
 public class SendRecStack extends Stack {
   private static final int CONTAINER_PORT = 8080;
+  /** The public base URL, which the pipeline reads to check the version a deploy shipped. */
+  private CfnOutput baseUrlOutput;
   private static final String WHISPER_MODEL_URL =
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin";
   private static final String WHISPER_MODEL_SHA256 =
@@ -106,11 +108,7 @@ public class SendRecStack extends Stack {
       throw new IllegalArgumentException("Release image requires a same-account Sydney ECR digest");
     }
 
-    IVpc vpc =
-        suppliedVpc != null ? suppliedVpc : Vpc.fromLookup(
-            this,
-            "Vpc",
-            VpcLookupOptions.builder().vpcId(config.vpcId()).region(this.getRegion()).build());
+    IVpc vpc = suppliedVpc != null ? suppliedVpc : vpc(config.vpcId());
 
     // Storage -----------------------------------------------------------------------------
     Bucket recordings =
@@ -459,10 +457,17 @@ public class SendRecStack extends Stack {
       migrationEnvironment.put("MIGRATIONS_MODE", "only");
       Map<String, Secret> migrationSecrets = new HashMap<>();
       for (String name : List.of("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD")) migrationSecrets.put(name, secrets.get(name));
-      migration.addContainer("migration", ContainerDefinitionOptions.builder().image(releaseImage)
+      migration.addContainer(MigrationRun.CONTAINER, ContainerDefinitionOptions.builder().image(releaseImage)
           .environment(migrationEnvironment).secrets(migrationSecrets)
           .logging(LogDrivers.awsLogs(AwsLogDriverProps.builder().logGroup(logGroup).streamPrefix("migration").build())).build());
       CfnOutput.Builder.create(this, "MigrationTaskDefinitionArn").value(migration.getTaskDefinitionArn()).build();
+      // The app runs with MIGRATIONS_MODE=skip, so every deploy migrates first: once the database
+      // exists, and before the service moves to the new definition.
+      var migrationRun = MigrationRun.add(this, cluster, migration, vpc.selectSubnets(
+          SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build()).getSubnetIds(),
+          serviceSecurityGroup, logGroup);
+      migrationRun.getNode().addDependency(database);
+      service.getNode().addDependency(migrationRun);
       if (config.production()) addProductionAlarms(config, database, service, targetGroup, logGroup);
     }
     CfnOutput.Builder.create(this, "ClusterArn").value(cluster.getClusterArn()).build();
@@ -471,7 +476,7 @@ public class SendRecStack extends Stack {
     CfnOutput.Builder.create(this, "ServiceSecurityGroupId").value(serviceSecurityGroup.getSecurityGroupId()).build();
     CfnOutput.Builder.create(this, "PrivateSubnetIds").value(String.join(",", vpc.selectSubnets(
         SubnetSelection.builder().subnetType(SubnetType.PRIVATE_WITH_EGRESS).build()).getSubnetIds())).build();
-    CfnOutput.Builder.create(this, "BaseUrl").value(baseUrl).build();
+    baseUrlOutput = CfnOutput.Builder.create(this, "BaseUrl").value(baseUrl).build();
     CfnOutput.Builder.create(this, "AlbDnsName").value(alb.getLoadBalancerDnsName()).build();
     CfnOutput.Builder.create(this, "DistributionId").value(distribution.getDistributionId()).build();
     CfnOutput.Builder.create(this, "ClusterName").value(cluster.getClusterName()).build();
@@ -488,6 +493,40 @@ public class SendRecStack extends Stack {
       }
     }
   }
+  /** The stage context keys that name the network instead of a lookup, as the pipeline passes them. */
+  static final List<String> NETWORK_KEYS = List.of("vpcAvailabilityZones", "vpcPrivateSubnetIds", "vpcIsolatedSubnetIds");
+
+  /**
+   * The pipeline names the network in its stage context (comma-separated, in zone order), so its
+   * Build step needs no CDK lookup role in staging or production: those roles can read every
+   * bucket, recordings included. A hand deploy without them looks the VPC up as before.
+   */
+  private IVpc vpc(String vpcId) {
+    List<String> present = NETWORK_KEYS.stream().filter(key -> getNode().tryGetContext(key) != null).toList();
+    if (present.isEmpty()) {
+      return Vpc.fromLookup(this, "Vpc", VpcLookupOptions.builder().vpcId(vpcId).region(getRegion()).build());
+    }
+    if (present.size() != NETWORK_KEYS.size()) throw new IllegalArgumentException("Name all of " + NETWORK_KEYS + " or none");
+    List<String> zones = listContext("vpcAvailabilityZones", getRegion() + "[a-z]");
+    List<String> privateSubnets = listContext("vpcPrivateSubnetIds", "subnet-[0-9a-f]+");
+    List<String> isolatedSubnets = listContext("vpcIsolatedSubnetIds", "subnet-[0-9a-f]+");
+    if (privateSubnets.size() != zones.size() || isolatedSubnets.size() != zones.size())
+      throw new IllegalArgumentException("Name one private and one isolated subnet per availability zone");
+    return Vpc.fromVpcAttributes(this, "Vpc", software.amazon.awscdk.services.ec2.VpcAttributes.builder()
+        .vpcId(vpcId).availabilityZones(zones).privateSubnetIds(privateSubnets).isolatedSubnetIds(isolatedSubnets).build());
+  }
+
+  private List<String> listContext(String key, String pattern) {
+    List<String> values = java.util.Arrays.stream(getNode().tryGetContext(key).toString().split(",")).map(String::strip).toList();
+    if (values.isEmpty() || values.stream().anyMatch(v -> !v.matches(pattern)) || values.stream().distinct().count() != values.size())
+      throw new IllegalArgumentException(key + " must be a comma-separated list matching " + pattern);
+    return values;
+  }
+
+  CfnOutput baseUrlOutput() {
+    return baseUrlOutput;
+  }
+
   private void addProductionAlarms(EnvironmentConfig config, DatabaseInstance database,
       FargateService service, ApplicationTargetGroup targets, LogGroup logs) {
     String probeCode;

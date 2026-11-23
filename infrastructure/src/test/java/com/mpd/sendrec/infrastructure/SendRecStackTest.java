@@ -207,6 +207,59 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("activateMpdIntegration", "true")));
   }
 
+  // MPD-592: the app runs with MIGRATIONS_MODE=skip, so a controlled release migrates inside the
+  // stack deploy, once the database exists and before the service moves.
+  @Test void controlledReleasesMigrateOnceBeforeTheServiceMoves() {
+    String image = "537421187871.dkr.ecr.ap-southeast-2.amazonaws.com/sendrec@sha256:" + "a".repeat(64);
+    Template template = Template.fromStack(stack(Map.of("releaseImage", image)));
+    Map<String, Map<String, Object>> runs = template.findResources("Custom::MigrationRun");
+    assertEquals(1, runs.size());
+    String run = runs.keySet().iterator().next();
+    Map<?, ?> properties = (Map<?, ?>) runs.get(run).get("Properties");
+    String migration = template.findResources("AWS::ECS::TaskDefinition", Match.objectLike(Map.of("Properties",
+        Match.objectLike(Map.of("Family", "sendrec-staging-migration"))))).keySet().iterator().next();
+    assertEquals(Map.of("Ref", migration), properties.get("TaskDefinition"));
+    assertEquals("migration", properties.get("Container"));
+    assertEquals(2, ((List<?>) properties.get("Subnets")).size());
+    assertEquals(1, ((List<?>) properties.get("SecurityGroups")).size());
+    String database = template.findResources("AWS::RDS::DBInstance").keySet().iterator().next();
+    assertTrue(((List<?>) runs.get(run).get("DependsOn")).contains(database));
+    Map<String, Object> service = template.findResources("AWS::ECS::Service").values().iterator().next();
+    assertTrue(((List<?>) service.get("DependsOn")).contains(run), "the service waits for the migration");
+    // Inline code, so a deploy publishes no file assets, with the Lambda's longest timeout.
+    template.hasResourceProperties("AWS::Lambda::Function", Map.of("Handler", "index.handler", "Runtime", "python3.13",
+        "Timeout", 900, "Code", Map.of("ZipFile", Match.stringLikeRegexp("def handler"))));
+    // It may start only the migration definition, only in its cluster, and read only its own stack.
+    String policies = template.findResources("AWS::IAM::Policy").toString();
+    assertTrue(policies.contains("Action=ecs:RunTask, Condition={ArnEquals={ecs:cluster="), policies);
+    assertTrue(policies.contains("Resource={Ref=" + migration + "}"), policies);
+    assertTrue(policies.contains("Action=cloudformation:DescribeStacks, Effect=Allow, Resource={Ref=AWS::StackId}"), policies);
+    assertTrue(policies.contains("Action=iam:PassRole"), policies);
+    // The task's roles exist first; one answer only, within 16 minutes, and no Lambda retry.
+    for (String role : List.of("MigrationTaskDefinitionExecutionRole", "MigrationTaskDefinitionTaskRole")) {
+      assertTrue(runs.get(run).get("DependsOn").toString().contains(role), runs.get(run).get("DependsOn").toString());
+    }
+    assertEquals("960", properties.get("ServiceTimeout"));
+    template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", Map.of("MaximumRetryAttempts", 0));
+    // A deploy that builds the image locally runs migrations in the app, as before.
+    Template.fromStack(stack(Map.of())).resourceCountIs("Custom::MigrationRun", 0);
+  }
+
+  @Test void aStageMayNameItsNetworkInsteadOfALookupButOnlyInFull() {
+    Map<String, Object> network = Map.of("vpcAvailabilityZones", "ap-southeast-2a,ap-southeast-2b",
+        "vpcPrivateSubnetIds", "subnet-0a,subnet-0b", "vpcIsolatedSubnetIds", "subnet-1a,subnet-1b");
+    App app = new App(AppProps.builder().context(network).build());
+    Template template = Template.fromStack(new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("NetworkConfiguration", Map.of("AwsvpcConfiguration",
+        Match.objectLike(Map.of("Subnets", List.of("subnet-0a", "subnet-0b"))))));
+    for (String key : SendRecStack.NETWORK_KEYS) {
+      Map<String, Object> partial = new java.util.HashMap<>(network);
+      partial.remove(key);
+      assertThrows(IllegalArgumentException.class, () -> new SendRecStack(new App(AppProps.builder().context(partial).build()),
+          "SendRecStaging", props, StagingConfig.INSTANCE), key);
+    }
+  }
+
   private Map<String, Object> activation(String origins) {
     Map<String, Object> context = new java.util.HashMap<>(Map.of(
         "activateMpdIntegration", "true",

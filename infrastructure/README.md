@@ -32,6 +32,8 @@ Before it builds the image, cdk-assets logs Docker in to this registry as the CD
 aws ecr set-repository-policy --region ap-southeast-2 --repository-name sendrec-base --policy-text file://sendrec-base-repository-policy.json
 ```
 
+Once `SendRecPipeline` exists, apply `pipeline/staging-base-repository-policy.json` instead, as in step 4 of the pipeline's one-time setup. It holds the same statement plus the pipeline build role's pull, and the policy above alone would stop the pipeline building images.
+
 Log Docker in yourself for a local build against the pinned base:
 
 ```bash
@@ -131,3 +133,135 @@ Before any operator-run teardown, list the stack resources, verify backups and e
 ## Production preparation
 
 The optional production stack and immutable release controls are documented in [the production runbook](../docs/production/README.md). Production runs the number of application tasks named by the required `productionTaskCount` input (1 to 4, normally 2), with integration flags disabled by default.
+
+## Deployment pipeline
+
+`SendRecPipeline` (`PipelineStack.java`, OpenSpec change `add-deploy-pipeline`) runs in MPD's deployment account, like the pipelines of MPD API, the staff app and Cortex. Each merge to `main` runs, in order:
+
+1. **Source**: `main` through the deployment account's GitHub connection.
+2. **Build** (`Synth`, role `sendrec-pipeline-build`): the Python, Node and Gradle infrastructure tests, then `pipeline/build-image.sh` builds the image for `linux/amd64` with `VERSION` set to the commit's first 8 characters and the `org.opencontainers.image.revision` label, and pushes it to staging's `sendrec` repository as `:<commit>`. A commit already there is not built again. Then `cdk synth -c targetEnvironment=pipeline` synthesizes both stages with the pushed digest and writes `sendrec-release.json` into the cloud assembly.
+3. **UpdatePipeline**: the pipeline updates itself when its own definition changed. A merge alone never changes it, because no per-commit value enters it.
+4. **Staging**: `WaitForGitHubCI` waits until GitHub's `ci.yml` run on `main` has passed for the commit (the Go, web and end-to-end checks), then the stage deploys `SendRecStaging` with the digest, then `VerifyStaging` waits up to 5 minutes for `/api/health` to report the version.
+5. **ApproveProduction**: a manual approval, which the nightly release approves.
+6. **Production**: `PromoteImage` (role `sendrec-pipeline-promote`) copies the digest into production's `sendrec` repository with a pinned, checksum-checked `crane`; production never rebuilds. Then it deploys `SendRecProduction` and `VerifyProduction` checks the version.
+
+Every stack deploy with a release image runs the migration task definition first, through the `MigrationRun` custom resource (`migration-runner.py`): after the database exists and before the service changes. A migration that exits non-zero fails the deploy; the stack rolls back and the service keeps its old definition. One still running after 14 minutes fails the deploy the same way but is left to finish, because stopping it midway would leave the schema dirty. A CloudFormation rollback runs nothing. Redeploying an older release, by stage rollback, revert or hand, runs that image's migration task, which finds the database newer than its own newest migration and exits 0 without changing anything: the schema stays at the newer release's version. The older image's migration run finds the database newer than its own newest migration and exits 0 without changing anything, so the older code runs on the newer schema; SendRec's migrations only add tables, columns and indexes, which older code ignores. Only images built from the `add-deploy-pipeline` change onward skip like this. An older image stops with "no migration found for version N", so never roll back past the first release that carries the change. The app keeps `MIGRATIONS_MODE=skip`.
+
+### Recovering a dirty schema
+
+A migration that fails partway leaves `schema_migrations` dirty, and every later release then fails at `MigrationRun` with "Dirty database version N". Recovery happens under a grant for production, and with synthetic data only on staging:
+
+1. Read the migration task's log (`migration/` stream in the stack's log group) for the failing statement.
+2. With a one-off task against the private database (the "Staging database without a login" pattern in `docs/agents/claude/production-release.md`), read `SELECT version, dirty FROM schema_migrations`.
+3. Undo what the failed migration left half done: for an interrupted `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY IF EXISTS <index>`, because `IF NOT EXISTS` would keep the invalid index. Migrations 000083 and 000084 have their own steps in `DEPLOYMENT.md`.
+4. `UPDATE schema_migrations SET version = <N - 1>, dirty = false`.
+5. Release again (**Release change**, or **Retry** on the failed stage); the migration runs from N.
+
+### Configuration
+
+Nothing that identifies production is committed. The Build step reads these String parameters in the deployment account, `ap-southeast-2`:
+
+| Parameter | Holds |
+|---|---|
+| `/sendrec/pipeline/settings` | `{"deploymentAccount": "…", "connectionArn": "…"}`, the same GitHub connection MPD API's pipeline uses |
+| `/sendrec/pipeline/staging-context` | the CDK context a staging release passes: `activateMpdIntegration`, `mpdIntegrationSecretArn`, the nine `MPD_*` settings, `mpdProcessingProgress`, `mpdWatchShare`, and `transcriptionProvider` if not local; plus the network, below |
+| `/sendrec/pipeline/production-context` | the same for production, plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionAlertTopicArn`, `productionDomainCertificateArn`, `productionTaskCount` and `productionDatabaseSize`; plus the network, below |
+| `/mpd-api/alarm-emails/staging`, `/mpd-api/alarm-emails/production` | MPD API's alarm lists, which the staff app also uses |
+| Secret `sendrec/github-ci-read` | a fine-grained GitHub token with read-only **Actions** access to this repository only, for `WaitForGitHubCI` |
+
+Each context also names its network, so the pipeline needs no CDK lookup role in staging or production (a lookup role can read every bucket in its account, recordings included): `vpcAvailabilityZones`, `vpcPrivateSubnetIds` and `vpcIsolatedSubnetIds`, comma-separated, one subnet of each kind per zone, in zone order. Read them once from the VPC the stack uses, or from the live stack's `PrivateSubnetIds` output and its database subnet group.
+
+Each context is a flat JSON object of strings, numbers and booleans, and reaches only its own stage. Synthesis refuses `releaseImage`, `productionImage`, `targetEnvironment`, `bootstrap` and `bootstrapCidr`: the pipeline sets the images and never bootstraps. Production still fails without `productionTaskCount`, and an active integration without both switches. To switch `mpdProcessingProgress` or `mpdWatchShare`, change the parameter in its own recorded step, then run the pipeline (**Release change**); a release never switches them. A parameter over 4 KB needs `--tier Advanced`.
+
+### Nightly production release
+
+The release is the staff app's, ported line for line (`NightlyRelease.java`; see the staff app's README, "Nightly production release", for every check). Its synthesized state machine is the staff app's with the names below substituted.
+
+- **17:20 Sydney.** EventBridge Scheduler starts `SendRecRelease` at 17:20 `Australia/Sydney` every day, after MPD API (16:55), Cortex (17:00) and the staff app (17:10). It approves the run waiting at `ApproveProduction`. Merge by about 16:50 to make that day's release; the Build step takes longer than the staff app's because it builds the image.
+- **Superseded runs.** Whenever `Staging` succeeds, older runs waiting at the gate are rejected with `Superseded by <execution id>`, so the gate holds the newest staging-verified run. Rejections send no alert.
+- **Hold.** `/sendrec/release/hold` in the deployment account. Only the exact value `off` releases; anything else, or no parameter, holds and emails the production list every day. CDK never creates or changes it.
+
+  ```bash
+  aws ssm put-parameter --name /sendrec/release/hold --type String --overwrite \
+    --value "on: <reason>" --region ap-southeast-2 --profile <deployment-admin>
+  aws ssm put-parameter --name /sendrec/release/hold --type String --overwrite \
+    --value off --region ap-southeast-2 --profile <deployment-admin>
+  ```
+
+- **Arrows.** Disabling the transition into `ApproveProduction` pauses releases; disabling the one into `Production` stops them, including a manual approval. The skip email quotes the reason.
+- **Manual release.** Approve the gate in the console for a hotfix. Starting `SendRecRelease` with `{"mode":"release"}` also releases.
+- **Alerts.** A failed `Source`, `Build`, `UpdatePipeline` or `Staging` stage emails the staging list through `sendrec-pipeline-staging`. A failed `Production` stage, a failed or timed-out release job and a held release email the production list through `sendrec-pipeline-production`. A deploy of `SendRecPipeline` without the two `-c alarmEmails…` values removes every subscription.
+
+### One-time setup, in a maintenance window
+
+These need deploy rights in the deployment account (a DeploymentMaintenance grant), staging ECR rights, and production ECR rights (a ProductionMaintenance grant). Keep the parameter files private and outside the repository.
+
+1. **Check, read-only.** In staging and production, the `CDKToolkit` stack's `TrustedAccounts` parameter names the deployment account (MPD API's pipeline already needs this). The deployment account's GitHub connection is `AVAILABLE` and its GitHub app can read `My-Performance-Doctor/sendrec`; if not, an organisation owner adds the repository to the app in GitHub. `/mpd-api/alarm-emails/staging` and `/mpd-api/alarm-emails/production` exist.
+2. **Configuration.** In a private directory `$PRIVATE_DIR`, write the three JSON files from the values the last release used (the staging task definition and the production release kit), with production's switches and task count as production runs them today, then create the parameters:
+
+   ```bash
+   for name in settings staging-context production-context; do
+     aws ssm put-parameter --name "/sendrec/pipeline/$name" --type String \
+       --value "file://$PRIVATE_DIR/$name.json" --region ap-southeast-2 --profile <deployment-admin>
+   done
+   ```
+
+   Store the GitHub token as the plain-text secret `sendrec/github-ci-read`, read-only Actions access to this repository only (the organisation may need to approve it), and replace it with `put-secret-value` before it expires:
+
+   ```bash
+   aws secretsmanager create-secret --name sendrec/github-ci-read --secret-string "file://$PRIVATE_DIR/token.txt" \
+     --region ap-southeast-2 --profile <deployment-admin>
+   ```
+
+3. **Hold, starting on.**
+
+   ```bash
+   aws ssm put-parameter --name /sendrec/release/hold --type String \
+     --value "on: first pipeline release not yet approved by hand" --region ap-southeast-2 --profile <deployment-admin>
+   ```
+
+4. **Repository policies.** The templates in `pipeline/` name the two pipeline roles through `aws:PrincipalArn`, so they work before the roles exist. Read each repository's current policy first: `set-repository-policy` replaces it, so merge any statement it holds into the template. `sendrec-base`'s should be the committed `sendrec-base-repository-policy.json`, which its template keeps. Set `DEPLOYMENT_ACCOUNT` to the deployment account's ID.
+
+   ```bash
+   policy() { sed "s/DEPLOYMENT_ACCOUNT/$DEPLOYMENT_ACCOUNT/g" "pipeline/$1"; }
+   aws ecr get-repository-policy --repository-name sendrec --region ap-southeast-2 --profile <staging-admin>
+   aws ecr set-repository-policy --repository-name sendrec --policy-text "$(policy staging-repository-policy.json)" \
+     --region ap-southeast-2 --profile <staging-admin>
+   aws ecr get-repository-policy --repository-name sendrec-base --region ap-southeast-2 --profile <staging-admin>
+   aws ecr set-repository-policy --repository-name sendrec-base --policy-text "$(policy staging-base-repository-policy.json)" \
+     --region ap-southeast-2 --profile <staging-admin>
+   aws ecr get-repository-policy --repository-name sendrec --region ap-southeast-2 --profile <production-admin>
+   aws ecr set-repository-policy --repository-name sendrec --policy-text "$(policy production-repository-policy.json)" \
+     --region ap-southeast-2 --profile <production-admin>
+   ```
+
+5. **Deploy the pipeline** from a checkout of `main`, as a deployment-account administrator. `releaseDigest` only feeds the stage templates, which this command does not deploy; use the digest staging runs.
+
+   ```bash
+   cd infrastructure
+   param() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text \
+     --region ap-southeast-2 --profile <deployment-admin>; }
+   export SENDREC_PIPELINE_SETTINGS="$(param /sendrec/pipeline/settings)"
+   export SENDREC_STAGING_CONTEXT="$(param /sendrec/pipeline/staging-context)"
+   export SENDREC_PRODUCTION_CONTEXT="$(param /sendrec/pipeline/production-context)"
+   cdk deploy SendRecPipeline --profile <deployment-admin> -c targetEnvironment=pipeline \
+     -c releaseRevision="$(git rev-parse HEAD)" -c releaseDigest=<staging's current digest> \
+     -c alarmEmailsStaging="$(param /mpd-api/alarm-emails/staging)" \
+     -c alarmEmailsProduction="$(param /mpd-api/alarm-emails/production)"
+   ```
+
+6. **Read the staging diff before the first staging deploy.** The pipeline starts a run on creation, so disable the transition into `Staging` at once, then diff with staging read credentials and the same variables:
+
+   ```bash
+   aws codepipeline disable-stage-transition --pipeline-name SendRec --stage-name Staging --transition-type Inbound \
+     --reason "First run: read the staging diff" --region ap-southeast-2 --profile <deployment-admin>
+   cdk diff 'SendRecPipeline/Staging/SendRecStaging' --profile <staging-read> -c targetEnvironment=pipeline \
+     -c releaseRevision=<run's commit> -c releaseDigest=<run's digest>
+   ```
+
+   Expect only the two task definitions' image, `MigrationRun` with its Lambda, role and policy, and the service's new dependency; no `MPD_*`, switch or transcription change. Then enable the transition (`enable-stage-transition`), watch staging deploy, and check `/api/health` and `/api/ready`.
+7. **Read the production diff before approving.** With production read credentials and the same variables, `cdk diff 'SendRecPipeline/Production/SendRecProduction' -c targetEnvironment=pipeline -c releaseRevision=<run's commit> -c releaseDigest=<run's digest> …`. Expect only the two task definitions' image, the `MigrationRun` resource, its Lambda, role and policy, and the service's new dependency; `DesiredCount` must stay at production's count. The release also ships every change on `main` since production's last release, so check `DEPLOYMENT.md`'s release gate for migrations first.
+8. **Approve the first production deploy by hand**, during the window and under the grant. Watch `PromoteImage`, the deploy (the migration runs first) and `VerifyProduction`; check `/api/ready` three times and the logs for errors.
+9. **Set the hold to `off`.** The next 17:20 release runs on its own.
+
+To back out before the first production approval, delete the `SendRecPipeline` stack. Both SendRec stacks keep what they last deployed, and the hand release in `docs/agents/claude/production-release.md` still works. After the first production release through the pipeline, that runbook is the fallback only.
