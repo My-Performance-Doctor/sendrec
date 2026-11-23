@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PipelinePromoteCopiesReleaseImages",
+      "Effect": "Allow",
+      "Principal": {"AWS": "arn:aws:iam::DEPLOYMENT_ACCOUNT:root"},
+      "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
+      "Condition": {"StringEquals": {"aws:PrincipalArn": "arn:aws:iam::DEPLOYMENT_ACCOUNT:role/sendrec-pipeline-promote"}}
+    }
+  ]
+}
