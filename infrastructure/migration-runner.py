@@ -1,9 +1,7 @@
 """Custom resource: runs the release's migration task once, before the service changes.
 
-CloudFormation calls this when the migration task definition revision changes. It starts
-the task on Fargate, waits for it to stop and reports success only on exit code 0. It does
-nothing on delete and nothing while the stack rolls back, because an older image's
-migrations would fail against a newer schema.
+Called when the migration task definition revision changes; succeeds only on exit code 0.
+Does nothing on delete or during a rollback, when older migrations would meet a newer schema.
 """
 import json
 import time
@@ -14,6 +12,7 @@ import boto3
 ROLLING_BACK = ("UPDATE_ROLLBACK_IN_PROGRESS", "ROLLBACK_IN_PROGRESS")
 PHYSICAL_ID = "migration-run"
 POLL_SECONDS = 10
+DENIED_ATTEMPTS = 7
 # Stop waiting a minute before the Lambda limit, so the failure still reaches CloudFormation.
 MARGIN_MS = 60_000
 
@@ -35,15 +34,27 @@ def rolling_back(cloudformation, stack_id):
     return stacks[0]["StackStatus"] in ROLLING_BACK
 
 
+def start(ecs, p, sleep):
+    # The grant names this new revision, so a denial (nothing started) waits for IAM.
+    for attempt in range(1, DENIED_ATTEMPTS + 1):
+        try:
+            return ecs.run_task(
+                cluster=p["Cluster"], taskDefinition=p["TaskDefinition"], launchType="FARGATE",
+                count=1, startedBy="sendrec-migration-run",
+                networkConfiguration={"awsvpcConfiguration": {
+                    "subnets": p["Subnets"], "securityGroups": p["SecurityGroups"],
+                    "assignPublicIp": "DISABLED"}})
+        except Exception as error:
+            code = getattr(error, "response", {}).get("Error", {}).get("Code")
+            if code != "AccessDeniedException" or attempt == DENIED_ATTEMPTS:
+                raise
+            sleep(POLL_SECONDS)
+
+
 def run(ecs, properties, remaining_ms, sleep=None):
     sleep = sleep or time.sleep
     cluster = properties["Cluster"]
-    started = ecs.run_task(
-        cluster=cluster, taskDefinition=properties["TaskDefinition"], launchType="FARGATE",
-        count=1, startedBy="sendrec-migration-run",
-        networkConfiguration={"awsvpcConfiguration": {
-            "subnets": properties["Subnets"], "securityGroups": properties["SecurityGroups"],
-            "assignPublicIp": "DISABLED"}})
+    started = start(ecs, properties, sleep)
     tasks = started.get("tasks", [])
     if started.get("failures") or len(tasks) != 1:
         raise RuntimeError("The migration task did not start")

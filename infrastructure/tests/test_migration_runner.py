@@ -53,6 +53,25 @@ class RunTest(unittest.TestCase):
             with self.subTest(response=response), self.assertRaisesRegex(RuntimeError, "did not start"):
                 runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None)
 
+    def test_a_denied_start_is_retried_while_the_new_grant_propagates(self):
+        class Denied(Exception):
+            def __init__(self, code):
+                super().__init__(code)
+                self.response = {"Error": {"Code": code}}
+
+        ecs = ecs_with(stopped(0))
+        started = ecs.run_task.return_value
+        ecs.run_task.side_effect = [Denied("AccessDeniedException"), Denied("AccessDeniedException"), started]
+        self.assertEqual("synthetic-task", runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None))
+        self.assertEqual(3, ecs.run_task.call_count)
+        for side_effect, calls in (([Denied("ClusterNotFoundException")], 1),
+                                   ([Denied("AccessDeniedException")] * runner.DENIED_ATTEMPTS, runner.DENIED_ATTEMPTS)):
+            ecs = ecs_with()
+            ecs.run_task.side_effect = side_effect
+            with self.subTest(calls=calls), self.assertRaises(Denied):
+                runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None)
+            self.assertEqual(calls, ecs.run_task.call_count)
+
     def test_a_task_still_running_near_the_limit_is_stopped_and_fails(self):
         remaining = iter([900_000, 120_000, 59_000])
         ecs = ecs_with({"tasks": [{"lastStatus": "RUNNING"}]}, {"tasks": [{"lastStatus": "RUNNING"}]})

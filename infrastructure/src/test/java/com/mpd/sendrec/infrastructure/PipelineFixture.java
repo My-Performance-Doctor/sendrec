@@ -41,8 +41,17 @@ final class PipelineFixture {
     return context;
   }
 
+  /** The network each stage names in its context, instead of a lookup. */
+  static void network(Map<String, Object> context, int network) {
+    context.put("vpcAvailabilityZones", "ap-southeast-2a,ap-southeast-2b");
+    context.put("vpcPrivateSubnetIds", "subnet-" + network + "1a0000000000000,subnet-" + network + "1b0000000000000");
+    context.put("vpcIsolatedSubnetIds", "subnet-" + network + "2a0000000000000,subnet-" + network + "2b0000000000000");
+  }
+
   static Map<String, Object> stagingContext() {
-    return integration(StagingConfig.ACCOUNT, "false");
+    Map<String, Object> context = integration(StagingConfig.ACCOUNT, "false");
+    network(context, 1);
+    return context;
   }
 
   static Map<String, Object> productionContext() {
@@ -56,6 +65,7 @@ final class PipelineFixture {
         "arn:aws:acm:us-east-1:" + PRODUCTION + ":certificate/00000000-0000-4000-8000-000000000004");
     context.put("productionTaskCount", 2);
     context.put("productionDatabaseSize", "small");
+    network(context, 2);
     return context;
   }
 
@@ -76,37 +86,9 @@ final class PipelineFixture {
     return environment(stagingContext(), productionContext());
   }
 
-  /** Answers for both stages' Vpc.fromLookup, with public, private and isolated subnets in two zones. */
-  static Map<String, Object> lookups() {
-    Map<String, Object> context = new HashMap<>();
-    context.put(lookupKey(StagingConfig.ACCOUNT, StagingConfig.INSTANCE.vpcId()), vpc(StagingConfig.INSTANCE.vpcId(), 1));
-    context.put(lookupKey(PRODUCTION, PRODUCTION_VPC), vpc(PRODUCTION_VPC, 2));
-    return context;
-  }
-
-  private static String lookupKey(String account, String vpcId) {
-    return "vpc-provider:account=" + account + ":filter.vpc-id=" + vpcId + ":region=ap-southeast-2:returnAsymmetricSubnets=true";
-  }
-
-  private static Map<String, Object> vpc(String id, int network) {
-    List<String> zones = List.of("ap-southeast-2a", "ap-southeast-2b");
-    List<Object> groups = new java.util.ArrayList<>();
-    String[][] kinds = {{"public-subnet", "Public"}, {"private-subnet", "Private"}, {"isolated-subnet", "Isolated"}};
-    for (int kind = 0; kind < kinds.length; kind++) {
-      List<Object> subnets = new java.util.ArrayList<>();
-      for (int zone = 0; zone < zones.size(); zone++) {
-        subnets.add(Map.of("subnetId", "subnet-" + network + kind + zone + "0000000000000",
-            "cidr", "10." + network + "." + (kind * 16 + zone) + ".0/24", "availabilityZone", zones.get(zone),
-            "routeTableId", "rtb-" + network + kind + zone + "0000000000000"));
-      }
-      groups.add(Map.of("name", kinds[kind][0], "type", kinds[kind][1], "subnets", subnets));
-    }
-    return Map.of("vpcId", id, "vpcCidrBlock", "10." + network + ".0.0/16", "ownerAccountId", "000000000000",
-        "availabilityZones", List.of(), "subnetGroups", groups);
-  }
-
   static App app(String revision, String digest, Map<String, Object> extra) {
-    Map<String, Object> context = new HashMap<>(lookups());
+    // No lookup answers: the pipeline must synthesize from its stage contexts alone.
+    Map<String, Object> context = new HashMap<>();
     context.put("releaseRevision", revision);
     context.put("releaseDigest", digest);
     context.putAll(extra);

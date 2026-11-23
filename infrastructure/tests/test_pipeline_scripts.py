@@ -29,6 +29,7 @@ echo "docker $*" >> "$STUBS/calls.log"
 case "$1" in
   login) cat > /dev/null ;;
   push) cp "$STUBS/push-digest" "$STUBS/pushed" ;;
+  image) cat "$STUBS/label" ;;
 esac
 """
 CRANE = """#!/bin/sh
@@ -38,7 +39,9 @@ case "$1" in
   digest)
     if [ -f "$STUBS/copied" ]; then cat "$STUBS/copied"; exit 0; fi
     if [ -f "$STUBS/production-tag" ]; then cat "$STUBS/production-tag"; exit 0; fi
-    echo "MANIFEST_UNKNOWN" >&2; exit 1 ;;
+    if [ -f "$STUBS/digest-error" ]; then cat "$STUBS/digest-error" >&2
+    else echo "MANIFEST_UNKNOWN: Requested image not found" >&2; fi
+    exit 1 ;;
   copy) cp "$STUBS/copy-digest" "$STUBS/copied" ;;
 esac
 """
@@ -107,10 +110,22 @@ class BuildImageTest(unittest.TestCase):
 
     def test_an_image_already_pushed_is_reused_and_nothing_is_built(self):
         self.stubs.write("existing", DIGEST)
+        self.stubs.write("label", REVISION)
         result = self.build()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(DIGEST, result.stdout.strip())
-        self.assertFalse([c for c in self.stubs.calls() if c.startswith("docker")])
+        docker = [c for c in self.stubs.calls() if c.startswith("docker")]
+        self.assertIn(f"docker pull {STAGING}/sendrec:{REVISION}", docker)
+        self.assertFalse([c for c in docker if c.startswith(("docker build", "docker push"))])
+
+    def test_a_reused_image_without_the_commit_label_is_refused(self):
+        self.stubs.write("existing", DIGEST)
+        for label in ("", "fedcba9876543210fedcba9876543210fedcba98"):
+            with self.subTest(label=label):
+                self.stubs.write("label", label)
+                result = self.build()
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("refusing to reuse it", result.stderr)
 
     def test_any_other_read_error_fails_without_building(self):
         self.stubs.write("describe-error", "An error occurred (AccessDeniedException)")
@@ -160,6 +175,13 @@ class PromoteImageTest(unittest.TestCase):
         result = self.stubs.run("promote-image.sh", RELEASE_FILE=self.stubs.release())
         self.assertNotEqual(0, result.returncode)
         self.assertIn("already names", result.stderr)
+        self.assertFalse([c for c in self.stubs.calls() if c.startswith("crane copy")])
+
+    def test_a_failed_tag_read_stops_with_its_own_error_and_copies_nothing(self):
+        self.stubs.write("digest-error", "DENIED: not authorized to perform ecr:BatchGetImage")
+        result = self.stubs.run("promote-image.sh", RELEASE_FILE=self.stubs.release())
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("DENIED", result.stderr)
         self.assertFalse([c for c in self.stubs.calls() if c.startswith("crane copy")])
 
     def test_a_release_file_whose_images_differ_is_refused(self):
@@ -235,3 +257,8 @@ class RepositoryPolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InlineRunnerSizeTest(unittest.TestCase):
+    def test_the_migration_runner_fits_cloudformations_inline_code_limit(self):
+        self.assertLess(len((SCRIPTS.parent / "migration-runner.py").read_bytes()), 4096)

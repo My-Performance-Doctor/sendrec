@@ -18,7 +18,14 @@
 - [x] 3.2 Test it by running the synthesized definition against a fake pipeline: approve, hold, supersede, transitions, deploying, changed pipeline, one release per firing, read cap; and the schedule, triggers, topics and grants.
 - [x] 3.3 Check the synthesized definition against the staff app's, with names substituted.
 
-## 4. Workflows and documentation
+## 4. Review fixes
 
-- [x] 4.1 Remove `mpd-build-candidate.yml` and `mpd-promote.yml`.
-- [x] 4.2 Document the pipeline, the nightly release, the hold and the one-time deploy steps in `infrastructure/README.md`; mark the hand runbook as the fallback; note the change in `DEPLOYMENT.md`.
+- [x] 4.1 Name each stage's network in its context and drop the CDK lookup roles from the Build role.
+- [x] 4.2 Wait for GitHub CI before staging; run the Python and Node infrastructure tests in Build.
+- [x] 4.3 Refuse a reused image without the commit's revision label; stop on any production tag-read error but "not found".
+- [x] 4.4 Make the migration run wait for its task roles, answer within 16 minutes and never retry the Lambda.
+
+## 5. Workflows and documentation
+
+- [x] 5.1 Remove `mpd-build-candidate.yml` and `mpd-promote.yml`.
+- [x] 5.2 Document the pipeline, the nightly release, the hold and the one-time deploy steps in `infrastructure/README.md`; mark the hand runbook as the fallback; note the change in `DEPLOYMENT.md`.

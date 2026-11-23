@@ -69,7 +69,9 @@ class PipelineStackTest {
     template.hasResourceProperties("AWS::CodePipeline::Pipeline", Map.of("Name", "SendRec", "PipelineType", "V2"));
     assertEquals(List.of("1:ApproveProduction"), actions(stages.get(4)));
     // Staging deploys, then checks its version. Production copies the image, deploys, then checks.
-    assertEquals(List.of("1:SendRecStaging.Prepare", "2:SendRecStaging.Deploy", "3:VerifyStaging"), actions(stages.get(3)));
+    // Staging waits for GitHub CI to pass on the commit before it deploys.
+    assertEquals(List.of("1:WaitForGitHubCI", "2:SendRecStaging.Prepare", "3:SendRecStaging.Deploy", "4:VerifyStaging"),
+        actions(stages.get(3)));
     assertEquals(List.of("1:PromoteImage", "2:SendRecProduction.Prepare", "3:SendRecProduction.Deploy", "4:VerifyProduction"),
         actions(stages.get(5)));
     JsonNode source = stages.get(0).path("Actions").get(0).path("Configuration");
@@ -98,6 +100,10 @@ class PipelineStackTest {
       assertTrue(environment.contains("MPD_IDENTITY_ENABLED, Value=true"));
     }
     production.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", 2));
+    // Each stage runs in the subnets its context names.
+    production.hasResourceProperties("AWS::ECS::Service", Map.of("NetworkConfiguration", Map.of("AwsvpcConfiguration",
+        Match.objectLike(Map.of("Subnets", List.of("subnet-21a0000000000000", "subnet-21b0000000000000"))))));
+    staging.hasResourceProperties("AWS::RDS::DBSubnetGroup", Map.of("SubnetIds", List.of("subnet-12a0000000000000", "subnet-12b0000000000000")));
     staging.hasResourceProperties("AWS::ECS::Service", Map.of("DesiredCount", Match.absent()));
     // Each stage gets only its own context: staging's watch share is off, production's on.
     assertTrue(staging.findResources("AWS::ECS::TaskDefinition").toString().contains("MPD_WATCH_SHARE_ENABLED, Value=false"));
@@ -114,6 +120,11 @@ class PipelineStackTest {
     assertEquals(json, other, "a merge must not make the pipeline update itself");
     assertFalse(json.contains(REVISION));
     assertFalse(json.contains(DIGEST.substring(7)));
+    // Map.of iterates in an order seeded per JVM, so a second synth in this JVM cannot show it.
+    // The Build project's variables, which its config hash in the definition covers, keep this order.
+    assertEquals(List.of(PipelineConfig.SETTINGS_VARIABLE, PipelineConfig.STAGING_VARIABLE,
+        PipelineConfig.PRODUCTION_VARIABLE, "ALARM_EMAILS_STAGING", "ALARM_EMAILS_PRODUCTION"),
+        List.copyOf(PipelineStack.parameters().keySet()));
   }
 
   @Test void theReleaseFileNamesOneDigestForBothEnvironments() throws Exception {
@@ -152,6 +163,12 @@ class PipelineStackTest {
     refuses("production in staging's account", c -> {}, c -> c.put("productionAccount", StagingConfig.ACCOUNT));
     refuses("a switch left out", c -> c.remove("mpdWatchShare"), c -> {});
     refuses("a nested value", c -> c.put("MPD_EVENT_KEY_ID", List.of("a")), c -> {});
+    for (String key : SendRecStack.NETWORK_KEYS) {
+      refuses("staging without " + key, c -> c.remove(key), c -> {});
+      refuses("production without " + key, c -> {}, c -> c.remove(key));
+    }
+    refuses("a subnet per zone", c -> {}, c -> c.put("vpcPrivateSubnetIds", "subnet-21a0000000000000"));
+    refuses("a malformed subnet", c -> {}, c -> c.put("vpcIsolatedSubnetIds", "subnet-2a,sg-2b"));
   }
 
   @Test void theReleaseAndSettingsMustBeWellFormed() {
@@ -202,8 +219,9 @@ class PipelineStackTest {
     String productionRepository = "arn:aws:ecr:ap-southeast-2:" + PRODUCTION + ":repository/sendrec\"";
     assertTrue(build.contains("ecr:PutImage") && build.contains(stagingRepository), build);
     assertTrue(build.contains("arn:aws:ecr:ap-southeast-2:537421187871:repository/sendrec-base"), build);
-    assertTrue(build.contains("cdk-hnb659fds-lookup-role-537421187871-ap-southeast-2"), build);
-    assertTrue(build.contains("cdk-hnb659fds-lookup-role-" + PRODUCTION + "-ap-southeast-2"), build);
+    // No lookup role: one can read every bucket in its account, recordings included.
+    assertFalse(build.contains("sts:AssumeRole"), build);
+    assertFalse(template.toJSON().toString().contains("lookup-role"));
     assertFalse(build.contains(productionRepository), build);
     for (String parameter : PipelineStack.parameters().values()) assertTrue(build.contains("parameter" + parameter), parameter);
     assertTrue(promote.contains(productionRepository) && promote.contains("ecr:PutImage"), promote);
@@ -229,12 +247,16 @@ class PipelineStackTest {
     int javaTrust = indexOf(commands, "test $? -eq 1");
     int cli = indexOf(commands, "npm install -g aws-cdk@" + PipelineStack.CDK_CLI_VERSION);
     int tests = indexOf(commands, "./gradlew -q test");
+    int pythonTests = indexOf(commands, "python3 -B -m unittest discover -s infrastructure/tests");
+    int nodeTests = indexOf(commands, "node tests/test_bootstrap_access.cjs");
     int image = indexOf(commands, "sh infrastructure/pipeline/build-image.sh");
     int cdkSynth = indexOf(commands, "cdk synth");
     assertTrue(node < nodeCheck && nodeCheck < cli && caCertificates < image && javaTrust < tests, commands.toString());
     assertTrue(cli < tests && tests < image && image < cdkSynth, commands.toString());
+    assertTrue(pythonTests < image && nodeTests < image, commands.toString());
     String synthCommand = commands.get(cdkSynth);
-    for (String part : List.of("-c targetEnvironment=pipeline", "-c releaseRevision=\"$REVISION\"",
+    // -q: the pipeline's template, with production's account and the alarm lists, stays out of the log.
+    for (String part : List.of("cdk synth -q ", "-c targetEnvironment=pipeline", "-c releaseRevision=\"$REVISION\"",
         "-c releaseDigest=\"$RELEASE_DIGEST\"", "-c alarmEmailsStaging=\"$ALARM_EMAILS_STAGING\"",
         "-c alarmEmailsProduction=\"$ALARM_EMAILS_PRODUCTION\"")) {
       assertTrue(synthCommand.contains(part), part);
@@ -268,6 +290,17 @@ class PipelineStackTest {
       assertTrue(java.util.regex.Pattern.compile("\"name\":\"BASE_URL\",\"type\":\"PLAINTEXT\",\"value\":\"#\\{SendRecPipeline"
           + stage + "[0-9A-F]{8}\\.BaseUrl}\"").matcher(json).find(), stage);
     }
+  }
+
+  @Test void stagingWaitsForGitHubCiWithAReadOnlyTokenFromSecretsManager() {
+    String wait = project("WaitForGitHubCI");
+    List<String> commands = projects.get(wait);
+    assertEquals("python3 -B infrastructure/pipeline/wait-for-ci.py", commands.get(commands.size() - 1));
+    Map<String, String> variables = new HashMap<>();
+    projectProperties.get(wait).path("Environment").path("EnvironmentVariables")
+        .forEach(v -> variables.put(v.path("Name").asText(), v.path("Type").asText() + ":" + v.path("Value").asText()));
+    assertEquals("SECRETS_MANAGER:sendrec/github-ci-read", variables.get("GITHUB_TOKEN"));
+    assertEquals("PLAINTEXT:assembly/sendrec-release.json", variables.get("RELEASE_FILE"));
   }
 
   @Test void thePipelineCreatesNoHoldAndNamesItsRelease() {

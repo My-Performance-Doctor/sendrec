@@ -32,6 +32,8 @@ Before it builds the image, cdk-assets logs Docker in to this registry as the CD
 aws ecr set-repository-policy --region ap-southeast-2 --repository-name sendrec-base --policy-text file://sendrec-base-repository-policy.json
 ```
 
+Once `SendRecPipeline` exists, apply `pipeline/staging-base-repository-policy.json` instead, as in step 4 of the pipeline's one-time setup. It holds the same statement plus the pipeline build role's pull, and the policy above alone would stop the pipeline building images.
+
 Log Docker in yourself for a local build against the pinned base:
 
 ```bash
@@ -137,9 +139,9 @@ The optional production stack and immutable release controls are documented in [
 `SendRecPipeline` (`PipelineStack.java`, OpenSpec change `add-deploy-pipeline`) runs in MPD's deployment account, like the pipelines of MPD API, the staff app and Cortex. Each merge to `main` runs, in order:
 
 1. **Source**: `main` through the deployment account's GitHub connection.
-2. **Build** (`Synth`, role `sendrec-pipeline-build`): `./gradlew test`, then `pipeline/build-image.sh` builds the image for `linux/amd64` with `VERSION` set to the commit's first 8 characters and the `org.opencontainers.image.revision` label, and pushes it to staging's `sendrec` repository as `:<commit>`. A commit already there is not built again. Then `cdk synth -c targetEnvironment=pipeline` synthesizes both stages with the pushed digest and writes `sendrec-release.json` into the cloud assembly.
+2. **Build** (`Synth`, role `sendrec-pipeline-build`): the Python, Node and Gradle infrastructure tests, then `pipeline/build-image.sh` builds the image for `linux/amd64` with `VERSION` set to the commit's first 8 characters and the `org.opencontainers.image.revision` label, and pushes it to staging's `sendrec` repository as `:<commit>`. A commit already there is not built again. Then `cdk synth -c targetEnvironment=pipeline` synthesizes both stages with the pushed digest and writes `sendrec-release.json` into the cloud assembly.
 3. **UpdatePipeline**: the pipeline updates itself when its own definition changed. A merge alone never changes it, because no per-commit value enters it.
-4. **Staging**: deploys `SendRecStaging` with the digest, then `VerifyStaging` waits up to 5 minutes for `/api/health` to report the version.
+4. **Staging**: `WaitForGitHubCI` waits until GitHub's `ci.yml` run on `main` has passed for the commit (the Go, web and end-to-end checks), then the stage deploys `SendRecStaging` with the digest, then `VerifyStaging` waits up to 5 minutes for `/api/health` to report the version.
 5. **ApproveProduction**: a manual approval, which the nightly release approves.
 6. **Production**: `PromoteImage` (role `sendrec-pipeline-promote`) copies the digest into production's `sendrec` repository with a pinned, checksum-checked `crane`; production never rebuilds. Then it deploys `SendRecProduction` and `VerifyProduction` checks the version.
 
@@ -152,9 +154,12 @@ Nothing that identifies production is committed. The Build step reads these Stri
 | Parameter | Holds |
 |---|---|
 | `/sendrec/pipeline/settings` | `{"deploymentAccount": "…", "connectionArn": "…"}`, the same GitHub connection MPD API's pipeline uses |
-| `/sendrec/pipeline/staging-context` | the CDK context a staging release passes: `activateMpdIntegration`, `mpdIntegrationSecretArn`, the nine `MPD_*` settings, `mpdProcessingProgress`, `mpdWatchShare`, and `transcriptionProvider` if not local |
-| `/sendrec/pipeline/production-context` | the same for production, plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionAlertTopicArn`, `productionDomainCertificateArn`, `productionTaskCount` and `productionDatabaseSize` |
+| `/sendrec/pipeline/staging-context` | the CDK context a staging release passes: `activateMpdIntegration`, `mpdIntegrationSecretArn`, the nine `MPD_*` settings, `mpdProcessingProgress`, `mpdWatchShare`, and `transcriptionProvider` if not local; plus the network, below |
+| `/sendrec/pipeline/production-context` | the same for production, plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionAlertTopicArn`, `productionDomainCertificateArn`, `productionTaskCount` and `productionDatabaseSize`; plus the network, below |
 | `/mpd-api/alarm-emails/staging`, `/mpd-api/alarm-emails/production` | MPD API's alarm lists, which the staff app also uses |
+| Secret `sendrec/github-ci-read` | a fine-grained GitHub token with read-only **Actions** access to this repository only, for `WaitForGitHubCI` |
+
+Each context also names its network, so the pipeline needs no CDK lookup role in staging or production (a lookup role can read every bucket in its account, recordings included): `vpcAvailabilityZones`, `vpcPrivateSubnetIds` and `vpcIsolatedSubnetIds`, comma-separated, one subnet of each kind per zone, in zone order. Read them once from the VPC the stack uses, or from the live stack's `PrivateSubnetIds` output and its database subnet group.
 
 Each context is a flat JSON object of strings, numbers and booleans, and reaches only its own stage. Synthesis refuses `releaseImage`, `productionImage`, `targetEnvironment`, `bootstrap` and `bootstrapCidr`: the pipeline sets the images and never bootstraps. Production still fails without `productionTaskCount`, and an active integration without both switches. To switch `mpdProcessingProgress` or `mpdWatchShare`, change the parameter in its own recorded step, then run the pipeline (**Release change**); a release never switches them. A parameter over 4 KB needs `--tier Advanced`.
 
@@ -179,9 +184,9 @@ The release is the staff app's, ported line for line (`NightlyRelease.java`; see
 
 ### One-time setup, in a maintenance window
 
-These need deploy rights in the deployment account (a DeploymentMaintenance grant, or Jefferson), staging ECR rights, and production ECR rights (a ProductionMaintenance grant). Keep the parameter files private and outside the repository.
+These need deploy rights in the deployment account (a DeploymentMaintenance grant), staging ECR rights, and production ECR rights (a ProductionMaintenance grant). Keep the parameter files private and outside the repository.
 
-1. **Check, read-only.** In staging and production, the `CDKToolkit` stack's `TrustedAccounts` and `TrustedAccountsForLookup` parameters name the deployment account (MPD API's pipeline already needs this). The deployment account's GitHub connection is `AVAILABLE` and its GitHub app can read `My-Performance-Doctor/sendrec`; if not, an organisation owner adds the repository to the app in GitHub. `/mpd-api/alarm-emails/staging` and `/mpd-api/alarm-emails/production` exist.
+1. **Check, read-only.** In staging and production, the `CDKToolkit` stack's `TrustedAccounts` parameter names the deployment account (MPD API's pipeline already needs this). The deployment account's GitHub connection is `AVAILABLE` and its GitHub app can read `My-Performance-Doctor/sendrec`; if not, an organisation owner adds the repository to the app in GitHub. `/mpd-api/alarm-emails/staging` and `/mpd-api/alarm-emails/production` exist.
 2. **Configuration.** In a private directory `$PRIVATE_DIR`, write the three JSON files from the values the last release used (the staging task definition and the production release kit), with production's switches and task count as production runs them today, then create the parameters:
 
    ```bash
@@ -189,6 +194,13 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
      aws ssm put-parameter --name "/sendrec/pipeline/$name" --type String \
        --value "file://$PRIVATE_DIR/$name.json" --region ap-southeast-2 --profile <deployment-admin>
    done
+   ```
+
+   Store the GitHub token as the plain-text secret `sendrec/github-ci-read`, read-only Actions access to this repository only (the organisation may need to approve it), and replace it with `put-secret-value` before it expires:
+
+   ```bash
+   aws secretsmanager create-secret --name sendrec/github-ci-read --secret-string "file://$PRIVATE_DIR/token.txt" \
+     --region ap-southeast-2 --profile <deployment-admin>
    ```
 
 3. **Hold, starting on.**
@@ -212,7 +224,7 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
      --region ap-southeast-2 --profile <production-admin>
    ```
 
-5. **Deploy the pipeline** from a checkout of `main`, as a deployment-account administrator whose session can also assume the staging and production lookup roles. `releaseDigest` only feeds the stage templates, which this command does not deploy; use the digest staging runs.
+5. **Deploy the pipeline** from a checkout of `main`, as a deployment-account administrator. `releaseDigest` only feeds the stage templates, which this command does not deploy; use the digest staging runs.
 
    ```bash
    cd infrastructure
@@ -227,7 +239,16 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
      -c alarmEmailsProduction="$(param /mpd-api/alarm-emails/production)"
    ```
 
-6. **First run.** The pipeline starts a run on creation. Watch it build the image and deploy staging: the first staging deploy adds `MigrationRun` and its Lambda, and moves the task definitions to the new digest. Check `/api/health` and `/api/ready` on staging.
+6. **Read the staging diff before the first staging deploy.** The pipeline starts a run on creation, so disable the transition into `Staging` at once, then diff with staging read credentials and the same variables:
+
+   ```bash
+   aws codepipeline disable-stage-transition --pipeline-name SendRec --stage-name Staging --transition-type Inbound \
+     --reason "First run: read the staging diff" --region ap-southeast-2 --profile <deployment-admin>
+   cdk diff 'SendRecPipeline/Staging/SendRecStaging' --profile <staging-read> -c targetEnvironment=pipeline \
+     -c releaseRevision=<run's commit> -c releaseDigest=<run's digest>
+   ```
+
+   Expect only the two task definitions' image, `MigrationRun` with its Lambda, role and policy, and the service's new dependency; no `MPD_*`, switch or transcription change. Then enable the transition (`enable-stage-transition`), watch staging deploy, and check `/api/health` and `/api/ready`.
 7. **Read the production diff before approving.** With production read credentials and the same variables, `cdk diff 'SendRecPipeline/Production/SendRecProduction' -c targetEnvironment=pipeline -c releaseRevision=<run's commit> -c releaseDigest=<run's digest> …`. Expect only the two task definitions' image, the `MigrationRun` resource, its Lambda, role and policy, and the service's new dependency; `DesiredCount` must stay at production's count. The release also ships every change on `main` since production's last release, so check `DEPLOYMENT.md`'s release gate for migrations first.
 8. **Approve the first production deploy by hand**, during the window and under the grant. Watch `PromoteImage`, the deploy (the migration runs first) and `VerifyProduction`; check `/api/ready` three times and the logs for errors.
 9. **Set the hold to `off`.** The next 17:20 release runs on its own.

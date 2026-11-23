@@ -235,8 +235,29 @@ class SendRecStackTest {
     assertTrue(policies.contains("Resource={Ref=" + migration + "}"), policies);
     assertTrue(policies.contains("Action=cloudformation:DescribeStacks, Effect=Allow, Resource={Ref=AWS::StackId}"), policies);
     assertTrue(policies.contains("Action=iam:PassRole"), policies);
+    // The task's roles exist first; one answer only, within 16 minutes, and no Lambda retry.
+    for (String role : List.of("MigrationTaskDefinitionExecutionRole", "MigrationTaskDefinitionTaskRole")) {
+      assertTrue(runs.get(run).get("DependsOn").toString().contains(role), runs.get(run).get("DependsOn").toString());
+    }
+    assertEquals("960", properties.get("ServiceTimeout"));
+    template.hasResourceProperties("AWS::Lambda::EventInvokeConfig", Map.of("MaximumRetryAttempts", 0));
     // A deploy that builds the image locally runs migrations in the app, as before.
     Template.fromStack(stack(Map.of())).resourceCountIs("Custom::MigrationRun", 0);
+  }
+
+  @Test void aStageMayNameItsNetworkInsteadOfALookupButOnlyInFull() {
+    Map<String, Object> network = Map.of("vpcAvailabilityZones", "ap-southeast-2a,ap-southeast-2b",
+        "vpcPrivateSubnetIds", "subnet-0a,subnet-0b", "vpcIsolatedSubnetIds", "subnet-1a,subnet-1b");
+    App app = new App(AppProps.builder().context(network).build());
+    Template template = Template.fromStack(new SendRecStack(app, "SendRecStaging", props, StagingConfig.INSTANCE));
+    template.hasResourceProperties("AWS::ECS::Service", Map.of("NetworkConfiguration", Map.of("AwsvpcConfiguration",
+        Match.objectLike(Map.of("Subnets", List.of("subnet-0a", "subnet-0b"))))));
+    for (String key : SendRecStack.NETWORK_KEYS) {
+      Map<String, Object> partial = new java.util.HashMap<>(network);
+      partial.remove(key);
+      assertThrows(IllegalArgumentException.class, () -> new SendRecStack(new App(AppProps.builder().context(partial).build()),
+          "SendRecStaging", props, StagingConfig.INSTANCE), key);
+    }
   }
 
   private Map<String, Object> activation(String origins) {

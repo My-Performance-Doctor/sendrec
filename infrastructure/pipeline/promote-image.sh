@@ -29,13 +29,19 @@ for registry in "${staging_repository%%/*}" "${production_repository%%/*}"; do
 done
 
 target="$production_repository:$revision"
-if existing=$("$CRANE" digest "$target" 2>/dev/null); then
+errors=$(mktemp)
+trap 'rm -f "$errors"' EXIT
+if existing=$("$CRANE" digest "$target" 2>"$errors"); then
   if [ "$existing" != "$digest" ]; then
     echo "$target already names $existing, not $digest" >&2
     exit 1
   fi
   echo "Production already holds $target at $digest"
   exit 0
+elif ! grep -q MANIFEST_UNKNOWN "$errors"; then
+  # Anything but "no such tag", such as a missing repository policy, stops here with its own message.
+  cat "$errors" >&2
+  exit 1
 fi
 "$CRANE" copy "$staging_repository@$digest" "$target"
 copied=$("$CRANE" digest "$target")

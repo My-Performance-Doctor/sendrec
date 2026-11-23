@@ -120,7 +120,7 @@ final class NightlyRelease extends Construct {
         .eventPattern(EventPattern.builder()
             .source(List.of("aws.states"))
             .detailType(List.of("Step Functions Execution Status Change"))
-            .detail(Map.of("status", List.of("FAILED", "TIMED_OUT", "ABORTED"),
+            .detail(ordered("status", List.of("FAILED", "TIMED_OUT", "ABORTED"),
                 "stateMachineArn", List.of(release.getStateMachineArn())))
             .build())
         .targets(List.of(new SnsTopic(productionTopic, SnsTopicProps.builder()
@@ -141,7 +141,7 @@ final class NightlyRelease extends Construct {
         // The firing starts the release under a name made from its scheduled time, so a retry or
         // a second delivery cannot start a second release.
         .target(new StepFunctionsStartExecution(release, ScheduleTargetBaseProps.builder()
-            .input(ScheduleTargetInput.fromObject(Map.of(
+            .input(ScheduleTargetInput.fromObject(ordered(
                 "mode", "schedule", "scheduledTime", ContextAttribute.getScheduledTime())))
             // Never retry a failed start into a release in the middle of the night.
             .maxEventAge(Duration.minutes(15))
@@ -181,7 +181,7 @@ final class NightlyRelease extends Construct {
         .principals(List.of(new ServicePrincipal("events.amazonaws.com")))
         .actions(List.of("sns:Publish"))
         .resources(List.of(topic.getTopicArn()))
-        .conditions(Map.of(
+        .conditions(ordered(
             "ArnNotLike", Map.of("aws:SourceArn", "arn:aws:events:" + region + ":" + account + ":rule/*"),
             "StringNotEquals", Map.of("aws:SourceAccount", account)))
         .build());
@@ -192,7 +192,7 @@ final class NightlyRelease extends Construct {
     return EventPattern.builder()
         .source(List.of("aws.codepipeline"))
         .detailType(List.of("CodePipeline Stage Execution State Change"))
-        .detail(Map.of("pipeline", List.of(PIPELINE_NAME), "stage", stages, "state", List.of(state)))
+        .detail(ordered("pipeline", List.of(PIPELINE_NAME), "stage", stages, "state", List.of(state)))
         .build();
   }
 

@@ -25,11 +25,12 @@ record PipelineConfig(String deploymentAccount, String connectionArn, Map<String
   static final String SETTINGS_VARIABLE = "SENDREC_PIPELINE_SETTINGS";
   static final String STAGING_VARIABLE = "SENDREC_STAGING_CONTEXT";
   static final String PRODUCTION_VARIABLE = "SENDREC_PRODUCTION_CONTEXT";
-  /** The SSM parameters the Build step loads into those variables, in the deployment account. */
-  static final Map<String, String> PARAMETERS = new LinkedHashMap<>(Map.of(
-      SETTINGS_VARIABLE, "/sendrec/pipeline/settings",
-      STAGING_VARIABLE, "/sendrec/pipeline/staging-context",
-      PRODUCTION_VARIABLE, "/sendrec/pipeline/production-context"));
+  /**
+   * The SSM parameters the Build step loads into those variables, in the deployment account. The
+   * order is fixed: it reaches the Build project and its config hash in the pipeline's definition,
+   * and Map.of iterates in a different order on each JVM, which would make every synth change it.
+   */
+  static final Map<String, String> PARAMETERS = parameters();
   static final String REGION = "ap-southeast-2";
   static final String IMAGE_REPOSITORY = "sendrec";
   /** Keys only the pipeline sets, and bootstrap mode, which a pipeline must never deploy. */
@@ -56,8 +57,20 @@ record PipelineConfig(String deploymentAccount, String connectionArn, Map<String
     productionContext = Map.copyOf(productionContext);
   }
 
+  private static Map<String, String> parameters() {
+    Map<String, String> parameters = new LinkedHashMap<>();
+    parameters.put(SETTINGS_VARIABLE, "/sendrec/pipeline/settings");
+    parameters.put(STAGING_VARIABLE, "/sendrec/pipeline/staging-context");
+    parameters.put(PRODUCTION_VARIABLE, "/sendrec/pipeline/production-context");
+    return java.util.Collections.unmodifiableMap(parameters);
+  }
+
   private static void checkContext(String environment, Map<String, Object> context) {
     if (context == null) throw new IllegalArgumentException("Missing the " + environment + " context");
+    for (String key : SendRecStack.NETWORK_KEYS) {
+      if (!context.containsKey(key)) throw new IllegalArgumentException(
+          "The " + environment + " context must name its network (" + key + "), so the pipeline needs no lookup role");
+    }
     for (String key : REFUSED_KEYS) {
       if (context.containsKey(key)) throw new IllegalArgumentException(
           "The " + environment + " context must not set " + key + "; the pipeline sets the image and never bootstraps");

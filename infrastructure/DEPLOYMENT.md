@@ -7,7 +7,7 @@ The operator approved the proposal, authorized apply, requested an alternative t
 
 ## Deployment pipeline: written, not deployed (23 Nov 2026, MPD-592)
 
-`SendRecPipeline` and the nightly release at 17:20 Sydney are defined in this repository (OpenSpec change `add-deploy-pipeline`), but nothing has been deployed: the stack, its configuration parameters, the hold and the repository policies wait for the one-time steps in the README's [Deployment pipeline](README.md#deployment-pipeline) section. Until then releases stay manual, as below. Once the pipeline makes its first production release, every stack deploy also runs the migration task through `MigrationRun` before the service changes, which replaces steps 1 and 2 below.
+`SendRecPipeline` and the nightly release at 17:20 Sydney are defined in this repository (OpenSpec change `add-deploy-pipeline`), but nothing has been deployed: the stack, its configuration parameters, the hold and the repository policies wait for the one-time steps in the README's [Deployment pipeline](README.md#deployment-pipeline) section. Until then releases stay manual, as below. From this change on, every deploy of a template synthesized with a release image, by the pipeline or by hand, also runs the migration task through `MigrationRun` before the service changes, which replaces steps 1 and 2 below.
 
 ## Release gate: migrations before application tasks, and an explicit production task count
 

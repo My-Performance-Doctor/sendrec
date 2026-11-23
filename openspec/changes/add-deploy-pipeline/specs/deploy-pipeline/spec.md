@@ -18,6 +18,13 @@ The `Build` step SHALL build the image in AWS with `VERSION` set to the commit's
 - **WHEN** a run restarts on a commit whose image is already in staging's repository
 - **THEN** the step uses that image's digest and pushes nothing
 
+### Requirement: Staging waits for passing checks
+Before deploying staging, the pipeline SHALL wait for GitHub's `ci.yml` run on `main` for the release's commit and SHALL fail the stage unless that run concluded `success`. The `Build` step SHALL run the infrastructure tests before building the image.
+
+#### Scenario: CI fails on the merged commit
+- **WHEN** `ci.yml` concludes `failure` for the commit
+- **THEN** the `Staging` stage fails before deploying and its alert list is emailed
+
 ### Requirement: Production runs the staging digest
 Before deploying production, the pipeline SHALL copy the staging image by digest into production's `sendrec` repository under the full commit, and SHALL fail if the copy's digest differs or the tag already names another digest. Production SHALL never be built from source.
 
@@ -48,7 +55,7 @@ After each stack deploy the pipeline SHALL check that the stack's public `/api/h
 - **THEN** the stage fails and its alert list is emailed
 
 ### Requirement: No identifying production detail in the repository
-Production's account, network, storage, certificate, alert destination, task count, switches and integration settings SHALL come from SSM parameters in the deployment account when the pipeline synthesizes, not from committed files. Production synthesis SHALL still fail without `productionTaskCount`. The pipeline's configuration SHALL NOT set the release image or bootstrap mode.
+Production's account, network, storage, certificate, alert destination, task count, switches and integration settings SHALL come from SSM parameters in the deployment account when the pipeline synthesizes, not from committed files. Production synthesis SHALL still fail without `productionTaskCount`. The pipeline's configuration SHALL NOT set the release image or bootstrap mode, and SHALL name each stage's network so that the pipeline assumes no role in the staging or production account.
 
 #### Scenario: The production configuration leaves out the task count
 - **WHEN** `/sendrec/pipeline/production-context` has no `productionTaskCount`

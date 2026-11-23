@@ -48,6 +48,8 @@ final class PipelineStack extends Stack {
   static final String STAGING_REGISTRY = StagingConfig.ACCOUNT + ".dkr.ecr." + PipelineConfig.REGION + ".amazonaws.com";
   /** Written into the cloud assembly by {@link SendRecApp}; later steps read the release from it. */
   static final String RELEASE_FILE = "sendrec-release.json";
+  /** A read-only GitHub token for this repository's Actions runs, in the deployment account (README). */
+  static final String GITHUB_CI_TOKEN_SECRET = "sendrec/github-ci-read";
   static final String ASSEMBLY_DIRECTORY = "assembly";
   /** The staff app's pins: the CDK CLI and Node.js 24, checked against the release's SHASUMS256.txt. */
   static final String CDK_CLI_VERSION = "2.1142.0";
@@ -85,9 +87,8 @@ final class PipelineStack extends Stack {
     buildRole.addToPolicy(PolicyStatement.Builder.create()
         .actions(List.of("ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"))
         .resources(List.of(repositoryArn(StagingConfig.ACCOUNT, "sendrec-base"))).build());
-    // Vpc.fromLookup in both stages; cdk.context.json is not committed.
-    buildRole.addToPolicy(PolicyStatement.Builder.create().actions(List.of("sts:AssumeRole"))
-        .resources(List.of(lookupRole(StagingConfig.ACCOUNT), lookupRole(productionAccount))).build());
+    // No lookup role: each stage's context names its network, because a CDK lookup role can read
+    // every bucket in its account, and this step runs third-party build code.
     buildRole.addToPolicy(PolicyStatement.Builder.create().actions(List.of("ssm:GetParameters"))
         .resources(parameterArns()).build());
 
@@ -96,14 +97,15 @@ final class PipelineStack extends Stack {
         .role(buildRole)
         .buildEnvironment(BuildEnvironment.builder().privileged(true).computeType(ComputeType.LARGE)
             .environmentVariables(parameterVariables()).build())
-        .env(Map.of("STAGING_REGISTRY", STAGING_REGISTRY, "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE))
+        .env(ordered("STAGING_REGISTRY", STAGING_REGISTRY, "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE))
         .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of("java", "corretto21"), synthInstallCommands())))
         .commands(List.of(
-            "cd infrastructure && ./gradlew -q test && cd ..",
+            "python3 -B -m unittest discover -s infrastructure/tests",
+            "cd infrastructure && node tests/test_bootstrap_access.cjs && ./gradlew -q test && cd ..",
             "REVISION=\"$CODEBUILD_RESOLVED_SOURCE_VERSION\"",
             "export REVISION",
             "RELEASE_DIGEST=\"$(sh infrastructure/pipeline/build-image.sh)\"",
-            "cd infrastructure && cdk synth -c targetEnvironment=pipeline -c releaseRevision=\"$REVISION\""
+            "cd infrastructure && cdk synth -q -c targetEnvironment=pipeline -c releaseRevision=\"$REVISION\""
                 + " -c releaseDigest=\"$RELEASE_DIGEST\" -c alarmEmailsStaging=\"$ALARM_EMAILS_STAGING\""
                 + " -c alarmEmailsProduction=\"$ALARM_EMAILS_PRODUCTION\""))
         .primaryOutputDirectory("infrastructure/cdk.out")
@@ -130,6 +132,17 @@ final class PipelineStack extends Stack {
     SendRecStack stagingStack = new SendRecStack(staging, "SendRecStaging",
         SendRecApp.stagingProps(StagingConfig.ACCOUNT), StagingConfig.INSTANCE);
     pipeline.addStage(staging, AddStageOpts.builder()
+        .pre(List.of(CodeBuildStep.Builder.create("WaitForGitHubCI")
+            .input(source)
+            .additionalInputs(Map.of(ASSEMBLY_DIRECTORY, assembly))
+            .timeout(Duration.minutes(70))
+            .buildEnvironment(BuildEnvironment.builder().environmentVariables(Map.of("GITHUB_TOKEN",
+                BuildEnvironmentVariable.builder().type(BuildEnvironmentVariableType.SECRETS_MANAGER)
+                    .value(GITHUB_CI_TOKEN_SECRET).build())).build())
+            .env(Map.of("RELEASE_FILE", ASSEMBLY_DIRECTORY + "/" + RELEASE_FILE))
+            .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of(), caCertificatesCommands())))
+            .commands(List.of("python3 -B infrastructure/pipeline/wait-for-ci.py"))
+            .build()))
         .post(List.of(verify("VerifyStaging", source, assembly, stagingStack))).build());
 
     // The gate is a stage of its own, as in MPD API and the staff app, so a newer run can wait at
@@ -164,7 +177,7 @@ final class PipelineStack extends Stack {
         .input(source)
         .additionalInputs(Map.of(ASSEMBLY_DIRECTORY, assembly))
         .role(promoteRole)
-        .env(Map.of("RELEASE_FILE", ASSEMBLY_DIRECTORY + "/" + RELEASE_FILE, "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE,
+        .env(ordered("RELEASE_FILE", ASSEMBLY_DIRECTORY + "/" + RELEASE_FILE, "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE,
             "CRANE", "/tmp/crane/crane"))
         .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of(), promoteInstallCommands())))
         .commands(List.of("sh infrastructure/pipeline/promote-image.sh"))
@@ -191,12 +204,18 @@ final class PipelineStack extends Stack {
         .build();
   }
 
-  private String repositoryArn(String account, String name) {
-    return "arn:aws:ecr:" + PipelineConfig.REGION + ":" + account + ":repository/" + name;
+  /**
+   * Environment variables in the order given. Map.of iterates in a different order on each JVM, and
+   * the order reaches the Build project's config hash in the pipeline's definition.
+   */
+  private static Map<String, String> ordered(String... pairs) {
+    Map<String, String> map = new LinkedHashMap<>();
+    for (int i = 0; i < pairs.length; i += 2) map.put(pairs[i], pairs[i + 1]);
+    return map;
   }
 
-  private static String lookupRole(String account) {
-    return "arn:aws:iam::" + account + ":role/cdk-hnb659fds-lookup-role-" + account + "-" + PipelineConfig.REGION;
+  private String repositoryArn(String account, String name) {
+    return "arn:aws:ecr:" + PipelineConfig.REGION + ":" + account + ":repository/" + name;
   }
 
   /** The configuration parameters and MPD API's alarm lists, which the staff app also reads. */
