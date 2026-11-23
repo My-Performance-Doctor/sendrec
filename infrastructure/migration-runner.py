@@ -13,7 +13,7 @@ ROLLING_BACK = ("UPDATE_ROLLBACK_IN_PROGRESS", "ROLLBACK_IN_PROGRESS")
 PHYSICAL_ID = "migration-run"
 POLL_SECONDS = 10
 DENIED_ATTEMPTS = 7
-# Stop waiting a minute before the Lambda limit, so the failure still reaches CloudFormation.
+# Give up a minute before the Lambda limit, so the failure reaches CloudFormation.
 MARGIN_MS = 60_000
 
 
@@ -35,7 +35,7 @@ def rolling_back(cloudformation, stack_id):
 
 
 def start(ecs, p, sleep):
-    # The grant names this new revision, so a denial (nothing started) waits for IAM.
+    # A denial starts nothing; it waits for IAM to grant the new revision.
     for attempt in range(1, DENIED_ATTEMPTS + 1):
         try:
             return ecs.run_task(
@@ -61,10 +61,11 @@ def run(ecs, properties, remaining_ms, sleep=None):
     task = tasks[0]["taskArn"]
     while remaining_ms() > MARGIN_MS:
         sleep(POLL_SECONDS)
-        found = ecs.describe_tasks(cluster=cluster, tasks=[task]).get("tasks", [])
-        if len(found) != 1:
-            raise RuntimeError("The migration task could not be read")
-        if found[0].get("lastStatus") != "STOPPED":
+        try:  # A failed read is read again; the task is stopped if time runs out.
+            found = ecs.describe_tasks(cluster=cluster, tasks=[task]).get("tasks", [])
+        except Exception:
+            continue
+        if len(found) != 1 or found[0].get("lastStatus") != "STOPPED":
             continue
         codes = [c.get("exitCode") for c in found[0].get("containers", [])
                  if c.get("name") == properties["Container"]]
@@ -88,5 +89,5 @@ def handler(event, context):
         task = run(boto3.client("ecs"), event["ResourceProperties"],
                    context.get_remaining_time_in_millis)
         respond(event, "SUCCESS", "Migrations applied by " + task)
-    except Exception as error:  # Any failure must reach CloudFormation, or it waits an hour.
+    except Exception as error:  # Every failure must reach CloudFormation.
         respond(event, "FAILED", str(error) or type(error).__name__)

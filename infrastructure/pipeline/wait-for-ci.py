@@ -62,9 +62,17 @@ def wait_for_ci(commit, token, read=latest_run, clock=time.monotonic, sleep=time
             run = read(commit, token)
         except urllib.error.HTTPError as error:
             wait = throttle_wait(error)
+            # A 5xx is GitHub's own trouble, not the token's, so it is read again.
+            if wait is None and error.code >= 500:
+                wait = INTERVAL
             if wait is None:
                 raise SystemExit(f"GitHub answered {error.code} reading CI runs; check the token")
             sleep(min(wait, 300))
+            continue
+        except OSError as error:
+            # A dropped connection or a timeout says nothing about the run, so it is read again.
+            print(f"Reading CI runs failed ({error}); trying again", file=sys.stderr)
+            sleep(INTERVAL)
             continue
         if run is None:
             if elapsed > START_TIMEOUT:

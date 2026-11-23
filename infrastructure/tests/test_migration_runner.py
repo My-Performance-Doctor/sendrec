@@ -40,10 +40,18 @@ class RunTest(unittest.TestCase):
 
     def test_any_other_exit_fails_with_the_code(self):
         for described, message in ((stopped(1), "exit code 1"), (stopped(None), "exit code unknown"),
-                                   (stopped(0, name="other"), "exit code unknown"),
-                                   ({"tasks": []}, "could not be read")):
+                                   (stopped(0, name="other"), "exit code unknown")):
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
                 runner.run(ecs_with(described), PROPERTIES, lambda: 900_000, sleep=lambda _: None)
+
+    def test_a_failed_or_empty_read_is_read_again_and_never_abandons_the_task(self):
+        ecs = ecs_with(RuntimeError("ThrottlingException"), {"tasks": []}, stopped(0))
+        self.assertEqual("synthetic-task", runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None))
+        remaining = iter([900_000, 120_000, 59_000])
+        ecs = ecs_with(RuntimeError("ThrottlingException"), RuntimeError("ThrottlingException"))
+        with self.assertRaisesRegex(RuntimeError, "did not finish in time"):
+            runner.run(ecs, PROPERTIES, lambda: next(remaining), sleep=lambda _: None)
+        ecs.stop_task.assert_called_once()
 
     def test_a_task_that_does_not_start_fails(self):
         for response in ({"tasks": [], "failures": [{"reason": "RESOURCE:MEMORY"}]}, {"tasks": []},

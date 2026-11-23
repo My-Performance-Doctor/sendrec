@@ -71,6 +71,13 @@ class WaitForCiTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "answered 404"):
             self.wait(http_error(404))
 
+    def test_server_errors_and_network_failures_are_read_again(self):
+        clock = self.wait(http_error(502), urllib.error.URLError("reset"), TimeoutError("slow"),
+                          {"status": "completed", "conclusion": "success"})
+        self.assertEqual([ci.INTERVAL] * 3, clock.slept)
+        with self.assertRaisesRegex(SystemExit, "did not finish"):
+            self.wait(http_error(503))
+
     def test_the_request_names_the_commit_on_main_and_sends_the_token(self):
         seen = {}
 
