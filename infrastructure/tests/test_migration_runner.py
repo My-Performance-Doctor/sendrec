@@ -48,8 +48,8 @@ class RunTest(unittest.TestCase):
         ecs = ecs_with(RuntimeError("ThrottlingException"), {"tasks": []}, stopped(0))
         self.assertEqual("synthetic-task", runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None))
         remaining = iter([900_000, 120_000, 59_000])
-        ecs = ecs_with(RuntimeError("ThrottlingException"), RuntimeError("ThrottlingException"))
-        with self.assertRaisesRegex(RuntimeError, "did not finish in time"):
+        ecs = ecs_with(RuntimeError("ThrottlingException"), RuntimeError("AccessDeniedException"))
+        with self.assertRaisesRegex(RuntimeError, "did not finish in time.*AccessDeniedException"):
             runner.run(ecs, PROPERTIES, lambda: next(remaining), sleep=lambda _: None)
         ecs.stop_task.assert_called_once()
 

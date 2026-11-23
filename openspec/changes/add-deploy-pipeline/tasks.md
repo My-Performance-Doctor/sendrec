@@ -7,7 +7,7 @@
 ## 2. Pipeline
 
 - [x] 2.1 Add `PipelineConfig`: read the settings and both stage contexts, refuse pipeline-owned keys and bootstrap mode, build both image URIs from the digest.
-- [x] 2.2 Add `PipelineStack`: source, Build (image then synth, named role, lookup roles), staging stage with Verify, `ApproveProduction`, production stage with PromoteImage and Verify.
+- [x] 2.2 Add `PipelineStack`: source, Build (image then synth, named role, no lookup role), staging stage with Verify, `ApproveProduction`, production stage with PromoteImage and Verify.
 - [x] 2.3 Add `infrastructure/pipeline/build-image.sh`, `promote-image.sh` and `verify-version.sh`, with tests.
 - [x] 2.4 Add the `pipeline` target to `SendRecApp` and write `sendrec-release.json` into the assembly.
 - [x] 2.5 Test the stage order, the configuration checks, the image URIs, the steps' roles and grants, and that no per-commit value enters the pipeline definition.

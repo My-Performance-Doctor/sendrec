@@ -5,6 +5,7 @@ pipeline deploys staging only once that run has passed, as the staff app's pipel
 the runs with a read-only token from $GITHUB_TOKEN and fails on any conclusion but success, or
 when no run appears.
 """
+import http.client
 import json
 import os
 import ssl
@@ -33,7 +34,10 @@ def latest_run(commit, token, opener=urllib.request.urlopen):
                  "X-GitHub-Api-Version": "2022-11-28"})
     context = ssl.create_default_context(cafile=CA_BUNDLE if os.path.exists(CA_BUNDLE) else None)
     with opener(request, timeout=30, context=context) as response:
-        runs = json.load(response)["workflow_runs"]
+        body = json.load(response)
+    runs = body.get("workflow_runs") if isinstance(body, dict) else None
+    if not isinstance(runs, list):
+        raise ValueError("GitHub's answer lists no workflow runs")
     return runs[0] if runs else None
 
 
@@ -69,8 +73,9 @@ def wait_for_ci(commit, token, read=latest_run, clock=time.monotonic, sleep=time
                 raise SystemExit(f"GitHub answered {error.code} reading CI runs; check the token")
             sleep(min(wait, 300))
             continue
-        except OSError as error:
-            # A dropped connection or a timeout says nothing about the run, so it is read again.
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            # A dropped connection, a timeout or a cut-off answer says nothing about the run,
+            # so it is read again.
             print(f"Reading CI runs failed ({error}); trying again", file=sys.stderr)
             sleep(INTERVAL)
             continue

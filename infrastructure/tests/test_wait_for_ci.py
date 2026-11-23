@@ -1,3 +1,4 @@
+import http.client
 import importlib.util
 import io
 import json
@@ -77,6 +78,23 @@ class WaitForCiTest(unittest.TestCase):
         self.assertEqual([ci.INTERVAL] * 3, clock.slept)
         with self.assertRaisesRegex(SystemExit, "did not finish"):
             self.wait(http_error(503))
+
+    def test_a_cut_off_or_unexpected_answer_is_read_again(self):
+        clock = self.wait(json.JSONDecodeError("cut off", "{", 1), http.client.IncompleteRead(b"{"),
+                          ValueError("no runs"), {"status": "completed", "conclusion": "success"})
+        self.assertEqual([ci.INTERVAL] * 3, clock.slept)
+
+    def test_an_answer_without_a_run_list_is_an_error(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        for body in (b'{"message": "Not Found"}', b"[]"):
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                ci.latest_run(COMMIT, "token", opener=lambda request, timeout, context: Response(body))
 
     def test_the_request_names_the_commit_on_main_and_sends_the_token(self):
         seen = {}

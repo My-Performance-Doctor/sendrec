@@ -217,6 +217,7 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
    aws ecr get-repository-policy --repository-name sendrec --region ap-southeast-2 --profile <staging-admin>
    aws ecr set-repository-policy --repository-name sendrec --policy-text "$(policy staging-repository-policy.json)" \
      --region ap-southeast-2 --profile <staging-admin>
+   aws ecr get-repository-policy --repository-name sendrec-base --region ap-southeast-2 --profile <staging-admin>
    aws ecr set-repository-policy --repository-name sendrec-base --policy-text "$(policy staging-base-repository-policy.json)" \
      --region ap-southeast-2 --profile <staging-admin>
    aws ecr get-repository-policy --repository-name sendrec --region ap-southeast-2 --profile <production-admin>
