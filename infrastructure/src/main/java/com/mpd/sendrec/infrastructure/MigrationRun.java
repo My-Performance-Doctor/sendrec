@@ -42,7 +42,7 @@ final class MigrationRun {
     runner.addToRolePolicy(PolicyStatement.Builder.create().actions(List.of("ecs:RunTask"))
         .resources(List.of(migration.getTaskDefinitionArn()))
         .conditions(Map.of("ArnEquals", Map.of("ecs:cluster", cluster.getClusterArn()))).build());
-    runner.addToRolePolicy(PolicyStatement.Builder.create().actions(List.of("ecs:DescribeTasks", "ecs:StopTask"))
+    runner.addToRolePolicy(PolicyStatement.Builder.create().actions(List.of("ecs:DescribeTasks"))
         .resources(List.of("arn:" + stack.getPartition() + ":ecs:" + stack.getRegion() + ":" + stack.getAccount()
             + ":task/" + cluster.getClusterName() + "/*"))
         .conditions(Map.of("ArnEquals", Map.of("ecs:cluster", cluster.getClusterArn()))).build());

@@ -49,9 +49,9 @@ class RunTest(unittest.TestCase):
         self.assertEqual("synthetic-task", runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None))
         remaining = iter([900_000, 120_000, 59_000])
         ecs = ecs_with(RuntimeError("ThrottlingException"), RuntimeError("AccessDeniedException"))
-        with self.assertRaisesRegex(RuntimeError, "did not finish in time.*AccessDeniedException"):
+        with self.assertRaisesRegex(RuntimeError, "still running; the deploy rolls back.*AccessDeniedException"):
             runner.run(ecs, PROPERTIES, lambda: next(remaining), sleep=lambda _: None)
-        ecs.stop_task.assert_called_once()
+        ecs.stop_task.assert_not_called()
 
     def test_a_task_that_does_not_start_fails(self):
         for response in ({"tasks": [], "failures": [{"reason": "RESOURCE:MEMORY"}]}, {"tasks": []},
@@ -80,13 +80,13 @@ class RunTest(unittest.TestCase):
                 runner.run(ecs, PROPERTIES, lambda: 900_000, sleep=lambda _: None)
             self.assertEqual(calls, ecs.run_task.call_count)
 
-    def test_a_task_still_running_near_the_limit_is_stopped_and_fails(self):
+    def test_a_task_still_running_near_the_limit_fails_the_deploy_and_is_left_to_finish(self):
         remaining = iter([900_000, 120_000, 59_000])
         ecs = ecs_with({"tasks": [{"lastStatus": "RUNNING"}]}, {"tasks": [{"lastStatus": "RUNNING"}]})
-        with self.assertRaisesRegex(RuntimeError, "did not finish in time"):
+        with self.assertRaisesRegex(RuntimeError, "synthetic-task still running; the deploy rolls back"):
             runner.run(ecs, PROPERTIES, lambda: next(remaining), sleep=lambda _: None)
-        ecs.stop_task.assert_called_once_with(cluster="synthetic-cluster", task="synthetic-task",
-                                              reason="Migration run out of time")
+        # Stopping it midway would leave the schema dirty.
+        ecs.stop_task.assert_not_called()
 
 
 class HandlerTest(unittest.TestCase):

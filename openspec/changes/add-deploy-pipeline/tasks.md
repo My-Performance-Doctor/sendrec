@@ -29,3 +29,9 @@
 
 - [x] 5.1 Remove `mpd-build-candidate.yml` and `mpd-promote.yml`.
 - [x] 5.2 Document the pipeline, the nightly release, the hold and the one-time deploy steps in `infrastructure/README.md`; mark the hand runbook as the fallback; note the change in `DEPLOYMENT.md`.
+
+## 6. Review desk fixes
+
+- [x] 6.1 Exit 0 from a migration run whose clean database is newer than the image; test a forward release and a rollback on a synthetic database.
+- [x] 6.2 Leave an overrunning migration to finish instead of stopping it; document recovering a dirty schema and what a rollback leaves in the schema.
+- [x] 6.3 Port cortex-ai #132: ignore a finished run still shown waiting at an idle gate, narrow the approval snapshot, read the token only from a waiting approval, read again after a changed confirmation.

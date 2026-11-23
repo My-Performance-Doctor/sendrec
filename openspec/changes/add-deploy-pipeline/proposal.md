@@ -16,10 +16,10 @@ SendRec has no release pipeline. Each release is built on an operator's machine,
 ## Impact
 
 - New: `PipelineStack.java`, `PipelineConfig.java`, `NightlyRelease.java`, `MigrationRun.java` and their tests; `infrastructure/migration-runner.py`, `infrastructure/pipeline/*.sh` and their tests.
-- Changed: `SendRecApp.java` (a `pipeline` target), `SendRecStack.java` (the migration run before the service), `build.gradle` (test dependencies), `infrastructure/README.md`, `infrastructure/DEPLOYMENT.md`, `docs/agents/claude/production-release.md`.
+- Changed: `internal/database/database.go` and its test, `SendRecApp.java` (a `pipeline` target), `SendRecStack.java` (the migration run before the service), `build.gradle` (test dependencies), `infrastructure/README.md`, `infrastructure/DEPLOYMENT.md`, `docs/agents/claude/production-release.md`.
 - Removed: `.github/workflows/mpd-build-candidate.yml`, `.github/workflows/mpd-promote.yml`.
-- No application code or database migration. Nothing is deployed by this change. The first deploy of `SendRecPipeline` needs deploy rights in the deployment account and is a one-time step for MPD HQ's maintenance window, written in the README.
+- One application change, in `internal/database/database.go`: a migration run whose database is already newer than the image's newest migration exits 0 without changing the schema, so an older release can be deployed again. No database migration. Nothing is deployed by this change. The first deploy of `SendRecPipeline` needs deploy rights in the deployment account and is a one-time step for MPD HQ's maintenance window, written in the README.
 
 ## Approval and delivery
 
-MPD HQ assigned this on 23 November 2026 with Sami's approval (MPD-592, option B). The pull request stays a draft until the Review desk passes it and Sami says go.
+MPD HQ assigned this on 23 November 2026 with Sami's approval (MPD-592, option B). The pull request stays a draft until the Review desk passes it. Sami gave his go in advance on 23 November; MPD HQ merges it after relaying the desk's pass.

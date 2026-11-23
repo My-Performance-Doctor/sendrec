@@ -57,9 +57,11 @@ After the gate, a `PromoteImage` step runs before the production deploy as the n
 ### D5. Migrations run inside each stack deploy, before the service
 Each stack gets a custom resource, `MigrationRun`, backed by an inline Python Lambda (`migration-runner.py`). Its properties name the migration task definition revision, so a new image creates a new revision and CloudFormation calls the Lambda. The Lambda starts that definition once on Fargate in the service's subnets and security group, waits until it stops, and succeeds only on exit code 0. The service depends on the resource, so CloudFormation changes the service only after the migration succeeds. A failed or timed-out migration fails the deploy and rolls the stack back; the service never changes.
 
-During a rollback CloudFormation calls the Lambda again with the previous definition. Running an older image's migrations against a newer schema would fail, so the Lambda reads its stack's status and does nothing while the stack is rolling back. Deleting the resource does nothing.
+During a rollback CloudFormation calls the Lambda again with the previous definition, so the Lambda reads its stack's status and does nothing while the stack is rolling back. Deleting the resource does nothing.
 
-The Lambda stops the task and fails if it is still running a minute before the Lambda's 15-minute limit. Every SendRec migration so far has finished in under two minutes.
+A forward deploy of an older release (a stage rollback, a revert, or redeploying the previous template) runs the older image's migration task against a newer schema. golang-migrate stops there with "no migration found for version N", which would fail the deploy and keep the release being rolled back. So `MIGRATIONS_MODE=only` first compares the database's version with the image's newest migration: when the database is clean and newer, it logs that and exits 0 without changing anything. A dirty database still reaches golang-migrate, which refuses it. Migrations are never reversed; SendRec's only add tables, columns and indexes, which older code ignores. Images built before this change lack the check, so a rollback must not go past the first release that has it.
+
+If the task is still running a minute before the Lambda's 15-minute limit, the Lambda fails the deploy and leaves the task to finish: stopping a migration midway marks the schema dirty and can leave an invalid index, which blocks every later release until it is repaired by hand (README, "Recovering a dirty schema"). Every SendRec migration so far has finished in under two minutes.
 
 Alternatives considered:
 - A pipeline step that runs the task through a role in each target account. Rejected: it needs a new role in both accounts before the first run, and the stack could still deploy after a failed step was retried by hand.
@@ -80,6 +82,8 @@ After each stack deploy, a `Verify` step reads `/api/health` through the stack's
 | Time | 17:10 Australia/Sydney | 17:20 Australia/Sydney |
 
 A port, not a reinvention: the decisions, their order, the read cap and the skip messages are the staff app's, and the tests run the synthesized definition against a fake pipeline in the same way.
+
+It also carries cortex-ai #132's four fixes to that logic, found when Cortex ported it: with the gate idle, a `ReadGate` choice decides before the run list is read and waits only for an unfinished run to enter, so a cancelled run still shown waiting no longer fails every release; the approval snapshot covers only Staging, the gate and Production, so a merge moving through Build does not skip the night; the gate's token is read only from a waiting approval; and a confirmation that finds the pipeline changed reads again within the cap instead of skipping.
 
 ### D8. 17:20 Sydney
 mpd-api releases at 16:55, Cortex at 17:00 and the staff app at 17:10, taking about 3 minutes. SendRec follows at 17:20, so a SendRec change that needs a new mpd-api or staff app ships after both. SendRec has no consumer that must release after it.

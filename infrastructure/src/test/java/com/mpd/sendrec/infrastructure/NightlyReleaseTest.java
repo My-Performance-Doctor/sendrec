@@ -23,8 +23,6 @@ import software.amazon.awscdk.assertions.Template;
 class NightlyReleaseTest {
   private static final ObjectMapper JSON = new ObjectMapper();
   private static final String RELEASE = "Nightly release 17:20 Australia/Sydney";
-  private static final String CHANGED =
-      "the pipeline changed while the release was checking it. The next release tries again, or approve the gate by hand.";
   private static Template template;
   private static JsonNode definition;
 
@@ -109,6 +107,8 @@ class NightlyReleaseTest {
     final Map<String, String> disabled = new HashMap<>();
     final List<String> approvalErrors = new ArrayList<>();
     boolean inboundNeverEnters;
+    /** Reads that show the gate's run beside an earlier, finished approval and its old token. */
+    int staleApprovalReads;
     /** Superseded rows after each run, as live. */
     int padding = 1;
     /** Changes made just before the nth pipeline read. */
@@ -218,6 +218,8 @@ class NightlyReleaseTest {
         gateStage.put("LatestExecution", Map.of("PipelineExecutionId", gate, "Status", gateStatus));
         Map<String, Object> latest = new LinkedHashMap<>(Map.of("ActionExecutionId", "approval-" + gate, "Status", gateStatus));
         if ("InProgress".equals(gateStatus)) latest.put("Token", "token-" + gate);
+        if (reads <= staleApprovalReads) latest = new LinkedHashMap<>(Map.of("ActionExecutionId", "approval-old",
+            "Status", "Succeeded", "Token", "token-old"));
         gateStage.put("ActionStates", List.of(Map.of("ActionName", NightlyRelease.APPROVAL_ACTION, "LatestExecution", latest)));
       }
       if (inbound != null) gateStage.put("InboundExecution", Map.of("PipelineExecutionId", inbound, "Status", find(inbound).status));
@@ -480,15 +482,47 @@ class NightlyReleaseTest {
     }
   }
 
-  @Test void anyChangeInThePipelineBeforeApprovalHoldsTheRelease() {
+  @Test void aMergeMovingThroughBuildBeforeApprovalDoesNotSkipTheRelease() {
     Fake fake = waiting();
-    // A newer run passes staging between the read that chose A and the read that confirms it.
-    fake.beforeRead.put(2, f -> {
-      f.runs.add(0, run("C", "InProgress"));
-      f.staging = "C";
-    });
+    // A new merge's run reaches Source and Build between the read that chose A and the one that confirms it.
+    fake.beforeRead.put(2, f -> f.runs.add(0, run("C", "InProgress")));
     assertEquals("Succeeded", execute(fake, "release"));
-    assertEquals(List.of(skipped(CHANGED)), fake.calls);
+    assertEquals(List.of(List.of("Approved", RELEASE, "A")), fake.calls);
+  }
+
+  @Test void aChangeAroundTheGateBeforeApprovalReadsAgainAndDecidesAfresh() {
+    Fake fake = new Fake(run("A"), run("Q"), run("Z", "Succeeded"));
+    fake.gate = "A";
+    fake.staging = "A";
+    // Q starts waiting for Production between the read that chose A and the one that confirms it.
+    fake.beforeRead.put(2, f -> f.productionInbound = "Q");
+    assertEquals("Succeeded", execute(fake, "release"));
+    assertEquals(List.of(skipped("run Q has not finished deploying to Production.")), fake.calls);
+    assertEquals(3, fake.counts.get("codepipeline:getPipelineState"));
+  }
+
+  @Test void aFinishedRunStillShownWaitingAtAnIdleGateIsNotWaitedFor() {
+    for (String mode : List.of("resolve", "release")) {
+      for (String status : List.of("Cancelled", "Stopped", "Failed", "Superseded", "Succeeded")) {
+        Fake fake = new Fake(run("B", status), run("A", "Succeeded"), run("Z", "Succeeded"));
+        fake.gate = "A";
+        fake.gateStatus = "Succeeded";
+        fake.inbound = "B";
+        fake.staging = "A";
+        fake.inboundNeverEnters = true;
+        assertEquals("Succeeded", execute(fake, mode), mode + " " + status);
+        assertEquals(List.of(), fake.calls, mode + " " + status);
+        assertEquals(1, fake.counts.get("codepipeline:getPipelineState"), mode + " " + status);
+      }
+    }
+  }
+
+  @Test void anEarlierApprovalsTokenIsNeverUsed() {
+    Fake fake = waiting();
+    fake.staleApprovalReads = 2;
+    assertEquals("Succeeded", execute(fake, "release"));
+    assertEquals(List.of(List.of("Approved", RELEASE, "A")), fake.calls);
+    assertTrue(fake.counts.get("codepipeline:getPipelineState") >= 3);
   }
 
   @Test void anApprovalSomeoneMadeFirstEndsTheReleaseAndOtherErrorsFailIt() {

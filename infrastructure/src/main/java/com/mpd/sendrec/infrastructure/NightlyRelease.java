@@ -92,8 +92,9 @@ final class NightlyRelease extends Construct {
       "[\"Cancelled\", \"InProgress\", \"Stopped\", \"Stopping\", \"Succeeded\", \"Superseded\", \"Failed\"]";
   /** The statuses of a run that has ended. */
   static final String FINISHED = "[\"Cancelled\", \"Stopped\", \"Failed\", \"Superseded\", \"Succeeded\"]";
-  static final String GATE_TOKEN =
-      "$gate.ActionStates[ActionName = \"" + APPROVAL_ACTION + "\"].LatestExecution.Token";
+  /** Only an approval still waiting has a usable token (cortex-ai #132). */
+  static final String GATE_TOKEN = "$gate.ActionStates[ActionName = \"" + APPROVAL_ACTION
+      + "\" and LatestExecution.Status = \"InProgress\"].LatestExecution.Token";
 
   private final String region;
   private final String account;
@@ -210,7 +211,10 @@ final class NightlyRelease extends Construct {
   }
 
   /**
-   * The staff app's release state machine with SendRec's names. Its comments carry over: see
+   * The staff app's release state machine with SendRec's names and cortex-ai #132's fixes: a
+ * finished run still shown waiting at the gate is not waited for, the approval snapshot covers
+ * only Staging, the gate and Production, the token is read only from a waiting approval, and a
+ * changed confirmation reads again within the cap instead of skipping. Its comments carry over: see
    * {@code NightlyRelease._state_machine} in mpd-os-staff for the full reasoning. In short: a run
    * supersedes the gate's only when its list entry shows an ordinary run, it started after the
    * gate's run, and it either shipped or is still in progress as a candidate. A release approves
@@ -226,7 +230,7 @@ final class NightlyRelease extends Construct {
     String stagingRun = "$staging.LatestExecution.PipelineExecutionId";
     String gateInProgress = "$gate.LatestExecution.Status = \"InProgress\"";
     // A transition counts as enabled only when the response says so.
-    String paused = "$not($gate.InboundTransitionState.Enabled = true)";
+    String enabled = "$gate.InboundTransitionState.Enabled = true";
     Fail unexpected = Fail.jsonata(this, "UnexpectedError", FailJsonataProps.builder()
         .error("UnexpectedError")
         .cause("A release step failed with an error other than a missing hold or a stale token").build());
@@ -269,9 +273,11 @@ final class NightlyRelease extends Construct {
         + "(StageName = \"" + STAGING_STAGE + "\" or StageName = \"" + PRODUCTION_STAGE + "\")"
         + " and $exists(LatestExecution.PipelineExecutionId)"
         + " and $exists(LatestExecution.Status)]) = 2"));
-    // Every stage's latest and inbound runs, transition and approval tokens. A release approves
-    // only if this is the same when it selects a run and when it confirms it.
-    pipelineState.put("pipeline", q("$string($states.result.StageStates.{"
+    // Staging's, the gate's and Production's latest and inbound runs, transitions and approval
+    // tokens. A release approves only if this is the same when it selects a run and when it
+    // confirms it. A merge moving through Source or Build does not count (cortex-ai #132).
+    pipelineState.put("pipeline", q("$string($states.result.StageStates[StageName in [\""
+        + STAGING_STAGE + "\", \"" + APPROVAL_STAGE + "\", \"" + PRODUCTION_STAGE + "\"]].{"
         + "\"stage\": StageName,"
         + " \"enabled\": InboundTransitionState.Enabled,"
         + " \"latest\": LatestExecution.{\"run\": PipelineExecutionId,"
@@ -410,9 +416,10 @@ final class NightlyRelease extends Construct {
     Pass select = Pass.jsonata(this, "SelectRun", PassJsonataProps.builder().assign(Map.of("selected", q("$pipeline"))).build());
     CallAwsService confirmState = readPipelineState("ConfirmPipelineState", pipelineState);
     confirmState.addCatch(unexpected, CatchProps.builder().errors(List.of("States.ALL")).build());
+    // A change reads everything again within the cap, rather than skipping the night (cortex-ai #132).
     confirmState.next(Choice.jsonata(this, "IsPipelineUnchanged")
         .when(Condition.jsonata(q("$pipeline = $selected")), approve)
-        .otherwise(skip));
+        .otherwise(again));
     // Before rejecting, the state machine notes the gate's run, its token and the run superseding
     // it, then reads the pipeline once more, with no wait or retry. It rejects only if the gate's
     // run and token are the same and the superseding run has shipped or still waits for the gate.
@@ -430,17 +437,23 @@ final class NightlyRelease extends Construct {
             + " and ($rejecting.shipped or ($in := " + gateInbound + ";"
             + " $rejecting.by in $in[Status = \"InProgress\"]"
             + ".PipelineExecutionId))")), reject)
-        // Nothing this time: the next Staging success or release resolves again.
-        .when(Condition.jsonata(q("$release")), skip)
+        // A release reads again within the cap; a resolve leaves it to the next one.
+        .when(Condition.jsonata(q("$release")), again)
         .otherwise(done));
-    readState.next(listRuns);
-    weigh.next(Choice.jsonata(this, "DecideGate")
+    // With the gate idle, decide before the run list is read (cortex-ai #132): wait only for an
+    // unfinished run to enter through an enabled transition. A finished run still shown waiting,
+    // such as one cancelled when the pipeline changed, is not waited for.
+    readState.next(Choice.jsonata(this, "ReadGate")
         // The gate's run can show before its approval has a token.
         .when(Condition.jsonata(q(gateInProgress + " and $not($exists(" + GATE_TOKEN + "))")), again)
+        .when(Condition.jsonata(q("$not(" + gateInProgress + ") and ($in := " + gateInbound + ";"
+            + " $count($in[$not(Status in " + FINISHED + ")]) > 0) and " + enabled)), again)
+        .when(Condition.jsonata(q("$not(" + gateInProgress + ") and $release and $type($arrow) = \"object\"")), skip)
+        .when(Condition.jsonata(q("$not(" + gateInProgress + ")")), done)
+        .otherwise(listRuns));
+    weigh.next(Choice.jsonata(this, "DecideGate")
         .when(Condition.jsonata(q(gateInProgress + " and $type($supersededBy) = \"string\""
             + " and $type($unlisted) = \"null\"")), selectRejection)
-        .when(Condition.jsonata(q("$not(" + gateInProgress + ") and $count(" + gateInbound + ") > 0"
-            + " and $not(" + paused + ")")), again)
         .when(Condition.jsonata(q("$release and " + gateInProgress + " and $complete"
                 + " and $type($unlisted) = \"null\""
                 + " and $type($arrow) = \"null\" and $type($deploying) = \"null\""
@@ -450,7 +463,7 @@ final class NightlyRelease extends Construct {
             Choice.jsonata(this, "HasReadsToConfirm")
                 .when(Condition.jsonata(q("$iteration < 10")), select)
                 .otherwise(again))
-        .when(Condition.jsonata(q("$release and ($type($arrow) = \"object\" or " + gateInProgress + ")")), skip)
+        .when(Condition.jsonata(q("$release")), skip)
         .otherwise(done));
     Choice holdMissing = Choice.jsonata(this, "IsHoldMissing")
         .when(Condition.jsonata(q("$contains($error, \"ParameterNotFound\")")), skip)

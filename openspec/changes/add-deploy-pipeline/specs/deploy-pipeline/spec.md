@@ -43,6 +43,14 @@ Each SendRec stack deploy SHALL run the release's migration task definition once
 - **WHEN** the migration task exits non-zero during a release
 - **THEN** the stack deploy fails, the stack rolls back, and the service keeps its previous task definition
 
+#### Scenario: An older release is deployed again
+- **WHEN** release R2 added a migration and R1, whose image lacks it, is deployed again by stage rollback, revert or hand
+- **THEN** R1's migration task exits 0 without changing the schema and the deploy continues
+
+#### Scenario: A migration overruns
+- **WHEN** the migration task is still running after 14 minutes
+- **THEN** the deploy fails and rolls back, and the task is left to finish
+
 #### Scenario: A release rolls back
 - **WHEN** a deploy fails after its migration succeeded and CloudFormation rolls the stack back
 - **THEN** the migration runner does nothing and the rollback completes

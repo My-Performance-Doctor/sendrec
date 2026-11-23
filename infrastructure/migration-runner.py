@@ -75,8 +75,8 @@ def run(ecs, properties, remaining_ms, sleep=None):
         code = codes[0] if len(codes) == 1 and codes[0] is not None else "unknown"
         raise RuntimeError(f"The migration task stopped with exit code {code}: "
                            f"{found[0].get('stoppedReason', 'no reason given')}")
-    ecs.stop_task(cluster=cluster, task=task, reason="Migration run out of time")
-    raise RuntimeError("The migration task did not finish in time and was stopped" + last)
+    # Never stopped: a migration cut off midway leaves the schema dirty.
+    raise RuntimeError(f"Migration task {task} still running; the deploy rolls back" + last)
 
 
 def handler(event, context):

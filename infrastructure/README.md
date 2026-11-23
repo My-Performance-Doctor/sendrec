@@ -145,7 +145,17 @@ The optional production stack and immutable release controls are documented in [
 5. **ApproveProduction**: a manual approval, which the nightly release approves.
 6. **Production**: `PromoteImage` (role `sendrec-pipeline-promote`) copies the digest into production's `sendrec` repository with a pinned, checksum-checked `crane`; production never rebuilds. Then it deploys `SendRecProduction` and `VerifyProduction` checks the version.
 
-Every stack deploy with a release image runs the migration task definition first, through the `MigrationRun` custom resource (`migration-runner.py`): after the database exists and before the service changes. A migration that does not exit 0 within 14 minutes fails the deploy, the stack rolls back, and the service keeps its old definition. A rollback never runs migrations. The app keeps `MIGRATIONS_MODE=skip`.
+Every stack deploy with a release image runs the migration task definition first, through the `MigrationRun` custom resource (`migration-runner.py`): after the database exists and before the service changes. A migration that exits non-zero fails the deploy; the stack rolls back and the service keeps its old definition. One still running after 14 minutes fails the deploy the same way but is left to finish, because stopping it midway would leave the schema dirty. A CloudFormation rollback runs nothing. Redeploying an older release, by stage rollback, revert or hand, runs that image's migration task, which finds the database newer than its own newest migration and exits 0 without changing anything: the schema stays at the newer release's version. The older image's migration run finds the database newer than its own newest migration and exits 0 without changing anything, so the older code runs on the newer schema; SendRec's migrations only add tables, columns and indexes, which older code ignores. Only images built from the `add-deploy-pipeline` change onward skip like this. An older image stops with "no migration found for version N", so never roll back past the first release that carries the change. The app keeps `MIGRATIONS_MODE=skip`.
+
+### Recovering a dirty schema
+
+A migration that fails partway leaves `schema_migrations` dirty, and every later release then fails at `MigrationRun` with "Dirty database version N". Recovery happens under a grant for production, and with synthetic data only on staging:
+
+1. Read the migration task's log (`migration/` stream in the stack's log group) for the failing statement.
+2. With a one-off task against the private database (the "Staging database without a login" pattern in `docs/agents/claude/production-release.md`), read `SELECT version, dirty FROM schema_migrations`.
+3. Undo what the failed migration left half done: for an interrupted `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY IF EXISTS <index>`, because `IF NOT EXISTS` would keep the invalid index. Migrations 000083 and 000084 have their own steps in `DEPLOYMENT.md`.
+4. `UPDATE schema_migrations SET version = <N - 1>, dirty = false`.
+5. Release again (**Release change**, or **Retry** on the failed stage); the migration runs from N.
 
 ### Configuration
 
