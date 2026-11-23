@@ -5,6 +5,10 @@ Verified on 2026-10-07 through 15:21 UTC using synthetic identities, speech and 
 The operator approved the proposal, authorized apply, requested an alternative to external DNS and authorized this machine for synthetic owner setup. CloudFront supplies its managed HTTPS hostname through a private VPC origin. The pending custom-domain certificate is unused and does not block this deployment.
 
 
+## Deployment pipeline: written, not deployed (23 Nov 2026, MPD-592)
+
+`SendRecPipeline` and the nightly release at 17:20 Sydney are defined in this repository (OpenSpec change `add-deploy-pipeline`), but nothing has been deployed: the stack, its configuration parameters, the hold and the repository policies wait for the one-time steps in the README's [Deployment pipeline](README.md#deployment-pipeline) section. Until then releases stay manual, as below. Once the pipeline makes its first production release, every stack deploy also runs the migration task through `MigrationRun` before the service changes, which replaces steps 1 and 2 below.
+
 ## Release gate: migrations before application tasks, and an explicit production task count
 
 Staging and production run with `MIGRATIONS_MODE=skip`, so a release applies migrations only through its controlled migration task. Production runs `cef3b00` (17 Nov 2026, MPD-510). The next release of main adds these migrations, which must run in this order, in staging and then in production, before any application task is replaced. Staging ran them migration-first on 17 Nov 2026: 000079 to 000081 exited 0 at 12:20:34 UTC (release of `420ed984`), and the `f6796f72` release's run at 13:16:34 UTC found them current. Production has not yet:

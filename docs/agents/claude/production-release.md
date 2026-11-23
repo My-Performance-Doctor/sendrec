@@ -1,6 +1,8 @@
 # Production and staging releases without the workflows (Nov 2026)
 
-The `mpd-build-candidate` and `mpd-promote` workflows have never run, because no roles or variables are configured. Production (`SendRecProduction`, deployed by hand on 16 Nov) and staging are released from the live template.
+This is the hand release. Once `SendRecPipeline` is deployed and has made its first production release (README, "Deployment pipeline"), releases go through the pipeline and this runbook is the fallback. The `mpd-build-candidate` and `mpd-promote` workflows were removed on 23 November 2026 (MPD-592).
+
+Production (`SendRecProduction`, deployed by hand on 16 Nov) and staging are released from the live template.
 
 ## Image-only or small change, either environment
 
