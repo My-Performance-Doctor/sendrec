@@ -292,15 +292,113 @@ class PipelineStackTest {
     }
   }
 
-  @Test void stagingWaitsForGitHubCiWithAReadOnlyTokenFromSecretsManager() {
+  @Test void stagingWaitsForTheRecordedCiResultWithNoSecret() {
     String wait = project("WaitForGitHubCI");
     List<String> commands = projects.get(wait);
     assertEquals("python3 -B infrastructure/pipeline/wait-for-ci.py", commands.get(commands.size() - 1));
     Map<String, String> variables = new HashMap<>();
     projectProperties.get(wait).path("Environment").path("EnvironmentVariables")
         .forEach(v -> variables.put(v.path("Name").asText(), v.path("Type").asText() + ":" + v.path("Value").asText()));
-    assertEquals("SECRETS_MANAGER:sendrec/github-ci-read", variables.get("GITHUB_TOKEN"));
     assertEquals("PLAINTEXT:assembly/sendrec-release.json", variables.get("RELEASE_FILE"));
+    assertEquals("PLAINTEXT:sendrec-ci-results", variables.get("CI_RESULTS_TABLE"));
+    assertNull(variables.get("GITHUB_TOKEN"));
+    assertTrue(variables.values().stream().allMatch(v -> v.startsWith("PLAINTEXT:")), variables.toString());
+    String json = template.toJSON().toString();
+    assertFalse(json.contains("github-ci-read"), "no GitHub token secret anywhere");
+    assertFalse(json.contains("secretsmanager:"), "no step can read a secret");
+    // The wait step may read one result by key, and nothing else in the table.
+    String role = projectProperties.get(wait).path("ServiceRole").path("Fn::GetAtt").get(0).asText();
+    List<String> dynamo = new ArrayList<>();
+    for (String statement : roleStatements(role)) if (statement.contains("dynamodb:")) dynamo.add(statement);
+    assertEquals(1, dynamo.size(), dynamo.toString());
+    assertTrue(dynamo.get(0).contains("\"Action\":\"dynamodb:GetItem\""), dynamo.toString());
+  }
+
+  private static List<String> roleStatements(String roleId) {
+    List<String> found = new ArrayList<>();
+    for (var policy : template.findResources("AWS::IAM::Policy").values()) {
+      JsonNode properties = JSON.valueToTree(policy.get("Properties"));
+      for (JsonNode role : properties.path("Roles")) {
+        if (role.path("Ref").asText().equals(roleId)) properties.path("PolicyDocument").path("Statement").forEach(st -> found.add(st.toString()));
+      }
+    }
+    return found;
+  }
+
+  @Test void theCiRoleTrustsOnlyPushesToMainOfThisRepositoryByImmutableId() {
+    String roleId = roleId("sendrec-github-ci-record");
+    JsonNode role = JSON.valueToTree(template.findResources("AWS::IAM::Role").get(roleId)).path("Properties");
+    JsonNode statements = role.path("AssumeRolePolicyDocument").path("Statement");
+    assertEquals(1, statements.size());
+    JsonNode trust = statements.get(0);
+    assertEquals("sts:AssumeRoleWithWebIdentity", trust.path("Action").asText());
+    assertEquals("Allow", trust.path("Effect").asText());
+    String provider = template.findResources("AWS::IAM::OIDCProvider").keySet().iterator().next();
+    assertEquals(provider, trust.path("Principal").path("Federated").path("Fn::GetAtt").get(0).asText());
+    // Exact matches only: one subject, main of this repository by GitHub's immutable ids.
+    assertEquals(List.of("StringEquals"), fieldNames(trust.path("Condition")));
+    JsonNode equals = trust.path("Condition").path("StringEquals");
+    assertEquals(List.of("token.actions.githubusercontent.com:aud", "token.actions.githubusercontent.com:sub"), fieldNames(equals));
+    assertEquals("sts.amazonaws.com", equals.path("token.actions.githubusercontent.com:aud").asText());
+    assertEquals("repo:My-Performance-Doctor@199071226/sendrec@1408816431:ref:refs/heads/main",
+        equals.path("token.actions.githubusercontent.com:sub").asText());
+    assertTrue(role.path("ManagedPolicyArns").isMissingNode(), "no managed policy");
+    assertTrue(role.path("Policies").isMissingNode(), "no inline policy");
+    assertEquals(3600, role.path("MaxSessionDuration").asInt());
+  }
+
+  @Test void theCiRoleMayOnlyPutOneItemInTheResultsTable() {
+    List<String> statements = roleStatements(roleId("sendrec-github-ci-record"));
+    assertEquals(1, statements.size(), statements.toString());
+    JsonNode statement = readTree(statements.get(0));
+    assertEquals("dynamodb:PutItem", statement.path("Action").asText());
+    assertEquals("Allow", statement.path("Effect").asText());
+    String table = template.findResources("AWS::DynamoDB::Table").keySet().iterator().next();
+    assertEquals(table, statement.path("Resource").path("Fn::GetAtt").get(0).asText());
+    template.hasResourceProperties("AWS::DynamoDB::Table", Map.of("TableName", "sendrec-ci-results",
+        "KeySchema", List.of(Map.of("AttributeName", "commit", "KeyType", "HASH")),
+        "TimeToLiveSpecification", Map.of("AttributeName", "expiresAt", "Enabled", true)));
+    // Nothing else in the stack names the role, so nothing grants it more.
+    long policiesOnRole = template.findResources("AWS::IAM::Policy").values().stream()
+        .filter(p -> JSON.valueToTree(p).path("Properties").path("Roles").toString().contains(roleId("sendrec-github-ci-record"))).count();
+    assertEquals(1, policiesOnRole);
+  }
+
+  @Test void anExistingGitHubProviderIsImportedByArnInsteadOfCreated() {
+    template.hasResourceProperties("AWS::IAM::OIDCProvider", Map.of("Url", "https://token.actions.githubusercontent.com",
+        "ClientIdList", List.of("sts.amazonaws.com")));
+    template.resourceCountIs("AWS::Lambda::Function", 0);
+    String existing = "arn:aws:iam::" + DEPLOYMENT + ":oidc-provider/token.actions.githubusercontent.com";
+    Map<String, String> environment = new HashMap<>(PipelineFixture.environment());
+    environment.put(PipelineConfig.SETTINGS_VARIABLE, "{\"deploymentAccount\":\"" + DEPLOYMENT + "\",\"connectionArn\":\""
+        + CONNECTION + "\",\"githubOidcProviderArn\":\"" + existing + "\"}");
+    Template imported = Template.fromStack(PipelineFixture.pipeline(PipelineFixture.app(REVISION, DIGEST, Map.of()), environment));
+    imported.resourceCountIs("AWS::IAM::OIDCProvider", 0);
+    imported.hasResourceProperties("AWS::IAM::Role", Map.of("RoleName", "sendrec-github-ci-record",
+        "AssumeRolePolicyDocument", Match.objectLike(Map.of("Statement", List.of(Match.objectLike(Map.of(
+            "Principal", Map.of("Federated", existing))))))));
+    for (String wrong : List.of("arn:aws:iam::" + PRODUCTION + ":oidc-provider/token.actions.githubusercontent.com",
+        "arn:aws:iam::" + DEPLOYMENT + ":oidc-provider/example.com")) {
+      Map<String, String> bad = new HashMap<>(PipelineFixture.environment());
+      bad.put(PipelineConfig.SETTINGS_VARIABLE, "{\"deploymentAccount\":\"" + DEPLOYMENT + "\",\"connectionArn\":\""
+          + CONNECTION + "\",\"githubOidcProviderArn\":\"" + wrong + "\"}");
+      assertThrows(IllegalArgumentException.class,
+          () -> PipelineFixture.pipeline(PipelineFixture.app(REVISION, DIGEST, Map.of()), bad), wrong);
+    }
+  }
+
+  private static List<String> fieldNames(JsonNode node) {
+    List<String> names = new ArrayList<>();
+    node.fieldNames().forEachRemaining(names::add);
+    return names;
+  }
+
+  private static JsonNode readTree(String json) {
+    try {
+      return JSON.readTree(json);
+    } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+      throw new AssertionError(error);
+    }
   }
 
   @Test void thePipelineCreatesNoHoldAndNamesItsRelease() {

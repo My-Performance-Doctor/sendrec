@@ -1,15 +1,15 @@
-import http.client
 import importlib.util
-import io
 import json
 import pathlib
+import subprocess
 import unittest
-import urllib.error
 
 spec = importlib.util.spec_from_file_location("wait_for_ci", pathlib.Path(__file__).parents[1] / "pipeline" / "wait-for-ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
+OLDER = "89abcdef0123456789abcdef0123456789abcdef"
+NEWER = "fedcba9876543210fedcba9876543210fedcba98"
 
 
 class Clock:
@@ -25,97 +25,90 @@ class Clock:
         self.now += seconds
 
 
-def reads(*answers):
-    answers = list(answers)
+class Table:
+    """The results table: one item per commit, with items appearing after a number of reads."""
 
-    def read(commit, token):
-        assert (commit, token) == (COMMIT, "token")
-        answer = answers.pop(0) if len(answers) > 1 else answers[0]
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-    return read
+    def __init__(self, records, appear_after=0, errors=()):
+        self.records, self.appear_after, self.errors, self.reads = records, appear_after, list(errors), []
+
+    def __call__(self, commit):
+        self.reads.append(commit)
+        if self.errors:
+            raise ci.ReadError(self.errors.pop(0))
+        if len(self.reads) <= self.appear_after:
+            return None
+        return self.records.get(commit)
 
 
-def http_error(code, headers=None):
-    return urllib.error.HTTPError("https://api.github.com", code, "error", headers or {}, io.BytesIO(b""))
+def record(conclusion, commit=COMMIT):
+    return {"commit": commit, "conclusion": conclusion, "runUrl": f"https://github.com/run/{commit[:4]}"}
 
 
 class WaitForCiTest(unittest.TestCase):
-    def wait(self, *answers):
+    def wait(self, table, commit=COMMIT):
         clock = Clock()
-        ci.wait_for_ci(COMMIT, "token", read=reads(*answers), clock=clock, sleep=clock.sleep)
+        ci.wait_for_ci(commit, table, clock=clock, sleep=clock.sleep)
         return clock
 
-    def test_passes_once_the_run_succeeds(self):
-        clock = self.wait(None, {"status": "in_progress"}, {"status": "completed", "conclusion": "success", "html_url": "u"})
+    def test_passes_on_a_recorded_success_for_the_commit(self):
+        table = Table({COMMIT: record("success")}, appear_after=2)
+        clock = self.wait(table)
+        self.assertEqual([COMMIT] * 3, table.reads)
         self.assertEqual([ci.INTERVAL, ci.INTERVAL], clock.slept)
 
-    def test_any_other_conclusion_fails(self):
-        for conclusion in ("failure", "cancelled", "timed_out", "skipped", None):
-            with self.subTest(conclusion=conclusion), self.assertRaisesRegex(SystemExit, "GitHub CI ended"):
-                self.wait({"status": "completed", "conclusion": conclusion})
+    def test_fails_at_once_on_a_recorded_failure(self):
+        for conclusion in ("failure", "cancelled", None):
+            table = Table({COMMIT: record(conclusion)})
+            with self.subTest(conclusion=conclusion), self.assertRaisesRegex(SystemExit, "GitHub CI recorded"):
+                self.wait(table)
+            self.assertEqual(1, len(table.reads))
 
-    def test_no_run_within_ten_minutes_fails(self):
-        with self.assertRaisesRegex(SystemExit, "started no ci.yml run"):
-            self.wait(None)
+    def test_an_older_commit_finds_its_own_result_not_the_newest(self):
+        # The nightly release ships an older staging-verified run after newer merges recorded theirs.
+        table = Table({OLDER: record("success", OLDER), NEWER: record("failure", NEWER)})
+        self.wait(table, OLDER)
+        self.assertEqual([OLDER], table.reads)
+        with self.assertRaisesRegex(SystemExit, "recorded failure"):
+            self.wait(Table({OLDER: record("failure", OLDER), NEWER: record("success", NEWER)}), OLDER)
 
-    def test_a_run_that_never_finishes_fails_at_the_timeout(self):
-        with self.assertRaisesRegex(SystemExit, "did not finish"):
-            self.wait({"status": "queued"})
+    def test_a_success_recorded_only_for_another_commit_never_passes(self):
+        with self.assertRaisesRegex(SystemExit, "No GitHub CI result was recorded"):
+            self.wait(Table({NEWER: record("success", NEWER)}))
 
-    def test_throttling_waits_and_a_bad_token_fails(self):
-        clock = self.wait(http_error(429, {"Retry-After": "7"}), {"status": "completed", "conclusion": "success"})
-        self.assertEqual([7.0], clock.slept)
-        with self.assertRaisesRegex(SystemExit, "answered 401"):
-            self.wait(http_error(401))
-        with self.assertRaisesRegex(SystemExit, "answered 404"):
-            self.wait(http_error(404))
+    def test_nothing_recorded_within_the_timeout_fails(self):
+        clock = Clock()
+        with self.assertRaisesRegex(SystemExit, f"within {ci.TIMEOUT // 60} minutes"):
+            ci.wait_for_ci(COMMIT, Table({}), clock=clock, sleep=clock.sleep)
+        self.assertGreater(clock.now, ci.TIMEOUT - ci.INTERVAL)
 
-    def test_server_errors_and_network_failures_are_read_again(self):
-        clock = self.wait(http_error(502), urllib.error.URLError("reset"), TimeoutError("slow"),
-                          {"status": "completed", "conclusion": "success"})
-        self.assertEqual([ci.INTERVAL] * 3, clock.slept)
-        with self.assertRaisesRegex(SystemExit, "did not finish"):
-            self.wait(http_error(503))
+    def test_a_passing_read_error_is_read_again_and_a_permission_error_fails(self):
+        self.wait(Table({COMMIT: record("success")}, errors=["ThrottlingException", "Could not connect"]))
+        for error in ("AccessDeniedException: not authorized", "ResourceNotFoundException: no table"):
+            with self.subTest(error=error), self.assertRaisesRegex(SystemExit, "Cannot read the CI results table"):
+                self.wait(Table({COMMIT: record("success")}, errors=[error]))
 
-    def test_a_cut_off_or_unexpected_answer_is_read_again(self):
-        clock = self.wait(json.JSONDecodeError("cut off", "{", 1), http.client.IncompleteRead(b"{"),
-                          ValueError("no runs"), {"status": "completed", "conclusion": "success"})
-        self.assertEqual([ci.INTERVAL] * 3, clock.slept)
 
-    def test_an_answer_without_a_run_list_is_an_error(self):
-        class Response(io.BytesIO):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        for body in (b'{"message": "Not Found"}', b"[]"):
-            with self.subTest(body=body), self.assertRaises(ValueError):
-                ci.latest_run(COMMIT, "token", opener=lambda request, timeout, context: Response(body))
-
-    def test_the_request_names_the_commit_on_main_and_sends_the_token(self):
+class ReadRecordTest(unittest.TestCase):
+    def test_reads_one_item_by_exact_commit_consistently(self):
         seen = {}
 
-        class Response(io.BytesIO):
-            def __enter__(self):
-                return self
+        def run(command, capture_output, text):
+            seen["command"] = command
+            item = {"commit": {"S": COMMIT}, "conclusion": {"S": "success"}, "runAttempt": {"N": "2"}}
+            return subprocess.CompletedProcess(command, 0, json.dumps({"Item": item}), "")
 
-            def __exit__(self, *args):
-                return False
+        self.assertEqual({"commit": COMMIT, "conclusion": "success", "runAttempt": "2"},
+                         ci.read_record(COMMIT, "sendrec-ci-results", run=run))
+        command = seen["command"]
+        self.assertEqual(["aws", "dynamodb", "get-item"], command[:3])
+        self.assertIn("--consistent-read", command)
+        self.assertEqual("sendrec-ci-results", command[command.index("--table-name") + 1])
+        self.assertEqual({"commit": {"S": COMMIT}}, json.loads(command[command.index("--key") + 1]))
 
-        def opener(request, timeout, context):
-            seen["url"], seen["auth"] = request.full_url, request.get_header("Authorization")
-            return Response(json.dumps({"workflow_runs": [{"id": 1}]}).encode())
-
-        self.assertEqual({"id": 1}, ci.latest_run(COMMIT, "token", opener=opener))
-        self.assertIn("/repos/My-Performance-Doctor/sendrec/actions/workflows/ci.yml/runs?", seen["url"])
-        self.assertIn(f"head_sha={COMMIT}", seen["url"])
-        self.assertIn("branch=main", seen["url"])
-        self.assertIn("event=push", seen["url"])
-        self.assertEqual("Bearer token", seen["auth"])
+    def test_no_item_is_none_and_a_failed_call_raises(self):
+        self.assertIsNone(ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 0, "{}", "")))
+        with self.assertRaisesRegex(ci.ReadError, "AccessDenied"):
+            ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 254, "", "AccessDeniedException"))
 
 
 if __name__ == "__main__":

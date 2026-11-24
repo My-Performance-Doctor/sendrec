@@ -48,8 +48,6 @@ final class PipelineStack extends Stack {
   static final String STAGING_REGISTRY = StagingConfig.ACCOUNT + ".dkr.ecr." + PipelineConfig.REGION + ".amazonaws.com";
   /** Written into the cloud assembly by {@link SendRecApp}; later steps read the release from it. */
   static final String RELEASE_FILE = "sendrec-release.json";
-  /** A read-only GitHub token for this repository's Actions runs, in the deployment account (README). */
-  static final String GITHUB_CI_TOKEN_SECRET = "sendrec/github-ci-read";
   static final String ASSEMBLY_DIRECTORY = "assembly";
   /** The staff app's pins: the CDK CLI and Node.js 24, checked against the release's SHASUMS256.txt. */
   static final String CDK_CLI_VERSION = "2.1142.0";
@@ -131,18 +129,19 @@ final class PipelineStack extends Stack {
     staging.getNode().setContext("releaseImage", config.stagingImage());
     SendRecStack stagingStack = new SendRecStack(staging, "SendRecStaging",
         SendRecApp.stagingProps(StagingConfig.ACCOUNT), StagingConfig.INSTANCE);
+    // ci.yml records its result here through GitHub OIDC; the wait step only reads it (design D11).
+    CiRecord ciRecord = new CiRecord(this, "CiRecord", config.githubOidcProviderArn());
+    CodeBuildStep waitForCi = CodeBuildStep.Builder.create("WaitForGitHubCI")
+        .input(source)
+        .additionalInputs(Map.of(ASSEMBLY_DIRECTORY, assembly))
+        .timeout(Duration.minutes(70))
+        .env(ordered("RELEASE_FILE", ASSEMBLY_DIRECTORY + "/" + RELEASE_FILE, "CI_RESULTS_TABLE", CiRecord.TABLE_NAME,
+            "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE))
+        .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of(), caCertificatesCommands())))
+        .commands(List.of("python3 -B infrastructure/pipeline/wait-for-ci.py"))
+        .build();
     pipeline.addStage(staging, AddStageOpts.builder()
-        .pre(List.of(CodeBuildStep.Builder.create("WaitForGitHubCI")
-            .input(source)
-            .additionalInputs(Map.of(ASSEMBLY_DIRECTORY, assembly))
-            .timeout(Duration.minutes(70))
-            .buildEnvironment(BuildEnvironment.builder().environmentVariables(Map.of("GITHUB_TOKEN",
-                BuildEnvironmentVariable.builder().type(BuildEnvironmentVariableType.SECRETS_MANAGER)
-                    .value(GITHUB_CI_TOKEN_SECRET).build())).build())
-            .env(Map.of("RELEASE_FILE", ASSEMBLY_DIRECTORY + "/" + RELEASE_FILE))
-            .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of(), caCertificatesCommands())))
-            .commands(List.of("python3 -B infrastructure/pipeline/wait-for-ci.py"))
-            .build()))
+        .pre(List.of(waitForCi))
         .post(List.of(verify("VerifyStaging", source, assembly, stagingStack))).build());
 
     // The gate is a stage of its own, as in MPD API and the staff app, so a newer run can wait at
@@ -190,6 +189,10 @@ final class PipelineStack extends Stack {
     new NightlyRelease(this, "NightlyRelease",
         NightlyRelease.parseAlarmEmails("staging", (String) getNode().tryGetContext("alarmEmailsStaging")),
         NightlyRelease.parseAlarmEmails("production", (String) getNode().tryGetContext("alarmEmailsProduction")));
+
+    // The step's role exists only once the pipeline is built.
+    pipeline.buildPipeline();
+    ciRecord.grantLookup(waitForCi.getGrantPrincipal());
   }
 
   /** Reads the stack's public /api/health until it reports the release's version (design D6). */
