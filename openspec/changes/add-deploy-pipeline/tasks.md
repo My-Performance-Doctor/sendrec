@@ -35,3 +35,11 @@
 - [x] 6.1 Exit 0 from a migration run whose clean database is newer than the image; test a forward release and a rollback on a synthetic database.
 - [x] 6.2 Leave an overrunning migration to finish instead of stopping it; document recovering a dirty schema and what a rollback leaves in the schema.
 - [x] 6.3 Port cortex-ai #132: ignore a finished run still shown waiting at an idle gate, narrow the approval snapshot, read the token only from a waiting approval, read again after a changed confirmation.
+
+## 7. CI result without a GitHub token
+
+- [x] 7.1 Add `ci.yml`'s `record-result` job: push to `main` only, after every check, OIDC through a pinned action, role ARN from a secret, success or failure recorded for the commit.
+- [x] 7.2 Add the results table, the OIDC provider (imported by ARN when given) and the record role, trusted only by `main` of this repository by immutable id, allowed only `PutItem`.
+- [x] 7.3 Make `WaitForGitHubCI` read the record with `GetItem` and no secret; remove the token.
+- [x] 7.4 Test the trust, the single permission, the absent secret, the job's conditions, and success, failure, an older commit and the timeout.
+- [x] 7.5 Rewrite D11 and the README's one-time steps.
