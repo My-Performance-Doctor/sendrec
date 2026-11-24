@@ -180,7 +180,8 @@ The pipeline proves that GitHub CI passed without any GitHub token, the way Comm
 - **Trust.** The role trusts the account's `token.actions.githubusercontent.com` provider, audience `sts.amazonaws.com`, and exactly one subject, `repo:My-Performance-Doctor@199071226/sendrec@1408816431:ref:refs/heads/main`: GitHub's immutable subject, by the organisation's and repository's ids (the repository uses it already). Pull requests, forks, other branches, tags and environments sign with other subjects, and fork pull requests get no token at all. AWS matches only the audience and subject, so any workflow running on `main` that asks for a token could assume the role. Only `record-result` asks: a test fails if any other workflow requests `id-token: write`, and adding one takes a reviewed merge to `main`, which can change what ships anyway.
 - **Permission.** `dynamodb:PutItem` on that table, nothing else. It cannot deploy, read a secret or touch a parameter.
 - **One item per commit.** The nightly release ships an older run hours after its CI passed, after newer merges recorded theirs, so it looks up its own commit, not the latest result. A rerun of `ci.yml` writes the item again.
-- **A commit with no record** (the secret unset, or a run from before the job existed) never reaches staging: rerun `ci.yml` for it on `main`, then **Retry** the `Staging` stage.
+- **A commit with no record** (the secret unset, a run from before the job existed, or an item past its 90-day expiry) never reaches staging. A rerun uses the workflow file of the run's own commit, and GitHub reruns only runs under 30 days old, so rerunning `ci.yml` records a result only for a commit that carries `record-result` and whose run is that recent; rerun it, then **Retry** the `Staging` stage. For any other commit, such as a rollback to an older release, check its `ci.yml` run passed, then put its item by hand with deploy rights in the deployment account (`aws dynamodb put-item --table-name sendrec-ci-results --item '{"commit":{"S":"<full commit>"},"conclusion":{"S":"success"},"runUrl":{"S":"<run link>"}}'`) and **Retry** the stage.
+- **The old token.** `WaitForGitHubCI` no longer reads `sendrec/github-ci-read`. If that secret exists in the deployment account, delete it and revoke the token in GitHub.
 
 ### Nightly production release
 
@@ -266,7 +267,7 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
    ```bash
    gh secret set SENDREC_CI_RECORD_ROLE_ARN --repo My-Performance-Doctor/sendrec \
      --body "arn:aws:iam::$DEPLOYMENT_ACCOUNT:role/sendrec-github-ci-record"
-   gh run list --repo My-Performance-Doctor/sendrec --workflow ci.yml --branch main --event push --limit 1
+   gh run list --repo My-Performance-Doctor/sendrec --workflow ci.yml --branch main --event push --commit <the commit the pipeline is releasing>
    gh run rerun <that run's id> --repo My-Performance-Doctor/sendrec
    ```
 

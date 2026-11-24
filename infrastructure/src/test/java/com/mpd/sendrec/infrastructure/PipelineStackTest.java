@@ -349,8 +349,13 @@ class PipelineStackTest {
         "KeySchema", List.of(Map.of("AttributeName", "commit", "KeyType", "HASH")),
         "TimeToLiveSpecification", Map.of("AttributeName", "expiresAt", "Enabled", true)));
     // Nothing else in the stack names the role, so nothing grants it more.
+    String ciRole = roleId("sendrec-github-ci-record");
     long policiesOnRole = template.findResources("AWS::IAM::Policy").values().stream()
-        .filter(p -> JSON.valueToTree(p).path("Properties").path("Roles").toString().contains(roleId("sendrec-github-ci-record"))).count();
+        .filter(p -> {
+          for (JsonNode role : JSON.valueToTree(p).path("Properties").path("Roles"))
+            if (role.path("Ref").asText().equals(ciRole)) return true;
+          return false;
+        }).count();
     assertEquals(1, policiesOnRole);
   }
 

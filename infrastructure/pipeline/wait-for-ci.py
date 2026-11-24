@@ -65,7 +65,9 @@ def wait_for_ci(commit, read, clock=time.monotonic, sleep=time.sleep):
                                  f" {last_error}")
             raise SystemExit(f"No GitHub CI result was recorded for {commit} within {TIMEOUT // 60} minutes."
                              " Rerun that commit's push run of ci.yml (a manual dispatch records nothing),"
-                             " then retry this stage.")
+                             " then retry this stage. A run older than 30 days, or from a commit without"
+                             " the record-result job, cannot record: see infrastructure/README.md,"
+                             " \"CI result record\".")
         sleep(INTERVAL)
 
 

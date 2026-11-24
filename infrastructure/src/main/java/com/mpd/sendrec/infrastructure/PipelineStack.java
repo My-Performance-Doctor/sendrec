@@ -139,6 +139,7 @@ final class PipelineStack extends Stack {
             "AWS_CA_BUNDLE", SYSTEM_CA_BUNDLE))
         .partialBuildSpec(BuildSpec.fromObject(installPhase(Map.of(), caCertificatesCommands())))
         .commands(List.of("python3 -B infrastructure/pipeline/wait-for-ci.py"))
+        .rolePolicyStatements(List.of(ciRecord.lookupStatement()))
         .build();
     pipeline.addStage(staging, AddStageOpts.builder()
         .pre(List.of(waitForCi))
@@ -189,10 +190,6 @@ final class PipelineStack extends Stack {
     new NightlyRelease(this, "NightlyRelease",
         NightlyRelease.parseAlarmEmails("staging", (String) getNode().tryGetContext("alarmEmailsStaging")),
         NightlyRelease.parseAlarmEmails("production", (String) getNode().tryGetContext("alarmEmailsProduction")));
-
-    // The step's role exists only once the pipeline is built.
-    pipeline.buildPipeline();
-    ciRecord.grantLookup(waitForCi.getGrantPrincipal());
   }
 
   /** Reads the stack's public /api/health until it reports the release's version (design D6). */

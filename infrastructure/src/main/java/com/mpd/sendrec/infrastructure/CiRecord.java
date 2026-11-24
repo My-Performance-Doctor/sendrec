@@ -11,7 +11,6 @@ import software.amazon.awscdk.services.dynamodb.BillingMode;
 import software.amazon.awscdk.services.dynamodb.Table;
 import software.amazon.awscdk.services.iam.CfnOIDCProvider;
 import software.amazon.awscdk.services.iam.FederatedPrincipal;
-import software.amazon.awscdk.services.iam.IPrincipal;
 import software.amazon.awscdk.services.iam.PolicyStatement;
 import software.amazon.awscdk.services.iam.Role;
 import software.constructs.Construct;
@@ -80,11 +79,11 @@ final class CiRecord extends Construct {
   }
 
   /** Lets the wait step read one commit's result, and nothing else. */
-  void grantLookup(IPrincipal grantee) {
-    grantee.addToPrincipalPolicy(PolicyStatement.Builder.create()
+  PolicyStatement lookupStatement() {
+    return PolicyStatement.Builder.create()
         .actions(List.of("dynamodb:GetItem"))
         .resources(List.of(table.getTableArn()))
-        .build());
+        .build();
   }
 
 }
