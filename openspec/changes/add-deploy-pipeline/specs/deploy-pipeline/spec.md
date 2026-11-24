@@ -19,11 +19,23 @@ The `Build` step SHALL build the image in AWS with `VERSION` set to the commit's
 - **THEN** the step uses that image's digest and pushes nothing
 
 ### Requirement: Staging waits for passing checks
-Before deploying staging, the pipeline SHALL wait for GitHub's `ci.yml` run on `main` for the release's commit and SHALL fail the stage unless that run concluded `success`. The `Build` step SHALL run the infrastructure tests before building the image.
+Before deploying staging, the pipeline SHALL wait for the result GitHub's `ci.yml` run on `main` recorded in the deployment account for the release's exact commit, and SHALL fail the stage unless that result is `success`. It SHALL use no GitHub token. Only a workflow running on `main` of this repository, identified by GitHub's immutable subject, SHALL be able to record a result, only `ci.yml`'s `record-result` job SHALL request a token, and the recording role SHALL be able to do nothing else. The `Build` step SHALL run the infrastructure tests before building the image.
 
 #### Scenario: CI fails on the merged commit
-- **WHEN** `ci.yml` concludes `failure` for the commit
+- **WHEN** `ci.yml` records `failure` for the commit
 - **THEN** the `Staging` stage fails before deploying and its alert list is emailed
+
+#### Scenario: The nightly release ships an older commit
+- **WHEN** the run at the gate is for a commit older than main's latest, and both have recorded results
+- **THEN** the wait step reads the older commit's own result
+
+#### Scenario: Nothing is recorded
+- **WHEN** no result is recorded for the commit within 60 minutes
+- **THEN** the `Staging` stage fails
+
+#### Scenario: A pull request or fork tries to record
+- **WHEN** a workflow run that is not on `main` of this repository asks to assume the recording role
+- **THEN** AWS refuses it
 
 ### Requirement: Production runs the staging digest
 Before deploying production, the pipeline SHALL copy the staging image by digest into production's `sendrec` repository under the full commit, and SHALL fail if the copy's digest differs or the tag already names another digest. Production SHALL never be built from source.

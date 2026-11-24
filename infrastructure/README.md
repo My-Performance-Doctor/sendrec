@@ -141,7 +141,7 @@ The optional production stack and immutable release controls are documented in [
 1. **Source**: `main` through the deployment account's GitHub connection.
 2. **Build** (`Synth`, role `sendrec-pipeline-build`): the Python, Node and Gradle infrastructure tests, then `pipeline/build-image.sh` builds the image for `linux/amd64` with `VERSION` set to the commit's first 8 characters and the `org.opencontainers.image.revision` label, and pushes it to staging's `sendrec` repository as `:<commit>`. A commit already there is not built again. Then `cdk synth -c targetEnvironment=pipeline` synthesizes both stages with the pushed digest and writes `sendrec-release.json` into the cloud assembly.
 3. **UpdatePipeline**: the pipeline updates itself when its own definition changed. A merge alone never changes it, because no per-commit value enters it.
-4. **Staging**: `WaitForGitHubCI` waits until GitHub's `ci.yml` run on `main` has passed for the commit (the Go, web and end-to-end checks), then the stage deploys `SendRecStaging` with the digest, then `VerifyStaging` waits up to 5 minutes for `/api/health` to report the version.
+4. **Staging**: `WaitForGitHubCI` waits until GitHub's `ci.yml` run on `main` has recorded a pass for the commit (the Go, web and end-to-end checks; see [CI result record](#ci-result-record)), then the stage deploys `SendRecStaging` with the digest, then `VerifyStaging` waits up to 5 minutes for `/api/health` to report the version.
 5. **ApproveProduction**: a manual approval, which the nightly release approves.
 6. **Production**: `PromoteImage` (role `sendrec-pipeline-promote`) copies the digest into production's `sendrec` repository with a pinned, checksum-checked `crane`; production never rebuilds. Then it deploys `SendRecProduction` and `VerifyProduction` checks the version.
 
@@ -163,15 +163,25 @@ Nothing that identifies production is committed. The Build step reads these Stri
 
 | Parameter | Holds |
 |---|---|
-| `/sendrec/pipeline/settings` | `{"deploymentAccount": "…", "connectionArn": "…"}`, the same GitHub connection MPD API's pipeline uses |
+| `/sendrec/pipeline/settings` | `{"deploymentAccount": "…", "connectionArn": "…"}`, the same GitHub connection MPD API's pipeline uses, plus `"githubOidcProviderArn": "…"` when the deployment account already has GitHub's OIDC provider |
 | `/sendrec/pipeline/staging-context` | the CDK context a staging release passes: `activateMpdIntegration`, `mpdIntegrationSecretArn`, the nine `MPD_*` settings, `mpdProcessingProgress`, `mpdWatchShare`, and `transcriptionProvider` if not local; plus the network, below |
 | `/sendrec/pipeline/production-context` | the same for production, plus `productionAccount`, `productionVpcId`, `productionCloudFrontPrefixListId`, `productionBucket`, `productionAlertTopicArn`, `productionDomainCertificateArn`, `productionTaskCount` and `productionDatabaseSize`; plus the network, below |
 | `/mpd-api/alarm-emails/staging`, `/mpd-api/alarm-emails/production` | MPD API's alarm lists, which the staff app also uses |
-| Secret `sendrec/github-ci-read` | a fine-grained GitHub token with read-only **Actions** access to this repository only, for `WaitForGitHubCI` |
+| GitHub Actions secret `SENDREC_CI_RECORD_ROLE_ARN` | the ARN of `sendrec-github-ci-record`, which `ci.yml` assumes to record its result; a secret so the account id stays out of the public logs |
 
 Each context also names its network, so the pipeline needs no CDK lookup role in staging or production (a lookup role can read every bucket in its account, recordings included): `vpcAvailabilityZones`, `vpcPrivateSubnetIds` and `vpcIsolatedSubnetIds`, comma-separated, one subnet of each kind per zone, in zone order. Read them once from the VPC the stack uses, or from the live stack's `PrivateSubnetIds` output and its database subnet group.
 
 Each context is a flat JSON object of strings, numbers and booleans, and reaches only its own stage. Synthesis refuses `releaseImage`, `productionImage`, `targetEnvironment`, `bootstrap` and `bootstrapCidr`: the pipeline sets the images and never bootstraps. Production still fails without `productionTaskCount`, and an active integration without both switches. To switch `mpdProcessingProgress` or `mpdWatchShare`, change the parameter in its own recorded step, then run the pipeline (**Release change**); a release never switches them. A parameter over 4 KB needs `--tier Advanced`.
+
+### CI result record
+
+The pipeline proves that GitHub CI passed without any GitHub token, the way Command Centre deploys: GitHub pushes the result into AWS. `ci.yml`'s last job, `record-result`, runs only on a push to `main` of this repository, after every check. It signs in through GitHub OIDC as `sendrec-github-ci-record` and puts one item in the DynamoDB table `sendrec-ci-results`: the commit, `success` when every check passed or `failure` otherwise, the checks' results, the run's link and an expiry 90 days out. `WaitForGitHubCI` reads the item for the exact commit it is releasing, with `dynamodb:GetItem` only. It passes on `success`, fails at once on `failure`, and fails after 60 minutes with nothing recorded.
+
+- **Trust.** The role trusts the account's `token.actions.githubusercontent.com` provider, audience `sts.amazonaws.com`, and exactly one subject, `repo:My-Performance-Doctor@199071226/sendrec@1408816431:ref:refs/heads/main`: GitHub's immutable subject, by the organisation's and repository's ids (the repository uses it already). Pull requests, forks, other branches, tags and environments sign with other subjects, and fork pull requests get no token at all. AWS matches only the audience and subject, so any workflow running on `main` that asks for a token could assume the role. Only `record-result` asks: a test fails if any other workflow requests `id-token: write`, and adding one takes a reviewed merge to `main`, which can change what ships anyway.
+- **Permission.** `dynamodb:PutItem` on that table, nothing else. It cannot deploy, read a secret or touch a parameter.
+- **One item per commit.** The nightly release ships an older run hours after its CI passed, after newer merges recorded theirs, so it looks up its own commit, not the latest result. A rerun of `ci.yml` writes the item again.
+- **A commit with no record** (the secret unset, a run from before the job existed, or an item past its 90-day expiry) never reaches staging. A rerun uses the workflow file of the run's own commit, and GitHub reruns only runs under 30 days old, so rerunning `ci.yml` records a result only for a commit that carries `record-result` and whose run is that recent; rerun it, then **Retry** the `Staging` stage. For any other commit, such as a rollback to an older release, check its `ci.yml` run passed, then put its item by hand with deploy rights in the deployment account (`aws dynamodb put-item --table-name sendrec-ci-results --item '{"commit":{"S":"<full commit>"},"conclusion":{"S":"success"},"runUrl":{"S":"<run link>"}}'`) and **Retry** the stage.
+- **The old token.** `WaitForGitHubCI` no longer reads `sendrec/github-ci-read`. If that secret exists in the deployment account, delete it and revoke the token in GitHub.
 
 ### Nightly production release
 
@@ -206,12 +216,14 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
    done
    ```
 
-   Store the GitHub token as the plain-text secret `sendrec/github-ci-read`, read-only Actions access to this repository only (the organisation may need to approve it), and replace it with `put-secret-value` before it expires:
+   **GitHub's OIDC provider.** An account holds one provider per URL. Check for it before the settings parameter is written, and before any merge that updates an existing `SendRecPipeline`:
 
    ```bash
-   aws secretsmanager create-secret --name sendrec/github-ci-read --secret-string "file://$PRIVATE_DIR/token.txt" \
-     --region ap-southeast-2 --profile <deployment-admin>
+   aws iam list-open-id-connect-providers --profile <deployment-admin> \
+     --query "OpenIDConnectProviderList[?ends_with(Arn, '/token.actions.githubusercontent.com')].Arn" --output text
    ```
+
+   If it prints an ARN, add `"githubOidcProviderArn": "<that ARN>"` to `settings.json`, and the stack imports it. If it prints nothing, leave the key out, and the stack creates the provider. Getting this wrong fails the deploy, not the trust: a second provider for the same URL is refused.
 
 3. **Hold, starting on.**
 
@@ -249,6 +261,17 @@ These need deploy rights in the deployment account (a DeploymentMaintenance gran
      -c alarmEmailsStaging="$(param /mpd-api/alarm-emails/staging)" \
      -c alarmEmailsProduction="$(param /mpd-api/alarm-emails/production)"
    ```
+
+   **Then give `ci.yml` the role**, as a repository secret (a variable would print the account id in the public logs), and record a result for the commit the pipeline is releasing:
+
+   ```bash
+   gh secret set SENDREC_CI_RECORD_ROLE_ARN --repo My-Performance-Doctor/sendrec \
+     --body "arn:aws:iam::$DEPLOYMENT_ACCOUNT:role/sendrec-github-ci-record"
+   gh run list --repo My-Performance-Doctor/sendrec --workflow ci.yml --branch main --event push --commit <the commit the pipeline is releasing>
+   gh run rerun <that run's id> --repo My-Performance-Doctor/sendrec
+   ```
+
+   The rerun's `record-result` job should end "Recorded success for <commit>". Check the item with `aws dynamodb get-item --table-name sendrec-ci-results --key '{"commit":{"S":"<commit>"}}' --profile <deployment-admin>`.
 
 6. **Read the staging diff before the first staging deploy.** The pipeline starts a run on creation, so disable the transition into `Staging` at once, then diff with staging read credentials and the same variables:
 

@@ -1,99 +1,90 @@
-"""WaitForGitHubCI step: waits until GitHub's CI workflow on main passes for the release's commit.
+"""WaitForGitHubCI step: waits for GitHub CI's recorded result for the release's commit.
 
-GitHub Actions runs `ci.yml` (the Go, web and end-to-end checks) on every push to main, so the
-pipeline deploys staging only once that run has passed, as the staff app's pipeline does. It reads
-the runs with a read-only token from $GITHUB_TOKEN and fails on any conclusion but success, or
-when no run appears.
+ci.yml's last job, on every push to main, signs in to the deployment account through GitHub OIDC
+and puts one item in the CI results table: the commit and whether every check passed (design D11).
+This step reads that item for the exact commit being released, with read-only access and no GitHub
+token. It passes only on a recorded success, fails at once on a recorded failure, and fails when
+nothing is recorded within the timeout.
 """
-import http.client
 import json
 import os
-import ssl
+import subprocess
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
-REPOSITORY = "My-Performance-Doctor/sendrec"
-WORKFLOW = "ci.yml"
-# A run takes about 15 minutes, plus queueing.
+REGION = "ap-southeast-2"
+# A ci.yml run takes about 15 minutes, plus queueing, and its record is written at the end.
 TIMEOUT = 60 * 60
-# GitHub creates the run within seconds of the push, if it creates one at all.
-START_TIMEOUT = 10 * 60
 INTERVAL = 30
-THROTTLE_WAIT = 60
-CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+# One read; a hung call is read again instead of holding the step past its own timeout.
+READ_TIMEOUT = 60
+# Errors no amount of reading again will fix.
+PERMANENT_ERRORS = ("AccessDenied", "ResourceNotFound", "ValidationException")
 
 
-def latest_run(commit, token, opener=urllib.request.urlopen):
-    query = urllib.parse.urlencode({"head_sha": commit, "branch": "main", "event": "push", "per_page": 1})
-    request = urllib.request.Request(
-        f"https://api.github.com/repos/{REPOSITORY}/actions/workflows/{WORKFLOW}/runs?{query}",
-        headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
-                 "X-GitHub-Api-Version": "2022-11-28"})
-    context = ssl.create_default_context(cafile=CA_BUNDLE if os.path.exists(CA_BUNDLE) else None)
-    with opener(request, timeout=30, context=context) as response:
-        body = json.load(response)
-    runs = body.get("workflow_runs") if isinstance(body, dict) else None
-    if not isinstance(runs, list):
-        raise ValueError("GitHub's answer lists no workflow runs")
-    return runs[0] if runs else None
+class ReadError(Exception):
+    pass
 
 
-def throttle_wait(error):
-    """Seconds GitHub asks us to wait, or None when the error is not throttling."""
-    if error.code not in (403, 429):
+def read_record(commit, table, run=subprocess.run):
+    """The item recorded for commit, or None when there is none yet."""
+    key = json.dumps({"commit": {"S": commit}})
+    try:
+        result = run(["aws", "dynamodb", "get-item", "--region", REGION, "--table-name", table, "--key", key,
+                      "--consistent-read", "--output", "json"], capture_output=True, text=True, timeout=READ_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        raise ReadError(f"aws did not answer within {READ_TIMEOUT} seconds") from error
+    except OSError as error:
+        raise ReadError(f"could not run aws: {error}") from error
+    if result.returncode != 0:
+        raise ReadError(result.stderr.strip() or f"aws exited {result.returncode}")
+    try:
+        item = json.loads(result.stdout or "{}").get("Item")
+    except (ValueError, AttributeError) as error:
+        raise ReadError(f"unreadable answer from aws: {error}") from error
+    if item is None:
         return None
-    headers = error.headers or {}
-    retry_after = headers.get("Retry-After", "")
-    if retry_after.isdigit():
-        return float(retry_after)
-    if headers.get("X-RateLimit-Remaining") == "0":
-        reset = headers.get("X-RateLimit-Reset", "")
-        return max(0.0, int(reset) - time.time()) if reset.isdigit() else THROTTLE_WAIT
-    return THROTTLE_WAIT if error.code == 429 else None
+    return {name: next(iter(value.values())) for name, value in item.items()}
 
 
-def wait_for_ci(commit, token, read=latest_run, clock=time.monotonic, sleep=time.sleep):
-    """Returns once the commit's CI run succeeded; raises SystemExit otherwise."""
+def wait_for_ci(commit, read, clock=time.monotonic, sleep=time.sleep):
+    """Returns once commit's recorded result is success; raises SystemExit otherwise."""
     started = clock()
+    last_error = None
     while True:
-        elapsed = clock() - started
-        if elapsed > TIMEOUT:
-            raise SystemExit(f"GitHub CI did not finish for {commit} within {TIMEOUT // 60} minutes")
         try:
-            run = read(commit, token)
-        except urllib.error.HTTPError as error:
-            wait = throttle_wait(error)
-            # A 5xx is GitHub's own trouble, not the token's, so it is read again.
-            if wait is None and error.code >= 500:
-                wait = INTERVAL
-            if wait is None:
-                raise SystemExit(f"GitHub answered {error.code} reading CI runs; check the token")
-            sleep(min(wait, 300))
-            continue
-        except (OSError, ValueError, http.client.HTTPException) as error:
-            # A dropped connection, a timeout or a cut-off answer says nothing about the run,
-            # so it is read again.
-            print(f"Reading CI runs failed ({error}); trying again", file=sys.stderr)
-            sleep(INTERVAL)
-            continue
-        if run is None:
-            if elapsed > START_TIMEOUT:
-                raise SystemExit(f"GitHub started no {WORKFLOW} run on main for {commit}")
-        elif run.get("status") == "completed":
-            if run.get("conclusion") == "success":
-                print(f"GitHub CI passed for {commit}: {run.get('html_url')}")
+            record = read(commit)
+            last_error = None
+        except ReadError as error:
+            message = str(error)
+            if any(permanent in message for permanent in PERMANENT_ERRORS):
+                raise SystemExit(f"Cannot read the CI results table: {message}")
+            print(f"Reading the CI result failed, reading again: {message}", file=sys.stderr)
+            record, last_error = None, message
+        if record is not None:
+            conclusion = record.get("conclusion")
+            run = record.get("runUrl", "no run recorded")
+            if conclusion == "success":
+                print(f"GitHub CI passed for {commit}: {run}")
                 return
-            raise SystemExit(f"GitHub CI ended {run.get('conclusion')} for {commit}: {run.get('html_url')}")
+            raise SystemExit(f"GitHub CI recorded {conclusion} for {commit}: {run}")
+        if clock() - started > TIMEOUT:
+            if last_error is not None:
+                raise SystemExit(f"Could not read the CI result for {commit} within {TIMEOUT // 60} minutes:"
+                                 f" {last_error}")
+            raise SystemExit(f"No GitHub CI result was recorded for {commit} within {TIMEOUT // 60} minutes."
+                             " Rerun that commit's push run of ci.yml (a manual dispatch records nothing),"
+                             " then retry this stage. A run older than 30 days, or from a commit without"
+                             " the record-result job, cannot record: see infrastructure/README.md,"
+                             " \"CI result record\".")
         sleep(INTERVAL)
 
 
 def main():
     with open(os.environ["RELEASE_FILE"]) as stream:
         commit = json.load(stream)["revision"]
-    wait_for_ci(commit, os.environ["GITHUB_TOKEN"])
+    table = os.environ["CI_RESULTS_TABLE"]
+    wait_for_ci(commit, lambda c: read_record(c, table))
 
 
 if __name__ == "__main__":

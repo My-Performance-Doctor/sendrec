@@ -15,12 +15,15 @@ import software.constructs.Construct;
  *
  * @param deploymentAccount the account that runs the pipeline
  * @param connectionArn the deployment account's GitHub connection
+ * @param githubOidcProviderArn the deployment account's existing GitHub Actions OIDC provider, or
+ *     null to create one (an account holds one provider per URL)
  * @param stagingContext CDK context for SendRecStaging, as a staging release passes it
  * @param productionContext CDK context for SendRecProduction, without its image
  * @param revision the full commit being released
  * @param digest the image digest built for that commit
  */
-record PipelineConfig(String deploymentAccount, String connectionArn, Map<String, Object> stagingContext,
+record PipelineConfig(String deploymentAccount, String connectionArn, String githubOidcProviderArn,
+    Map<String, Object> stagingContext,
     Map<String, Object> productionContext, String revision, String digest) {
   static final String SETTINGS_VARIABLE = "SENDREC_PIPELINE_SETTINGS";
   static final String STAGING_VARIABLE = "SENDREC_STAGING_CONTEXT";
@@ -44,6 +47,9 @@ record PipelineConfig(String deploymentAccount, String connectionArn, Map<String
     if (connectionArn == null || !connectionArn.matches(
         "arn:aws:(codeconnections|codestar-connections):" + REGION + ":" + deploymentAccount + ":connection/[0-9a-f-]{36}"))
       throw new IllegalArgumentException("connectionArn must be a GitHub connection in the deployment account");
+    if (githubOidcProviderArn != null && !githubOidcProviderArn.equals(
+        "arn:aws:iam::" + deploymentAccount + ":oidc-provider/" + CiRecord.GITHUB_OIDC_HOST))
+      throw new IllegalArgumentException("githubOidcProviderArn must be the deployment account's GitHub Actions provider");
     checkContext("staging", stagingContext);
     checkContext("production", productionContext);
     Object account = productionContext.get("productionAccount");
@@ -81,6 +87,7 @@ record PipelineConfig(String deploymentAccount, String connectionArn, Map<String
   static PipelineConfig load(Construct scope, Function<String, String> environment) {
     JsonNode settings = object(SETTINGS_VARIABLE, environment.apply(SETTINGS_VARIABLE));
     return new PipelineConfig(text(settings, "deploymentAccount"), text(settings, "connectionArn"),
+        text(settings, "githubOidcProviderArn"),
         context(STAGING_VARIABLE, environment.apply(STAGING_VARIABLE)),
         context(PRODUCTION_VARIABLE, environment.apply(PRODUCTION_VARIABLE)),
         contextText(scope, "releaseRevision"), contextText(scope, "releaseDigest"));
