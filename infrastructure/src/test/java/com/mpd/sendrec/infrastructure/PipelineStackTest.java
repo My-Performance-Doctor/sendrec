@@ -199,10 +199,21 @@ class PipelineStackTest {
 
   private static List<String> statements(String roleId) {
     List<String> found = new ArrayList<>();
+    for (JsonNode properties : policiesOn(roleId))
+      properties.path("PolicyDocument").path("Statement").forEach(s -> found.add(s.toString()));
+    return found;
+  }
+
+  /** The properties of every IAM policy attached to the role with this logical id. */
+  private static List<JsonNode> policiesOn(String roleId) {
+    List<JsonNode> found = new ArrayList<>();
     for (var policy : template.findResources("AWS::IAM::Policy").values()) {
       JsonNode properties = JSON.valueToTree(policy.get("Properties"));
       for (JsonNode role : properties.path("Roles")) {
-        if (role.path("Ref").asText().equals(roleId)) properties.path("PolicyDocument").path("Statement").forEach(s -> found.add(s.toString()));
+        if (role.path("Ref").asText().equals(roleId)) {
+          found.add(properties);
+          break;
+        }
       }
     }
     return found;
@@ -349,19 +360,14 @@ class PipelineStackTest {
         "KeySchema", List.of(Map.of("AttributeName", "commit", "KeyType", "HASH")),
         "TimeToLiveSpecification", Map.of("AttributeName", "expiresAt", "Enabled", true)));
     // Nothing else in the stack names the role, so nothing grants it more.
-    String ciRole = roleId("sendrec-github-ci-record");
-    long policiesOnRole = template.findResources("AWS::IAM::Policy").values().stream()
-        .filter(p -> {
-          for (JsonNode role : JSON.valueToTree(p).path("Properties").path("Roles"))
-            if (role.path("Ref").asText().equals(ciRole)) return true;
-          return false;
-        }).count();
-    assertEquals(1, policiesOnRole);
+    assertEquals(1, policiesOn(roleId("sendrec-github-ci-record")).size());
   }
 
   @Test void anExistingGitHubProviderIsImportedByArnInsteadOfCreated() {
     template.hasResourceProperties("AWS::IAM::OIDCProvider", Map.of("Url", "https://token.actions.githubusercontent.com",
         "ClientIdList", List.of("sts.amazonaws.com")));
+    // Retained, so importing it later by ARN, or removing the stack, never deletes a provider other roles trust.
+    template.hasResource("AWS::IAM::OIDCProvider", Map.of("DeletionPolicy", "Retain", "UpdateReplacePolicy", "Retain"));
     template.resourceCountIs("AWS::Lambda::Function", 0);
     String existing = "arn:aws:iam::" + DEPLOYMENT + ":oidc-provider/token.actions.githubusercontent.com";
     Map<String, String> environment = new HashMap<>(PipelineFixture.environment());

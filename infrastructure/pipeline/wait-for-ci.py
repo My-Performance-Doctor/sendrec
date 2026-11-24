@@ -16,6 +16,10 @@ REGION = "ap-southeast-2"
 # A ci.yml run takes about 15 minutes, plus queueing, and its record is written at the end.
 TIMEOUT = 60 * 60
 INTERVAL = 30
+# One read; a hung call is read again instead of holding the step past its own timeout.
+READ_TIMEOUT = 60
+# Errors no amount of reading again will fix.
+PERMANENT_ERRORS = ("AccessDenied", "ResourceNotFound", "ValidationException")
 
 
 class ReadError(Exception):
@@ -25,8 +29,13 @@ class ReadError(Exception):
 def read_record(commit, table, run=subprocess.run):
     """The item recorded for commit, or None when there is none yet."""
     key = json.dumps({"commit": {"S": commit}})
-    result = run(["aws", "dynamodb", "get-item", "--region", REGION, "--table-name", table, "--key", key,
-                  "--consistent-read", "--output", "json"], capture_output=True, text=True)
+    try:
+        result = run(["aws", "dynamodb", "get-item", "--region", REGION, "--table-name", table, "--key", key,
+                      "--consistent-read", "--output", "json"], capture_output=True, text=True, timeout=READ_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        raise ReadError(f"aws did not answer within {READ_TIMEOUT} seconds") from error
+    except OSError as error:
+        raise ReadError(f"could not run aws: {error}") from error
     if result.returncode != 0:
         raise ReadError(result.stderr.strip() or f"aws exited {result.returncode}")
     try:
@@ -48,7 +57,7 @@ def wait_for_ci(commit, read, clock=time.monotonic, sleep=time.sleep):
             last_error = None
         except ReadError as error:
             message = str(error)
-            if "AccessDenied" in message or "ResourceNotFound" in message:
+            if any(permanent in message for permanent in PERMANENT_ERRORS):
                 raise SystemExit(f"Cannot read the CI results table: {message}")
             print(f"Reading the CI result failed, reading again: {message}", file=sys.stderr)
             record, last_error = None, message

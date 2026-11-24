@@ -52,12 +52,7 @@ final class CiRecord extends Construct {
         // Results only gate a release; ci.yml writes them again on a rerun.
         .removalPolicy(RemovalPolicy.DESTROY)
         .build();
-    // The native resource, not the CDK construct that creates it through a Lambda and file asset.
-    String providerArn = existingProviderArn != null ? existingProviderArn
-        : CfnOIDCProvider.Builder.create(this, "GitHubProvider")
-            .url("https://" + GITHUB_OIDC_HOST)
-            .clientIdList(List.of(AUDIENCE))
-            .build().getAttrArn();
+    String providerArn = existingProviderArn != null ? existingProviderArn : createProvider();
     Role role = Role.Builder.create(this, "RecordRole")
         .roleName(ROLE_NAME)
         .description("ci.yml on main of sendrec records its result for the deployment pipeline")
@@ -68,6 +63,21 @@ final class CiRecord extends Construct {
         .actions(List.of("dynamodb:PutItem"))
         .resources(List.of(table.getTableArn()))
         .build());
+  }
+
+  /**
+   * The native resource, not the CDK construct that creates it through a Lambda and file asset.
+   * Retained: the account holds one provider per URL, which other roles may come to trust, and the
+   * README's one-time steps import an existing provider by ARN, which would otherwise delete the
+   * provider this stack created and break every role that trusts it.
+   */
+  private String createProvider() {
+    CfnOIDCProvider provider = CfnOIDCProvider.Builder.create(this, "GitHubProvider")
+        .url("https://" + GITHUB_OIDC_HOST)
+        .clientIdList(List.of(AUDIENCE))
+        .build();
+    provider.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    return provider.getAttrArn();
   }
 
   /** Exact matches only, in a fixed order: no wildcard can widen the subject. */

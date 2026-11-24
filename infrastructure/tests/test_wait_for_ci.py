@@ -83,7 +83,8 @@ class WaitForCiTest(unittest.TestCase):
 
     def test_a_passing_read_error_is_read_again_and_a_permission_error_fails(self):
         self.wait(Table({COMMIT: record("success")}, errors=["ThrottlingException", "Could not connect"]))
-        for error in ("AccessDeniedException: not authorized", "ResourceNotFoundException: no table"):
+        for error in ("AccessDeniedException: not authorized", "ResourceNotFoundException: no table",
+                      "ValidationException: The provided key element does not match the schema"):
             with self.subTest(error=error), self.assertRaisesRegex(SystemExit, "Cannot read the CI results table"):
                 self.wait(Table({COMMIT: record("success")}, errors=[error]))
 
@@ -98,14 +99,16 @@ class ReadRecordTest(unittest.TestCase):
     def test_reads_one_item_by_exact_commit_consistently(self):
         seen = {}
 
-        def run(command, capture_output, text):
+        def run(command, capture_output, text, timeout):
             seen["command"] = command
+            seen["timeout"] = timeout
             item = {"commit": {"S": COMMIT}, "conclusion": {"S": "success"}, "runAttempt": {"N": "2"}}
             return subprocess.CompletedProcess(command, 0, json.dumps({"Item": item}), "")
 
         self.assertEqual({"commit": COMMIT, "conclusion": "success", "runAttempt": "2"},
                          ci.read_record(COMMIT, "sendrec-ci-results", run=run))
         command = seen["command"]
+        self.assertEqual(ci.READ_TIMEOUT, seen["timeout"])
         self.assertEqual(["aws", "dynamodb", "get-item"], command[:3])
         self.assertIn("--consistent-read", command)
         self.assertEqual("sendrec-ci-results", command[command.index("--table-name") + 1])
@@ -115,6 +118,16 @@ class ReadRecordTest(unittest.TestCase):
         self.assertIsNone(ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 0, "{}", "")))
         with self.assertRaisesRegex(ci.ReadError, "AccessDenied"):
             ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 254, "", "AccessDeniedException"))
+        def hang(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        def missing(command, **kwargs):
+            raise FileNotFoundError("aws")
+
+        with self.assertRaisesRegex(ci.ReadError, "did not answer"):
+            ci.read_record(COMMIT, "t", run=hang)
+        with self.assertRaisesRegex(ci.ReadError, "could not run aws"):
+            ci.read_record(COMMIT, "t", run=missing)
         with self.assertRaisesRegex(ci.ReadError, "unreadable answer"):
             ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 0, "{cut", ""))
 
