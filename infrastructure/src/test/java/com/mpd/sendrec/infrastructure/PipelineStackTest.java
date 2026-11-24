@@ -197,12 +197,13 @@ class PipelineStackTest {
         () -> PipelineFixture.pipeline(PipelineFixture.app(REVISION, DIGEST, Map.of()), wrongConnection));
   }
 
-  private static List<String> statements(String role) {
+  private static List<String> statements(String roleId) {
     List<String> found = new ArrayList<>();
     for (var policy : template.findResources("AWS::IAM::Policy").values()) {
       JsonNode properties = JSON.valueToTree(policy.get("Properties"));
-      if (!properties.path("Roles").toString().contains("\"" + role)) continue;
-      properties.path("PolicyDocument").path("Statement").forEach(s -> found.add(s.toString()));
+      for (JsonNode role : properties.path("Roles")) {
+        if (role.path("Ref").asText().equals(roleId)) properties.path("PolicyDocument").path("Statement").forEach(s -> found.add(s.toString()));
+      }
     }
     return found;
   }
@@ -309,20 +310,9 @@ class PipelineStackTest {
     // The wait step may read one result by key, and nothing else in the table.
     String role = projectProperties.get(wait).path("ServiceRole").path("Fn::GetAtt").get(0).asText();
     List<String> dynamo = new ArrayList<>();
-    for (String statement : roleStatements(role)) if (statement.contains("dynamodb:")) dynamo.add(statement);
+    for (String statement : statements(role)) if (statement.contains("dynamodb:")) dynamo.add(statement);
     assertEquals(1, dynamo.size(), dynamo.toString());
     assertTrue(dynamo.get(0).contains("\"Action\":\"dynamodb:GetItem\""), dynamo.toString());
-  }
-
-  private static List<String> roleStatements(String roleId) {
-    List<String> found = new ArrayList<>();
-    for (var policy : template.findResources("AWS::IAM::Policy").values()) {
-      JsonNode properties = JSON.valueToTree(policy.get("Properties"));
-      for (JsonNode role : properties.path("Roles")) {
-        if (role.path("Ref").asText().equals(roleId)) properties.path("PolicyDocument").path("Statement").forEach(st -> found.add(st.toString()));
-      }
-    }
-    return found;
   }
 
   @Test void theCiRoleTrustsOnlyPushesToMainOfThisRepositoryByImmutableId() {
@@ -348,7 +338,7 @@ class PipelineStackTest {
   }
 
   @Test void theCiRoleMayOnlyPutOneItemInTheResultsTable() {
-    List<String> statements = roleStatements(roleId("sendrec-github-ci-record"));
+    List<String> statements = statements(roleId("sendrec-github-ci-record"));
     assertEquals(1, statements.size(), statements.toString());
     JsonNode statement = readTree(statements.get(0));
     assertEquals("dynamodb:PutItem", statement.path("Action").asText());

@@ -258,9 +258,10 @@ jobs:
   # Records this commit's result for the deployment pipeline, whose WaitForGitHubCI step deploys
   # staging only after a recorded success (infrastructure/README.md, "Deployment pipeline"). It
   # runs only on a push to main of this repository, after every check, and records a failure too,
-  # so the pipeline stops at once. It signs in through GitHub OIDC: the role trusts only main of
-  # this repository by its immutable ids and may only put one item in the results table. Pull
-  # requests and forks never reach this job, and their tokens could not assume the role.
+  # so the pipeline stops at once. It signs in through GitHub OIDC: the role trusts only workflows
+  # running on main of this repository, by its immutable ids, and may only put one item in the
+  # results table. Pull requests and forks never reach this job, and their tokens could not assume
+  # the role.
   record-result:
     if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'My-Performance-Doctor/sendrec'
     needs: [test, docker-build, e2e]
@@ -309,4 +310,4 @@ jobs:
           }))
           PY
           aws dynamodb put-item --table-name sendrec-ci-results --item file://item.json
-          echo "Recorded $(python3 -c 'import json; print(json.load(open("item.json"))["conclusion"]["S"])') for $GITHUB_SHA"
+          echo "Recorded $(jq -r .conclusion.S item.json) for $GITHUB_SHA"

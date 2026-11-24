@@ -29,7 +29,10 @@ def read_record(commit, table, run=subprocess.run):
                   "--consistent-read", "--output", "json"], capture_output=True, text=True)
     if result.returncode != 0:
         raise ReadError(result.stderr.strip() or f"aws exited {result.returncode}")
-    item = json.loads(result.stdout or "{}").get("Item")
+    try:
+        item = json.loads(result.stdout or "{}").get("Item")
+    except (ValueError, AttributeError) as error:
+        raise ReadError(f"unreadable answer from aws: {error}") from error
     if item is None:
         return None
     return {name: next(iter(value.values())) for name, value in item.items()}
@@ -38,15 +41,17 @@ def read_record(commit, table, run=subprocess.run):
 def wait_for_ci(commit, read, clock=time.monotonic, sleep=time.sleep):
     """Returns once commit's recorded result is success; raises SystemExit otherwise."""
     started = clock()
+    last_error = None
     while True:
         try:
             record = read(commit)
+            last_error = None
         except ReadError as error:
             message = str(error)
             if "AccessDenied" in message or "ResourceNotFound" in message:
                 raise SystemExit(f"Cannot read the CI results table: {message}")
             print(f"Reading the CI result failed, reading again: {message}", file=sys.stderr)
-            record = None
+            record, last_error = None, message
         if record is not None:
             conclusion = record.get("conclusion")
             run = record.get("runUrl", "no run recorded")
@@ -55,8 +60,12 @@ def wait_for_ci(commit, read, clock=time.monotonic, sleep=time.sleep):
                 return
             raise SystemExit(f"GitHub CI recorded {conclusion} for {commit}: {run}")
         if clock() - started > TIMEOUT:
+            if last_error is not None:
+                raise SystemExit(f"Could not read the CI result for {commit} within {TIMEOUT // 60} minutes:"
+                                 f" {last_error}")
             raise SystemExit(f"No GitHub CI result was recorded for {commit} within {TIMEOUT // 60} minutes."
-                             " Rerun ci.yml for that commit on main, then retry this stage.")
+                             " Rerun that commit's push run of ci.yml (a manual dispatch records nothing),"
+                             " then retry this stage.")
         sleep(INTERVAL)
 
 

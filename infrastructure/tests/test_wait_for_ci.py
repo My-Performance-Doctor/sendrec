@@ -88,6 +88,12 @@ class WaitForCiTest(unittest.TestCase):
                 self.wait(Table({COMMIT: record("success")}, errors=[error]))
 
 
+    def test_an_error_that_lasts_to_the_timeout_is_named(self):
+        table = Table({}, errors=["Unable to locate credentials"] * 1000)
+        with self.assertRaisesRegex(SystemExit, "Could not read the CI result .*Unable to locate credentials"):
+            self.wait(table)
+
+
 class ReadRecordTest(unittest.TestCase):
     def test_reads_one_item_by_exact_commit_consistently(self):
         seen = {}
@@ -109,6 +115,8 @@ class ReadRecordTest(unittest.TestCase):
         self.assertIsNone(ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 0, "{}", "")))
         with self.assertRaisesRegex(ci.ReadError, "AccessDenied"):
             ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 254, "", "AccessDeniedException"))
+        with self.assertRaisesRegex(ci.ReadError, "unreadable answer"):
+            ci.read_record(COMMIT, "t", run=lambda c, **k: subprocess.CompletedProcess(c, 0, "{cut", ""))
 
 
 if __name__ == "__main__":

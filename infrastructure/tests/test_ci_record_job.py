@@ -27,6 +27,12 @@ class RecordJobTest(unittest.TestCase):
         jobs = [name for name in re.findall(r"^  ([a-z0-9-]+):\n", section, re.M) if name != "record-result"]
         self.assertEqual(f"    needs: [{', '.join(jobs)}]", re.search(r"^    needs: .*$", self.job, re.M).group(0))
 
+    def test_no_other_workflow_may_request_an_oidc_token(self):
+        # AWS matches only the subject, so any workflow on main that asks for a token could record.
+        workflows = pathlib.Path(__file__).parents[2] / ".github" / "workflows"
+        asking = [path.name for path in sorted(workflows.glob("*.y*ml")) if "id-token: write" in path.read_text()]
+        self.assertEqual(["ci.yml"], asking)
+
     def test_only_this_job_may_request_an_oidc_token(self):
         self.assertIn("permissions:\n      id-token: write\n      contents: read\n", self.job)
         self.assertEqual(1, WORKFLOW.count("id-token: write"))

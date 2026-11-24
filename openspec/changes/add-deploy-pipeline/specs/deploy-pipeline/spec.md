@@ -19,7 +19,7 @@ The `Build` step SHALL build the image in AWS with `VERSION` set to the commit's
 - **THEN** the step uses that image's digest and pushes nothing
 
 ### Requirement: Staging waits for passing checks
-Before deploying staging, the pipeline SHALL wait for the result GitHub's `ci.yml` run on `main` recorded in the deployment account for the release's exact commit, and SHALL fail the stage unless that result is `success`. It SHALL use no GitHub token. Only a push to `main` of this repository, identified by GitHub's immutable subject, SHALL be able to record a result, and the recording role SHALL be able to do nothing else. The `Build` step SHALL run the infrastructure tests before building the image.
+Before deploying staging, the pipeline SHALL wait for the result GitHub's `ci.yml` run on `main` recorded in the deployment account for the release's exact commit, and SHALL fail the stage unless that result is `success`. It SHALL use no GitHub token. Only a workflow running on `main` of this repository, identified by GitHub's immutable subject, SHALL be able to record a result, only `ci.yml`'s `record-result` job SHALL request a token, and the recording role SHALL be able to do nothing else. The `Build` step SHALL run the infrastructure tests before building the image.
 
 #### Scenario: CI fails on the merged commit
 - **WHEN** `ci.yml` records `failure` for the commit
@@ -34,7 +34,7 @@ Before deploying staging, the pipeline SHALL wait for the result GitHub's `ci.ym
 - **THEN** the `Staging` stage fails
 
 #### Scenario: A pull request or fork tries to record
-- **WHEN** a workflow run that is not a push to `main` of this repository asks to assume the recording role
+- **WHEN** a workflow run that is not on `main` of this repository asks to assume the recording role
 - **THEN** AWS refuses it
 
 ### Requirement: Production runs the staging digest

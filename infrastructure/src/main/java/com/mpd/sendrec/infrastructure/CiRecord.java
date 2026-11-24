@@ -19,8 +19,10 @@ import software.constructs.Construct;
 /**
  * Where GitHub Actions records ci.yml's result for each commit on main, so WaitForGitHubCI can
  * prove the checks passed without any GitHub token (design D11). ci.yml's last job signs in through
- * GitHub's OIDC provider as {@link #ROLE_NAME}, which trusts only pushes to main of this
+ * GitHub's OIDC provider as {@link #ROLE_NAME}, which trusts only workflows running on main of this
  * repository, named by GitHub's immutable ids, and may only put one item in {@link #TABLE_NAME}.
+ * The subject names the branch, not the event or the workflow file: any workflow on main that asks
+ * for {@code id-token: write} could assume it, so ci.yml's record-result job is the only one that does.
  *
  * <p>One item per commit, keyed by the full SHA: the nightly release ships main's newest
  * staging-verified run, often hours after its CI passed and after newer runs superseded others, so
@@ -32,7 +34,7 @@ final class CiRecord extends Construct {
   static final String GITHUB_OIDC_HOST = "token.actions.githubusercontent.com";
   static final String AUDIENCE = "sts.amazonaws.com";
   /**
-   * GitHub's immutable subject for a push to main of My-Performance-Doctor/sendrec: the
+   * GitHub's immutable subject for a workflow on main of My-Performance-Doctor/sendrec: the
    * organisation's and repository's ids do not change when either is renamed, so a new repository
    * that takes the name cannot assume the role. Pull requests, forks, other branches, tags and
    * environments all sign with other subjects. The ids are public on GitHub.
