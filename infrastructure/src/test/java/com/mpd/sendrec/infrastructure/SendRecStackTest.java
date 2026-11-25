@@ -311,8 +311,6 @@ class SendRecStackTest {
     assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdWatchShare", "FALSE"))).getMessage().contains("must be true or false"));
   }
 
-  // An active deploy must state processing progress, so leaving it out can neither turn it off
-  // nor change the application task definition by accident.
   // SNDR-1: the operator import is on only when a deploy names its owner.
   @Test void theVimeoImportIsOnOnlyWhenADeployNamesItsOwner() {
     String off = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
@@ -327,6 +325,8 @@ class SendRecStackTest {
     assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdImportOwnerUserId", "11111111-2222-4333-8444-555555555555")));
   }
 
+  // An active deploy must state processing progress, so leaving it out can neither turn it off
+  // nor change the application task definition by accident.
   @Test void processingProgressIsARequiredDeploySetting() {
     String off = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
     assertTrue(off.contains("MPD_PROCESSING_PROGRESS_ENABLED, Value=false"));

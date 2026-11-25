@@ -63,18 +63,25 @@ type MPDAdapter struct {
 }
 
 func (h *Handler) MPDAdapter(cfg MPDServiceConfig) *MPDAdapter { return &MPDAdapter{h: h, cfg: cfg} }
+
+// bearerMatches reports whether the request's bearer token, at least 32 characters, hashes
+// to one of the hex SHA-256 verifiers, compared in constant time.
+func bearerMatches(r *http.Request, hashes []string) bool {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	sum := sha256.Sum256([]byte(token))
+	matched := 0
+	for _, hash := range hashes {
+		raw, e := hex.DecodeString(hash)
+		if e == nil && len(raw) == 32 {
+			matched |= subtle.ConstantTimeCompare(raw, sum[:])
+		}
+	}
+	return ok && len(token) >= 32 && matched == 1
+}
+
 func (a *MPDAdapter) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sum := sha256.Sum256([]byte(token))
-		matched := 0
-		for _, hash := range a.cfg.TokenHashes {
-			raw, e := hex.DecodeString(hash)
-			if e == nil && len(raw) == 32 {
-				matched |= subtle.ConstantTimeCompare(raw, sum[:])
-			}
-		}
-		if !a.cfg.Enabled || !ok || len(token) < 32 || matched != 1 {
+		if !a.cfg.Enabled || !bearerMatches(r, a.cfg.TokenHashes) {
 			httputil.WriteError(w, 401, "integration credential required")
 			return
 		}

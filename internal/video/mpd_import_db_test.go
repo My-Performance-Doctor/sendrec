@@ -40,8 +40,8 @@ func importFixture(t *testing.T, contentType string, files map[string]string) (*
 	sum := sha256.Sum256([]byte(importToken))
 	importer := h.MPDImporter(MPDImportConfig{TokenHashes: []string{hex.EncodeToString(sum[:])}, OwnerUserID: user, WorkspaceID: org})
 	jobs := &[]queued{}
-	importer.enqueue = func(_ context.Context, job JobType, videoID string, _ map[string]any) {
-		*jobs = append(*jobs, queued{job, videoID})
+	importer.thumbnail = func(videoID, _ string) {
+		*jobs = append(*jobs, queued{JobTypeThumbnail, videoID})
 	}
 	query := func(sql string) string {
 		var out string
@@ -86,13 +86,12 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 	if got := query(`SELECT count(*)::text FROM mpd_event_outbox WHERE video_id='` + created.VideoID + `' AND event_type='video.ready'`); got != "1" {
 		t.Fatalf("video.ready events = %s", got)
 	}
-	// Encode and thumbnail run; no transcript is queued.
-	var kinds []JobType
-	for _, job := range *jobs {
-		kinds = append(kinds, job.job)
+	// Only the thumbnail starts now: the normalize sweep encodes it, waiting to be picked.
+	if len(*jobs) != 1 || (*jobs)[0].job != JobTypeThumbnail {
+		t.Fatalf("jobs = %v", *jobs)
 	}
-	if len(kinds) != 2 || kinds[0] != JobTypeThumbnail || kinds[1] != JobTypeNormalize {
-		t.Fatalf("jobs = %v", kinds)
+	if got := query(`SELECT ios_normalized::text FROM videos WHERE id='` + created.VideoID + `'`); got != "false" {
+		t.Fatalf("ios_normalized = %s", got)
 	}
 	again := postImport(importer, importToken, body)
 	var repeated importResponse
@@ -100,11 +99,21 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 	if again.Code != http.StatusOK || repeated.VideoID != created.VideoID || repeated.Created {
 		t.Fatalf("rerun: %d %+v", again.Code, repeated)
 	}
-	if got := query(`SELECT count(*)::text FROM videos`); got != "1" {
+	if got := query(`SELECT count(*)::text FROM videos WHERE status<>'deleted'`); got != "1" {
 		t.Fatalf("videos = %s", got)
 	}
-	if len(*jobs) != 2 {
+	if len(*jobs) != 1 {
 		t.Fatalf("a rerun queued work: %v", *jobs)
+	}
+	// A video deleted since can be imported again.
+	if _, err := importer.h.db.Exec(context.Background(), `UPDATE videos SET status='deleted' WHERE id=$1`, created.VideoID); err != nil {
+		t.Fatal(err)
+	}
+	fresh := postImport(importer, importToken, body)
+	var reimported importResponse
+	_ = json.Unmarshal(fresh.Body.Bytes(), &reimported)
+	if fresh.Code != http.StatusCreated || reimported.VideoID == created.VideoID {
+		t.Fatalf("reimport: %d %+v", fresh.Code, reimported)
 	}
 }
 
@@ -114,13 +123,14 @@ func TestMPDImportRefusesWithoutTokenFileOrValidRequest(t *testing.T) {
 		name, token, body string
 		code              int
 	}{
-		{"no token", "", `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusUnauthorized},
-		{"wrong token", strings.Repeat("x", 40), `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusUnauthorized},
-		{"not a Vimeo id", importToken, `{"vimeoVideoId":"12a","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusBadRequest},
-		{"no date", importToken, `{"vimeoVideoId":"123"}`, http.StatusBadRequest},
-		{"future date", importToken, `{"vimeoVideoId":"123","recordedAt":"` + time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339) + `"}`, http.StatusBadRequest},
-		{"unknown field", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","title":"x"}`, http.StatusBadRequest},
-		{"file not in place", importToken, `{"vimeoVideoId":"999","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusConflict},
+		{"no token", "", `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`, http.StatusUnauthorized},
+		{"wrong token", strings.Repeat("x", 40), `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`, http.StatusUnauthorized},
+		{"not a Vimeo id", importToken, `{"vimeoVideoId":"12a","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`, http.StatusBadRequest},
+		{"no date", importToken, `{"vimeoVideoId":"123","durationSeconds":60}`, http.StatusBadRequest},
+		{"no duration", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusBadRequest},
+		{"future date", importToken, `{"vimeoVideoId":"123","durationSeconds":60,"recordedAt":"` + time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339) + `"}`, http.StatusBadRequest},
+		{"unknown field", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60,"title":"x"}`, http.StatusBadRequest},
+		{"file not in place", importToken, `{"vimeoVideoId":"999","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`, http.StatusConflict},
 	}
 	for _, c := range cases {
 		if got := postImport(importer, c.token, c.body); got.Code != c.code {
@@ -134,7 +144,7 @@ func TestMPDImportRefusesWithoutTokenFileOrValidRequest(t *testing.T) {
 
 func TestMPDImportRefusesAFileThatIsNotMP4(t *testing.T) {
 	importer, _, _ := importFixture(t, "video/webm", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
-	got := postImport(importer, importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z"}`)
+	got := postImport(importer, importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`)
 	if got.Code != http.StatusConflict {
 		t.Fatalf("webm: %d", got.Code)
 	}

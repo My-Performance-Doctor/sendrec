@@ -6,7 +6,7 @@ SNDR-1 moves every MPD patient result video off Vimeo into SendRec by 4 December
 
 - `POST /api/integrations/mpd/imports`, authorised by its own service tokens (`MPD_IMPORT_TOKEN_HASHES`), separate from the MPD service API's. It is off unless the tokens and the owning user (`MPD_IMPORT_OWNER_USER_ID`) are configured.
 - The body names the Vimeo id, the original recording date and the duration. The file must already be at `imports/vimeo/<id>.mp4` in the recordings bucket, as `video/mp4`; otherwise the answer is 409.
-- SendRec creates one ready, unpublished managed video owned by the import user, whose MPD staff identity in the workspace the existing trigger binds, so mpd-api hears `video.ready` as for any managed video. The video keeps its recording date, is titled `MPD result video` (nothing from Vimeo, whose titles can identify patients), and goes through the usual encoder and thumbnail. No transcript is queued.
+- SendRec creates one ready, unpublished managed video owned by the import user, whose MPD staff identity in the workspace the existing trigger binds, so mpd-api hears `video.ready` as for any managed video. The video keeps its recording date, is titled `MPD result video` (nothing from Vimeo, whose titles can identify patients), and gets a thumbnail; its encode is left to the transcode worker's normalize sweep, which takes ready videos one at a time, so a bulk import never encodes side by side. No transcript is queued.
 - A new table, `mpd_vimeo_imports`, holds the Vimeo id of each import. A second import of the same id answers 200 with the first video and queues nothing, including when two requests race.
 - CDK: the optional deploy setting `mpdImportOwnerUserId` adds the owner and the import token verifiers, from the existing MPD integration secret.
 
@@ -18,4 +18,4 @@ SNDR-1 moves every MPD patient result video off Vimeo into SendRec by 4 December
 
 ## Approval and delivery
 
-Sami's go for SNDR-1 on 25 November 2026, through MPD HQ. Agents merge sendrec after MPD HQ's Review desk passes the pull request.
+Sami's go for SNDR-1 on 25 November 2026, through MPD HQ. The pull request stays a draft until MPD HQ's Review desk passes it; MPD HQ then arranges the merge.

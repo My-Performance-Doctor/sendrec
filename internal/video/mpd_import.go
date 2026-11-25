@@ -2,15 +2,11 @@ package video
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,17 +32,30 @@ func (c MPDImportConfig) Enabled() bool {
 
 // MPDImporter creates one managed video per Vimeo video from a file the migration's
 // download job has already written to importKey in the recordings bucket. The video keeps
-// its original recording date, goes through the usual encoder, and gets no transcript.
+// its original recording date and gets no transcript. Its encode is left to the
+// transcode worker's normalize sweep, which takes ready videos one at a time, so a bulk
+// import never runs encodes side by side. Thumbnails run at most two at a time.
 // It is never published here: mpd-api attaches it to its report and publishes it.
 type MPDImporter struct {
-	h       *Handler
-	cfg     MPDImportConfig
-	enqueue func(ctx context.Context, job JobType, videoID string, payload map[string]any)
-	now     func() time.Time
+	h          *Handler
+	cfg        MPDImportConfig
+	thumbnail  func(videoID, base string)
+	thumbnails chan struct{}
+	now        func() time.Time
 }
 
 func (h *Handler) MPDImporter(cfg MPDImportConfig) *MPDImporter {
-	return &MPDImporter{h: h, cfg: cfg, enqueue: h.EnqueueJob, now: time.Now}
+	i := &MPDImporter{h: h, cfg: cfg, thumbnails: make(chan struct{}, 2), now: time.Now}
+	i.thumbnail = func(videoID, base string) {
+		go func() {
+			i.thumbnails <- struct{}{}
+			defer func() { <-i.thumbnails }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			GenerateThumbnail(ctx, h.db, h.storage, videoID, base)
+		}()
+	}
+	return i
 }
 
 var vimeoID = regexp.MustCompile(`^[0-9]{1,20}$`)
@@ -60,16 +69,7 @@ const importTitle = "MPD result video"
 
 func (i *MPDImporter) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sum := sha256.Sum256([]byte(token))
-		matched := 0
-		for _, hash := range i.cfg.TokenHashes {
-			raw, e := hex.DecodeString(hash)
-			if e == nil && len(raw) == 32 {
-				matched |= subtle.ConstantTimeCompare(raw, sum[:])
-			}
-		}
-		if !i.cfg.Enabled() || !ok || len(token) < 32 || matched != 1 {
+		if !i.cfg.Enabled() || !bearerMatches(r, i.cfg.TokenHashes) {
 			httputil.WriteError(w, http.StatusUnauthorized, "import credential required")
 			return
 		}
@@ -92,14 +92,15 @@ type importResponse struct {
 }
 
 // Import answers 201 for a new video and 200 with the same video for a Vimeo id already
-// imported, so a rerun never makes a second one. 409 means the file is not in place yet.
+// imported, so a rerun never makes a second one; a video deleted since can be imported
+// again. 409 means the file is not in place yet.
 func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 	var req importRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil || !vimeoID.MatchString(req.VimeoVideoID) ||
 		req.RecordedAt.IsZero() || req.RecordedAt.After(i.now().Add(time.Hour)) ||
-		req.DurationSeconds < 0 || req.DurationSeconds > 24*3600 {
+		req.DurationSeconds < 1 || req.DurationSeconds > 24*3600 {
 		httputil.WriteError(w, http.StatusBadRequest, "vimeoVideoId, recordedAt and durationSeconds are required")
 		return
 	}
@@ -136,15 +137,7 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, created)
 		return
 	}
-	i.enqueue(ctx, JobTypeThumbnail, created.VideoID, map[string]any{
-		"thumbnailKey": thumbnailFileKey(i.cfg.OwnerUserID, shareToken),
-	})
-	i.enqueue(ctx, JobTypeNormalize, created.VideoID, map[string]any{
-		"fileKey": key, "audioFilter": "", "duration": req.DurationSeconds,
-	})
-	if req.DurationSeconds == 0 {
-		i.enqueue(ctx, JobTypeProbe, created.VideoID, map[string]any{"fileKey": key})
-	}
+	i.thumbnail(created.VideoID, thumbnailFileKey(i.cfg.OwnerUserID, shareToken))
 	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
@@ -153,7 +146,7 @@ var errImportOwner = errors.New("import owner is not a managed staff identity")
 func (i *MPDImporter) existing(ctx context.Context, vimeo string) (*importResponse, error) {
 	var res importResponse
 	err := i.h.db.QueryRow(ctx, `SELECT i.video_id::text, v.media_version FROM mpd_vimeo_imports i
-		JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1`, vimeo).Scan(&res.VideoID, &res.MediaVersion)
+		JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1 AND v.status<>'deleted'`, vimeo).Scan(&res.VideoID, &res.MediaVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -181,11 +174,16 @@ func (i *MPDImporter) create(ctx context.Context, req importRequest, key string,
 	var identity bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mpd_external_identities x
 		JOIN mpd_managed_workspaces w ON w.organization_id=x.organization_id
-		WHERE x.user_id=$1 AND x.organization_id=$2 AND w.enabled)`, i.cfg.OwnerUserID, i.cfg.WorkspaceID).Scan(&identity); err != nil {
+		WHERE x.user_id=$1 AND x.organization_id=$2 AND x.tenant_id=w.tenant_id
+		  AND x.issuer=w.issuer AND w.enabled)`, i.cfg.OwnerUserID, i.cfg.WorkspaceID).Scan(&identity); err != nil {
 		return importResponse{}, err
 	}
 	if !identity {
 		return importResponse{}, errImportOwner
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mpd_vimeo_imports i USING videos v
+		WHERE i.vimeo_video_id=$1 AND v.id=i.video_id AND v.status='deleted'`, req.VimeoVideoID); err != nil {
+		return importResponse{}, err
 	}
 	res := importResponse{VimeoVideoID: req.VimeoVideoID, Created: true}
 	if err := tx.QueryRow(ctx, `INSERT INTO videos (user_id, organization_id, title, duration, file_size,
