@@ -93,27 +93,32 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 	if got := query(`SELECT ios_normalized::text FROM videos WHERE id='` + created.VideoID + `'`); got != "false" {
 		t.Fatalf("ios_normalized = %s", got)
 	}
+	// A rerun whose thumbnail a restart lost starts it again, and only then.
+	lost := postImport(importer, importToken, body)
+	if lost.Code != http.StatusOK || len(*jobs) != 2 {
+		t.Fatalf("rerun without a thumbnail: %d %v", lost.Code, *jobs)
+	}
+	if _, err := importer.h.db.Exec(context.Background(), `UPDATE videos SET thumbnail_key='synthetic.jpg' WHERE id=$1`, created.VideoID); err != nil {
+		t.Fatal(err)
+	}
 	again := postImport(importer, importToken, body)
 	var repeated importResponse
 	_ = json.Unmarshal(again.Body.Bytes(), &repeated)
 	if again.Code != http.StatusOK || repeated.VideoID != created.VideoID || repeated.Created {
 		t.Fatalf("rerun: %d %+v", again.Code, repeated)
 	}
-	if got := query(`SELECT count(*)::text FROM videos WHERE status<>'deleted'`); got != "1" {
+	if got := query(`SELECT count(*)::text FROM videos`); got != "1" {
 		t.Fatalf("videos = %s", got)
 	}
-	if len(*jobs) != 1 {
+	if len(*jobs) != 2 {
 		t.Fatalf("a rerun queued work: %v", *jobs)
 	}
-	// A video deleted since can be imported again.
+	// A deleted import is refused: its pending file purge could take a reimport's file.
 	if _, err := importer.h.db.Exec(context.Background(), `UPDATE videos SET status='deleted' WHERE id=$1`, created.VideoID); err != nil {
 		t.Fatal(err)
 	}
-	fresh := postImport(importer, importToken, body)
-	var reimported importResponse
-	_ = json.Unmarshal(fresh.Body.Bytes(), &reimported)
-	if fresh.Code != http.StatusCreated || reimported.VideoID == created.VideoID {
-		t.Fatalf("reimport: %d %+v", fresh.Code, reimported)
+	if refused := postImport(importer, importToken, body); refused.Code != http.StatusConflict {
+		t.Fatalf("reimport of a deleted video: %d %s", refused.Code, refused.Body)
 	}
 }
 

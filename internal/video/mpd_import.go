@@ -89,11 +89,15 @@ type importResponse struct {
 	VimeoVideoID string `json:"vimeoVideoId"`
 	Created      bool   `json:"created"`
 	MediaVersion int    `json:"mediaVersion"`
+	noThumbnail  bool
+	shareToken   string
 }
 
 // Import answers 201 for a new video and 200 with the same video for a Vimeo id already
-// imported, so a rerun never makes a second one; a video deleted since can be imported
-// again. 409 means the file is not in place yet.
+// imported, so a rerun never makes a second one, and starts its thumbnail again if a
+// restart lost it. 409 means the file is not in place yet, or that the video imported for
+// the Vimeo id was deleted: its file purge could take a reimport's file, so that is done
+// by hand.
 func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 	var req importRequest
 	decoder := json.NewDecoder(r.Body)
@@ -105,15 +109,24 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if existing, err := i.existing(ctx, req.VimeoVideoID); err != nil {
+	if existing, err := i.existing(ctx, req.VimeoVideoID); errors.Is(err, errImportDeleted) {
+		httputil.WriteError(w, http.StatusConflict, "the video imported for this Vimeo id was deleted; reimport it by hand")
+		return
+	} else if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to read imports")
 		return
 	} else if existing != nil {
+		if existing.noThumbnail {
+			i.thumbnail(existing.VideoID, thumbnailFileKey(i.cfg.OwnerUserID, existing.shareToken))
+		}
 		httputil.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
 	key := importKey(req.VimeoVideoID)
 	size, contentType, err := i.h.storage.HeadObject(ctx, key)
+	if err != nil {
+		slog.Warn("mpd import: could not read the imported file", "error", err)
+	}
 	if err != nil || size <= 0 || contentType != "video/mp4" {
 		httputil.WriteError(w, http.StatusConflict, "the imported file is not in place")
 		return
@@ -141,17 +154,26 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
-var errImportOwner = errors.New("import owner is not a managed staff identity")
+var (
+	errImportOwner   = errors.New("import owner is not a managed staff identity")
+	errImportDeleted = errors.New("the video imported for this Vimeo id was deleted")
+)
 
 func (i *MPDImporter) existing(ctx context.Context, vimeo string) (*importResponse, error) {
 	var res importResponse
-	err := i.h.db.QueryRow(ctx, `SELECT i.video_id::text, v.media_version FROM mpd_vimeo_imports i
-		JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1 AND v.status<>'deleted'`, vimeo).Scan(&res.VideoID, &res.MediaVersion)
+	var deleted bool
+	err := i.h.db.QueryRow(ctx, `SELECT i.video_id::text, v.media_version, v.status='deleted',
+		v.thumbnail_key IS NULL, v.share_token FROM mpd_vimeo_imports i
+		JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1`, vimeo).
+		Scan(&res.VideoID, &res.MediaVersion, &deleted, &res.noThumbnail, &res.shareToken)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if deleted {
+		return nil, errImportDeleted
 	}
 	res.VimeoVideoID = vimeo
 	return &res, nil
@@ -180,10 +202,6 @@ func (i *MPDImporter) create(ctx context.Context, req importRequest, key string,
 	}
 	if !identity {
 		return importResponse{}, errImportOwner
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM mpd_vimeo_imports i USING videos v
-		WHERE i.vimeo_video_id=$1 AND v.id=i.video_id AND v.status='deleted'`, req.VimeoVideoID); err != nil {
-		return importResponse{}, err
 	}
 	res := importResponse{VimeoVideoID: req.VimeoVideoID, Created: true}
 	if err := tx.QueryRow(ctx, `INSERT INTO videos (user_id, organization_id, title, duration, file_size,
