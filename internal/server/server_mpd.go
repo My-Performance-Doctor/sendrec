@@ -28,6 +28,11 @@ func (s *Server) registerMPDMediaRoutes(cfg Config) {
 		r.Put("/patient-summary", adapter.PatientSummary)
 		r.Post("/retry", adapter.Retry)
 	})
+	// SNDR-1's operator import, off unless its own tokens and owner are configured.
+	if cfg.MPDImport.Enabled() {
+		importer := s.videoHandler.MPDImporter(cfg.MPDImport)
+		s.router.With(importer.Authenticate, maxBodySize(2048)).Post("/api/integrations/mpd/imports", importer.Import)
+	}
 	media := s.videoHandler.MPDMedia(s.mpdHandler, cfg.MPDService, cfg.MPD.AllowedOrigins)
 	// The same bucket as the other /api/videos routes: preview handoffs and upload
 	// links each write a row or sign a URL.

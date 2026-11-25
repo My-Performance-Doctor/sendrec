@@ -27,7 +27,11 @@ final class MpdIntegrationConfig {
     // so it is required in the same way and stays off until the receiving mpd-api accepts both.
     boolean watchShare = requiredSwitch(scope, active, "mpdWatchShare");
     environment.put("MPD_WATCH_SHARE_ENABLED", String.valueOf(watchShare));
-    if (!active) return;
+    if (!active) {
+      if (scope.getNode().tryGetContext("mpdImportOwnerUserId") != null)
+        throw new IllegalArgumentException("mpdImportOwnerUserId needs activateMpdIntegration=true");
+      return;
+    }
     String secretArn = required(scope, "mpdIntegrationSecretArn");
     if (!secretArn.matches("arn:aws:secretsmanager:ap-southeast-2:" + scope.getAccount() + ":secret:[A-Za-z0-9/_+=.@-]+"))
       throw new IllegalArgumentException("MPD integration secret must be explicitly supplied in the target account and region");
@@ -42,6 +46,15 @@ final class MpdIntegrationConfig {
     environment.put("MPD_IDENTITY_ENABLED", "true");
     environment.put("MPD_SERVICE_ENABLED", "true");
     environment.put("MPD_EVENTS_ENABLED", "true");
+    // SNDR-1's operator import: on only when a deploy names the SendRec user that owns the
+    // imports, and then its token verifiers come from the same integration secret.
+    Object owner = scope.getNode().tryGetContext("mpdImportOwnerUserId");
+    if (owner != null) {
+      if (!owner.toString().matches("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}"))
+        throw new IllegalArgumentException("mpdImportOwnerUserId must be a SendRec user id");
+      environment.put("MPD_IMPORT_OWNER_USER_ID", owner.toString());
+      secrets.put("MPD_IMPORT_TOKEN_HASHES", Secret.fromSecretsManager(secret, "MPD_IMPORT_TOKEN_HASHES"));
+    }
   }
 
   /** Whether the MPD integration is active; anything but true or false is refused. */
