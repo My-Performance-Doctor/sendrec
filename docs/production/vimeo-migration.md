@@ -38,6 +38,8 @@ SendRec has no import path today. Staff sessions can create and upload one video
 - is authorised by a dedicated service token scope, not a staff session;
 - is idempotent on the Vimeo ID, so a rerun never creates a second video.
 
+The import exists as of SNDR-1 (OpenSpec `add-vimeo-import`): `POST /api/integrations/mpd/imports` takes a Vimeo id, recording date and duration, and turns the file the download job wrote to `imports/vimeo/<id>.mp4` into one ready, unpublished managed video owned by a dedicated import account, with no transcript. It is idempotent on the Vimeo id and off until a deploy names the owner with `mpdImportOwnerUserId` and the integration secret holds `MPD_IMPORT_TOKEN_HASHES`.
+
 mpd-api needs a matching change that attaches each imported video to its existing report and patient without a new claim or report, sets its link password and publishes it. Matching is by Vimeo ID only, never by title, date or thumbnail.
 
 Transcripts: whole-library transcription on two tasks would take a long time over hours of video. The recommended default is to import without transcripts and add captions later for videos staff ask for. Decide once the inventory gives total hours.

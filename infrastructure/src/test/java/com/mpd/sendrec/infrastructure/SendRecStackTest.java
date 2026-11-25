@@ -311,6 +311,20 @@ class SendRecStackTest {
     assertTrue(assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdWatchShare", "FALSE"))).getMessage().contains("must be true or false"));
   }
 
+  // SNDR-1: the operator import is on only when a deploy names its owner.
+  @Test void theVimeoImportIsOnOnlyWhenADeployNamesItsOwner() {
+    String off = Template.fromStack(stack(activation("https://staff.example.test"))).findResources("AWS::ECS::TaskDefinition").toString();
+    assertFalse(off.contains("MPD_IMPORT"));
+    Map<String, Object> on = activation("https://staff.example.test");
+    on.put("mpdImportOwnerUserId", "11111111-2222-4333-8444-555555555555");
+    String tasks = Template.fromStack(stack(on)).findResources("AWS::ECS::TaskDefinition").toString();
+    assertTrue(tasks.contains("Name=MPD_IMPORT_OWNER_USER_ID, Value=11111111-2222-4333-8444-555555555555"), tasks);
+    assertTrue(tasks.contains("Name=MPD_IMPORT_TOKEN_HASHES"), tasks);
+    on.put("mpdImportOwnerUserId", "not-a-user");
+    assertThrows(IllegalArgumentException.class, () -> stack(on));
+    assertThrows(IllegalArgumentException.class, () -> stack(Map.of("mpdImportOwnerUserId", "11111111-2222-4333-8444-555555555555")));
+  }
+
   // An active deploy must state processing progress, so leaving it out can neither turn it off
   // nor change the application task definition by accident.
   @Test void processingProgressIsARequiredDeploySetting() {

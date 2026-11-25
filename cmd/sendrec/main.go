@@ -214,6 +214,11 @@ func main() {
 	serviceConfig.ClinicZone = clinicZone
 	video.SetMPDPatientPages(serviceConfig.Enabled)
 	video.SetBrandFontDir(os.Getenv("BRAND_FONT_DIR"))
+	importConfig := video.MPDImportConfig{TokenHashes: splitConfigured("MPD_IMPORT_TOKEN_HASHES"), OwnerUserID: os.Getenv("MPD_IMPORT_OWNER_USER_ID"), WorkspaceID: os.Getenv("MPD_WORKSPACE_ID")}
+	if (len(importConfig.TokenHashes) == 0) != (importConfig.OwnerUserID == "") ||
+		(importConfig.OwnerUserID != "" && importConfig.WorkspaceID == "") {
+		log.Fatal("MPD_IMPORT_TOKEN_HASHES and MPD_IMPORT_OWNER_USER_ID must be set together, with MPD_WORKSPACE_ID")
+	}
 	if serviceConfig.Enabled && (serviceConfig.WorkspaceID == "" || serviceConfig.TenantID == "" || len(serviceConfig.TokenHashes) == 0) {
 		log.Fatal("managed service configuration incomplete")
 	}
@@ -222,7 +227,7 @@ func main() {
 		log.Fatal("managed identity requires workspace and tenant bindings")
 	}
 	srv := server.New(server.Config{
-		MPD: identityConfig, MPDService: serviceConfig,
+		MPD: identityConfig, MPDService: serviceConfig, MPDImport: importConfig,
 		Readiness:                 readiness.Checker{Database: db.Ping, Storage: store.Check, Workers: monitor.WorkersProbe},
 		DB:                        db.Pool,
 		Pinger:                    db,

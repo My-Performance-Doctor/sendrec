@@ -33,6 +33,7 @@ type Pinger interface {
 type Config struct {
 	MPD                       mpd.Config
 	MPDService                video.MPDServiceConfig
+	MPDImport                 video.MPDImportConfig
 	Readiness                 http.Handler
 	DB                        database.DBTX
 	Pinger                    Pinger
