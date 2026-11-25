@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	objectstore "github.com/sendrec/sendrec/internal/storage"
 )
 
 type typedStorage struct {
@@ -19,17 +22,15 @@ type typedStorage struct {
 
 func (s typedStorage) HeadObject(ctx context.Context, key string) (int64, string, error) {
 	size, _, err := s.memStorage.HeadObject(ctx, key)
-	return size, s.contentType, err
+	if err != nil {
+		return 0, "", fmt.Errorf("head object: %w", objectstore.ErrObjectNotFound)
+	}
+	return size, s.contentType, nil
 }
 
 const importToken = "synthetic-import-token-0123456789abcdef"
 
-type queued struct {
-	job     JobType
-	videoID string
-}
-
-func importFixture(t *testing.T, contentType string, files map[string]string) (*MPDImporter, *[]queued, func(string) string) {
+func importFixture(t *testing.T, contentType string, files map[string]string) (*MPDImporter, func(string) string) {
 	t.Helper()
 	pool := accountDB(t)
 	user := mustID(t, pool, `INSERT INTO users(email,password,name,retention_days) VALUES('import@example.test','','Synthetic',0) RETURNING id`)
@@ -39,10 +40,7 @@ func importFixture(t *testing.T, contentType string, files map[string]string) (*
 	h := NewHandler(pool, typedStorage{newMemStorage(files), contentType}, "https://sendrec.example.test", 10000000, 0, 0, 0, "synthetic-hmac-key", true)
 	sum := sha256.Sum256([]byte(importToken))
 	importer := h.MPDImporter(MPDImportConfig{TokenHashes: []string{hex.EncodeToString(sum[:])}, OwnerUserID: user, WorkspaceID: org})
-	jobs := &[]queued{}
-	importer.thumbnail = func(videoID, _ string) {
-		*jobs = append(*jobs, queued{JobTypeThumbnail, videoID})
-	}
+
 	query := func(sql string) string {
 		var out string
 		if err := pool.QueryRow(context.Background(), sql).Scan(&out); err != nil {
@@ -50,7 +48,7 @@ func importFixture(t *testing.T, contentType string, files map[string]string) (*
 		}
 		return out
 	}
-	return importer, jobs, query
+	return importer, query
 }
 
 func postImport(importer *MPDImporter, token, body string) *httptest.ResponseRecorder {
@@ -62,7 +60,7 @@ func postImport(importer *MPDImporter, token, body string) *httptest.ResponseRec
 }
 
 func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
-	importer, jobs, query := importFixture(t, "video/mp4", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
+	importer, query := importFixture(t, "video/mp4", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
 	body := `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":600}`
 	first := postImport(importer, importToken, body)
 	if first.Code != http.StatusCreated {
@@ -86,20 +84,9 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 	if got := query(`SELECT count(*)::text FROM mpd_event_outbox WHERE video_id='` + created.VideoID + `' AND event_type='video.ready'`); got != "1" {
 		t.Fatalf("video.ready events = %s", got)
 	}
-	// Only the thumbnail starts now: the normalize sweep encodes it, waiting to be picked.
-	if len(*jobs) != 1 || (*jobs)[0].job != JobTypeThumbnail {
-		t.Fatalf("jobs = %v", *jobs)
-	}
-	if got := query(`SELECT ios_normalized::text FROM videos WHERE id='` + created.VideoID + `'`); got != "false" {
-		t.Fatalf("ios_normalized = %s", got)
-	}
-	// A rerun whose thumbnail a restart lost starts it again, and only then.
-	lost := postImport(importer, importToken, body)
-	if lost.Code != http.StatusOK || len(*jobs) != 2 {
-		t.Fatalf("rerun without a thumbnail: %d %v", lost.Code, *jobs)
-	}
-	if _, err := importer.h.db.Exec(context.Background(), `UPDATE videos SET thumbnail_key='synthetic.jpg' WHERE id=$1`, created.VideoID); err != nil {
-		t.Fatal(err)
+	// Nothing starts now: the normalize and thumbnail sweeps both pick it up.
+	if got := query(`SELECT ios_normalized::text||'|'||(thumbnail_version < media_version)::text FROM videos WHERE id='` + created.VideoID + `'`); got != "false|true" {
+		t.Fatalf("waiting for the sweeps = %s", got)
 	}
 	again := postImport(importer, importToken, body)
 	var repeated importResponse
@@ -109,9 +96,6 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 	}
 	if got := query(`SELECT count(*)::text FROM videos`); got != "1" {
 		t.Fatalf("videos = %s", got)
-	}
-	if len(*jobs) != 2 {
-		t.Fatalf("a rerun queued work: %v", *jobs)
 	}
 	// A deleted import is refused: its pending file purge could take a reimport's file.
 	if _, err := importer.h.db.Exec(context.Background(), `UPDATE videos SET status='deleted' WHERE id=$1`, created.VideoID); err != nil {
@@ -123,7 +107,7 @@ func TestMPDImportCreatesOneManagedVideoPerVimeoID(t *testing.T) {
 }
 
 func TestMPDImportRefusesWithoutTokenFileOrValidRequest(t *testing.T) {
-	importer, _, query := importFixture(t, "video/mp4", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
+	importer, query := importFixture(t, "video/mp4", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
 	cases := []struct {
 		name, token, body string
 		code              int
@@ -134,6 +118,8 @@ func TestMPDImportRefusesWithoutTokenFileOrValidRequest(t *testing.T) {
 		{"no date", importToken, `{"vimeoVideoId":"123","durationSeconds":60}`, http.StatusBadRequest},
 		{"no duration", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z"}`, http.StatusBadRequest},
 		{"future date", importToken, `{"vimeoVideoId":"123","durationSeconds":60,"recordedAt":"` + time.Now().Add(48*time.Hour).UTC().Format(time.RFC3339) + `"}`, http.StatusBadRequest},
+		{"trailing content", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}{"title":"x"}`, http.StatusBadRequest},
+		{"year one", importToken, `{"vimeoVideoId":"123","recordedAt":"0001-01-02T00:00:00Z","durationSeconds":60}`, http.StatusBadRequest},
 		{"unknown field", importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60,"title":"x"}`, http.StatusBadRequest},
 		{"file not in place", importToken, `{"vimeoVideoId":"999","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`, http.StatusConflict},
 	}
@@ -148,7 +134,7 @@ func TestMPDImportRefusesWithoutTokenFileOrValidRequest(t *testing.T) {
 }
 
 func TestMPDImportRefusesAFileThatIsNotMP4(t *testing.T) {
-	importer, _, _ := importFixture(t, "video/webm", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
+	importer, _ := importFixture(t, "video/webm", map[string]string{"imports/vimeo/123.mp4": "synthetic media"})
 	got := postImport(importer, importToken, `{"vimeoVideoId":"123","recordedAt":"2024-05-06T07:08:09Z","durationSeconds":60}`)
 	if got.Code != http.StatusConflict {
 		t.Fatalf("webm: %d", got.Code)

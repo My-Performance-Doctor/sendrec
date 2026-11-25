@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sendrec/sendrec/internal/database"
 	"github.com/sendrec/sendrec/internal/httputil"
+	objectstore "github.com/sendrec/sendrec/internal/storage"
 )
 
 // MPDImportConfig is the operator import of MPD's Vimeo videos (SNDR-1). It has its own
@@ -33,29 +34,17 @@ func (c MPDImportConfig) Enabled() bool {
 // MPDImporter creates one managed video per Vimeo video from a file the migration's
 // download job has already written to importKey in the recordings bucket. The video keeps
 // its original recording date and gets no transcript. Its encode is left to the
-// transcode worker's normalize sweep, which takes ready videos one at a time, so a bulk
-// import never runs encodes side by side. Thumbnails run at most two at a time.
+// transcode worker's normalize sweep, which takes ready videos one at a time, and its
+// thumbnail to the thumbnail sweep, so a bulk import never starts work of its own.
 // It is never published here: mpd-api attaches it to its report and publishes it.
 type MPDImporter struct {
-	h          *Handler
-	cfg        MPDImportConfig
-	thumbnail  func(videoID, base string)
-	thumbnails chan struct{}
-	now        func() time.Time
+	h   *Handler
+	cfg MPDImportConfig
+	now func() time.Time
 }
 
 func (h *Handler) MPDImporter(cfg MPDImportConfig) *MPDImporter {
-	i := &MPDImporter{h: h, cfg: cfg, thumbnails: make(chan struct{}, 2), now: time.Now}
-	i.thumbnail = func(videoID, base string) {
-		go func() {
-			i.thumbnails <- struct{}{}
-			defer func() { <-i.thumbnails }()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			GenerateThumbnail(ctx, h.db, h.storage, videoID, base)
-		}()
-	}
-	return i
+	return &MPDImporter{h: h, cfg: cfg, now: time.Now}
 }
 
 var vimeoID = regexp.MustCompile(`^[0-9]{1,20}$`)
@@ -89,21 +78,23 @@ type importResponse struct {
 	VimeoVideoID string `json:"vimeoVideoId"`
 	Created      bool   `json:"created"`
 	MediaVersion int    `json:"mediaVersion"`
-	noThumbnail  bool
-	shareToken   string
 }
 
 // Import answers 201 for a new video and 200 with the same video for a Vimeo id already
-// imported, so a rerun never makes a second one, and starts its thumbnail again if a
-// restart lost it. 409 means the file is not in place yet, or that the video imported for
+// imported, so a rerun never makes a second one. 503 means storage could not be read;
+// 409 means the file is not in place yet, or that the video imported for
 // the Vimeo id was deleted: its file purge could take a reimport's file, so that is done
 // by hand.
 func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 	var req importRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil || !vimeoID.MatchString(req.VimeoVideoID) ||
-		req.RecordedAt.IsZero() || req.RecordedAt.After(i.now().Add(time.Hour)) ||
+	err := decoder.Decode(&req)
+	if err == nil && decoder.More() {
+		err = errors.New("trailing content")
+	}
+	if err != nil || !vimeoID.MatchString(req.VimeoVideoID) ||
+		req.RecordedAt.Year() < 2000 || req.RecordedAt.After(i.now().Add(time.Hour)) ||
 		req.DurationSeconds < 1 || req.DurationSeconds > 24*3600 {
 		httputil.WriteError(w, http.StatusBadRequest, "vimeoVideoId, recordedAt and durationSeconds are required")
 		return
@@ -116,16 +107,15 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to read imports")
 		return
 	} else if existing != nil {
-		if existing.noThumbnail {
-			i.thumbnail(existing.VideoID, thumbnailFileKey(i.cfg.OwnerUserID, existing.shareToken))
-		}
 		httputil.WriteJSON(w, http.StatusOK, existing)
 		return
 	}
 	key := importKey(req.VimeoVideoID)
 	size, contentType, err := i.h.storage.HeadObject(ctx, key)
-	if err != nil {
+	if err != nil && !errors.Is(err, objectstore.ErrObjectNotFound) {
 		slog.Warn("mpd import: could not read the imported file", "error", err)
+		httputil.WriteError(w, http.StatusServiceUnavailable, "could not read the imported file")
+		return
 	}
 	if err != nil || size <= 0 || contentType != "video/mp4" {
 		httputil.WriteError(w, http.StatusConflict, "the imported file is not in place")
@@ -137,6 +127,10 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := i.create(ctx, req, key, size, shareToken)
+	if errors.Is(err, errImportDeleted) {
+		httputil.WriteError(w, http.StatusConflict, "the video imported for this Vimeo id was deleted; reimport it by hand")
+		return
+	}
 	if errors.Is(err, errImportOwner) {
 		httputil.WriteError(w, http.StatusConflict, "the import owner has no MPD staff identity in the workspace")
 		return
@@ -150,7 +144,6 @@ func (i *MPDImporter) Import(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteJSON(w, http.StatusOK, created)
 		return
 	}
-	i.thumbnail(created.VideoID, thumbnailFileKey(i.cfg.OwnerUserID, shareToken))
 	httputil.WriteJSON(w, http.StatusCreated, created)
 }
 
@@ -162,10 +155,9 @@ var (
 func (i *MPDImporter) existing(ctx context.Context, vimeo string) (*importResponse, error) {
 	var res importResponse
 	var deleted bool
-	err := i.h.db.QueryRow(ctx, `SELECT i.video_id::text, v.media_version, v.status='deleted',
-		v.thumbnail_key IS NULL, v.share_token FROM mpd_vimeo_imports i
-		JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1`, vimeo).
-		Scan(&res.VideoID, &res.MediaVersion, &deleted, &res.noThumbnail, &res.shareToken)
+	err := i.h.db.QueryRow(ctx, `SELECT i.video_id::text, v.media_version, v.status='deleted'
+		FROM mpd_vimeo_imports i JOIN videos v ON v.id=i.video_id WHERE i.vimeo_video_id=$1`, vimeo).
+		Scan(&res.VideoID, &res.MediaVersion, &deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -219,7 +211,10 @@ func (i *MPDImporter) create(ctx context.Context, req importRequest, key string,
 	if tag.RowsAffected() == 0 {
 		_ = tx.Rollback(ctx)
 		existing, err := i.existing(ctx, req.VimeoVideoID)
-		if err != nil || existing == nil {
+		if err != nil {
+			return importResponse{}, err
+		}
+		if existing == nil {
 			return importResponse{}, errors.New("import raced and the winner is unreadable")
 		}
 		return *existing, nil
