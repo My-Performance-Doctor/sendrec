@@ -5,10 +5,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import software.amazon.awscdk.CfnOutput;
+import software.amazon.awscdk.CfnResource;
 import software.amazon.awscdk.Duration;
 import software.amazon.awscdk.RemovalPolicy;
 import software.amazon.awscdk.Stack;
 import software.amazon.awscdk.StackProps;
+import software.amazon.awscdk.services.ec2.CfnSecurityGroupIngress;
 import software.amazon.awscdk.services.ec2.IVpc;
 import software.amazon.awscdk.services.ec2.InstanceClass;
 import software.amazon.awscdk.services.ec2.InstanceSize;
@@ -46,6 +48,7 @@ import software.amazon.awscdk.services.elasticloadbalancingv2.ListenerCertificat
 import software.amazon.awscdk.services.elasticloadbalancingv2.RedirectOptions;
 import software.amazon.awscdk.services.elasticloadbalancingv2.SslPolicy;
 import software.amazon.awscdk.services.elasticloadbalancingv2.TargetType;
+import software.amazon.awscdk.services.lambda.CfnPermission;
 import software.amazon.awscdk.services.logs.LogGroup;
 import software.amazon.awscdk.services.logs.RetentionDays;
 import software.amazon.awscdk.services.rds.Credentials;
@@ -61,8 +64,10 @@ import software.amazon.awscdk.services.s3.BucketEncryption;
 import software.amazon.awscdk.services.s3.CorsRule;
 import software.amazon.awscdk.services.s3.HttpMethods;
 import software.amazon.awscdk.services.s3.LifecycleRule;
+import software.amazon.awscdk.services.secretsmanager.CfnSecret;
 import software.amazon.awscdk.services.secretsmanager.SecretStringGenerator;
 import software.constructs.Construct;
+import software.constructs.IConstruct;
 
 /**
  * SendRec on Fargate: one task behind an ALB, one RDS Postgres instance, one S3 bucket.
@@ -169,7 +174,9 @@ public class SendRecStack extends Stack {
     Distribution.Builder distributionBuilder = Distribution.Builder.create(this, "Distribution")
         .defaultBehavior(BehaviorOptions.builder()
             .origin(VpcOrigin.withApplicationLoadBalancer(alb,
-                VpcOriginWithEndpointProps.builder().protocolPolicy(OriginProtocolPolicy.HTTP_ONLY).build()))
+                VpcOriginWithEndpointProps.builder().protocolPolicy(OriginProtocolPolicy.HTTP_ONLY)
+                    .originId(config.production() ? "SendRecProductionDistributionOrigin1A6A8560F" : "SendRecStagingDistributionOrigin1A250414A")
+                    .build()))
             .viewerProtocolPolicy(ViewerProtocolPolicy.REDIRECT_TO_HTTPS)
             .allowedMethods(AllowedMethods.ALLOW_ALL)
             .cachePolicy(CachePolicy.CACHING_DISABLED)
@@ -235,6 +242,19 @@ public class SendRecStack extends Stack {
             .build();
     database.getSecret().applyRemovalPolicy(RemovalPolicy.RETAIN);
     database.getConnections().allowFrom(serviceSecurityGroup, Port.tcp(5432), "SendRec tasks");
+
+    // CDK includes the enclosing pipeline stage in these generated IDs. Keep the IDs of the
+    // standalone stacks so CloudFormation updates the existing secret and network rules.
+    var databaseCredential = (CfnSecret) database.getNode().findChild("Secret").getNode().getDefaultChild();
+    databaseCredential.overrideLogicalId(config.production()
+        ? "SendRecProductionDatabaseSecretEFDFD25522ea495b0eb589fbb03df2419ad2c419"
+        : "SendRecStagingDatabaseSecret728D270122ea495b0eb589fbb03df2419ad2c419");
+    pinChildId(database.getNode().findChild("SecurityGroup"), CfnSecurityGroupIngress.class, config.production()
+        ? "DatabaseSecurityGroupfromSendRecProductionServiceSecurityGroupFF15E53154328BE1C825"
+        : "DatabaseSecurityGroupfromSendRecStagingServiceSecurityGroup9FA8EF055432D6F0BCE2");
+    pinChildId(serviceSecurityGroup, CfnSecurityGroupIngress.class, config.production()
+        ? "ServiceSecurityGroupfromSendRecProductionAlbSecurityGroup36DF5075808031083179"
+        : "ServiceSecurityGroupfromSendRecStagingAlbSecurityGroupCD786883808062BB8A57");
 
     software.amazon.awscdk.services.secretsmanager.Secret jwtSecret =
         software.amazon.awscdk.services.secretsmanager.Secret.Builder.create(this, "JwtSecret")
@@ -487,12 +507,21 @@ public class SendRecStack extends Stack {
         .build();
     // RDS returns an attached-secret wrapper. Retaining that wrapper alone does
     // not retain the generated credential resource, so retain every owned secret.
-    for (software.constructs.IConstruct child : getNode().findAll()) {
-      if (child instanceof software.amazon.awscdk.services.secretsmanager.CfnSecret secret) {
+    for (IConstruct child : getNode().findAll()) {
+      if (child instanceof CfnSecret secret) {
         secret.applyRemovalPolicy(RemovalPolicy.RETAIN);
       }
     }
   }
+
+  private static void pinChildId(IConstruct parent, Class<? extends CfnResource> type, String id) {
+    var matches = parent.getNode().getChildren().stream().filter(type::isInstance).map(type::cast).toList();
+    if (matches.size() != 1) {
+      throw new IllegalStateException("Expected one " + type.getSimpleName() + " under " + parent.getNode().getPath());
+    }
+    matches.getFirst().overrideLogicalId(id);
+  }
+
   /** The stage context keys that name the network instead of a lookup, as the pipeline passes them. */
   static final List<String> NETWORK_KEYS = List.of("vpcAvailabilityZones", "vpcPrivateSubnetIds", "vpcIsolatedSubnetIds");
 
@@ -541,9 +570,11 @@ public class SendRecStack extends Stack {
         .actions(List.of("rds:DescribeDBInstances")).resources(List.of(database.getInstanceArn())).build());
     backupProbe.addToRolePolicy(software.amazon.awscdk.services.iam.PolicyStatement.Builder.create()
         .actions(List.of("ecs:DescribeServices")).resources(List.of(service.getServiceArn())).build());
-    software.amazon.awscdk.services.events.Rule.Builder.create(this, "BackupProbeSchedule")
+    var backupSchedule = software.amazon.awscdk.services.events.Rule.Builder.create(this, "BackupProbeSchedule")
         .schedule(software.amazon.awscdk.services.events.Schedule.rate(Duration.minutes(5)))
         .targets(List.of(new software.amazon.awscdk.services.events.targets.LambdaFunction(backupProbe))).build();
+    pinChildId(backupSchedule, CfnPermission.class,
+        "BackupProbeScheduleAllowEventRuleSendRecProductionBackupProbe7A2D5456400AA9F3");
     var destination = software.amazon.awscdk.services.sns.Topic.fromTopicArn(this, "OperationalDestination", config.alertTopicArn());
     Map<String, software.amazon.awscdk.services.cloudwatch.IMetric> metrics = new HashMap<>();
     metrics.put("Target5xx", targets.metricHttpCodeTarget(software.amazon.awscdk.services.elasticloadbalancingv2.HttpCodeTarget.TARGET_5XX_COUNT));

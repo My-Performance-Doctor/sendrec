@@ -3,6 +3,10 @@
 ### Requirement: Releases go through one pipeline in the deployment account
 SendRec SHALL have a self-mutating CDK pipeline, `SendRec`, defined in this repository and deployed to the deployment account, whose source is `main` of this repository. Its stages SHALL be `Source`, `Build`, `UpdatePipeline`, `Staging`, `ApproveProduction` and `Production`, in that order. It SHALL update the existing `SendRecStaging` and `SendRecProduction` stacks.
 
+#### Scenario: The first pipeline release updates the standalone stacks
+- **WHEN** the pipeline takes over a stack that was deployed by hand
+- **THEN** CloudFormation keeps the existing database credential, network rules, CloudFront origin and scheduled backup permission
+
 #### Scenario: A merge reaches staging
 - **WHEN** a commit is merged to `main`
 - **THEN** the pipeline builds it, deploys `SendRecStaging` with it and waits at `ApproveProduction`
@@ -19,7 +23,7 @@ The `Build` step SHALL build the image in AWS with `VERSION` set to the commit's
 - **THEN** the step uses that image's digest and pushes nothing
 
 ### Requirement: Staging waits for passing checks
-Before deploying staging, the pipeline SHALL wait for the result GitHub's `ci.yml` run on `main` recorded in the deployment account for the release's exact commit, and SHALL fail the stage unless that result is `success`. It SHALL use no GitHub token. Only a workflow running on `main` of this repository, identified by GitHub's immutable subject, SHALL be able to record a result, only `ci.yml`'s `record-result` job SHALL request a token, and the recording role SHALL be able to do nothing else. The `Build` step SHALL run the infrastructure tests before building the image.
+Before staging, the pipeline SHALL read the release commit's `ci.yml` result from the deployment account without a GitHub token. Staging SHALL fail unless the result is `success`. Only this repository's `main`, identified by GitHub's immutable subject, SHALL assume the role that can only record results. Only the `ci.yml` job `record-result` SHALL request its token. The `Build` step SHALL run infrastructure tests before building the image.
 
 #### Scenario: CI fails on the merged commit
 - **WHEN** `ci.yml` records `failure` for the commit
@@ -86,7 +90,7 @@ Production's account, network, storage, certificate, alert destination, task cou
 - **THEN** synthesis fails
 
 ### Requirement: Nightly production release at 17:20 Sydney
-A schedule SHALL start the release state machine at 17:20 `Australia/Sydney` every day. The release SHALL approve the newest staging-verified run waiting at `ApproveProduction` only while `/sendrec/release/hold` holds exactly `off`, SHALL reject older runs waiting at the gate whenever `Staging` succeeds, and SHALL apply the staff app's checks before approving: transitions enabled, nothing deploying to production, the pipeline unchanged between the read that chose the run and the read that confirms it. One firing SHALL start at most one release. CDK SHALL NOT create or change the hold parameter.
+The schedule SHALL start the release state machine daily at 17:20 `Australia/Sydney`. Each firing SHALL start at most one release. It SHALL approve the newest staging-verified run at `ApproveProduction` only if `/sendrec/release/hold` is exactly `off`, transitions are enabled, production is idle and the pipeline state matches on a second read. Each staging success SHALL reject older runs at the gate. CDK SHALL NOT create or change the hold parameter.
 
 #### Scenario: Hold is off and a run waits
 - **WHEN** the hold is `off` and the newest staging-verified run waits at the gate at 17:20
