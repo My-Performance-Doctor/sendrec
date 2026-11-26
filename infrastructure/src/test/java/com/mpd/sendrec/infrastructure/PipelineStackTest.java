@@ -112,6 +112,32 @@ class PipelineStackTest {
     assertFalse(template.toJSON().toString().contains("\"Name\":\"Assets\""));
   }
 
+  @Test void pipelineKeepsTheResourceIdsOfTheExistingStacks() {
+    // These IDs identify the resources CloudFormation already manages in each environment.
+    for (String stage : List.of("Staging", "Production")) {
+      boolean production = stage.equals("Production");
+      Template stack = Template.fromStack(stageStack(pipeline, stage, "SendRec" + stage));
+      String secret = production
+          ? "SendRecProductionDatabaseSecretEFDFD25522ea495b0eb589fbb03df2419ad2c419"
+          : "SendRecStagingDatabaseSecret728D270122ea495b0eb589fbb03df2419ad2c419";
+      String origin = production ? "SendRecProductionDistributionOrigin1A6A8560F" : "SendRecStagingDistributionOrigin1A250414A";
+      assertTrue(stack.findResources("AWS::SecretsManager::Secret").containsKey(secret));
+      stack.hasResourceProperties("AWS::SecretsManager::SecretTargetAttachment", Map.of("SecretId", Map.of("Ref", secret)));
+      var ingress = stack.findResources("AWS::EC2::SecurityGroupIngress");
+      assertTrue(ingress.containsKey(production
+          ? "DatabaseSecurityGroupfromSendRecProductionServiceSecurityGroupFF15E53154328BE1C825"
+          : "DatabaseSecurityGroupfromSendRecStagingServiceSecurityGroup9FA8EF055432D6F0BCE2"));
+      assertTrue(ingress.containsKey(production
+          ? "ServiceSecurityGroupfromSendRecProductionAlbSecurityGroup36DF5075808031083179"
+          : "ServiceSecurityGroupfromSendRecStagingAlbSecurityGroupCD786883808062BB8A57"));
+      stack.hasResourceProperties("AWS::CloudFront::Distribution", Map.of("DistributionConfig", Match.objectLike(Map.of(
+          "DefaultCacheBehavior", Match.objectLike(Map.of("TargetOriginId", origin)),
+          "Origins", Match.arrayWith(List.of(Match.objectLike(Map.of("Id", origin))))))));
+      if (production) assertTrue(stack.findResources("AWS::Lambda::Permission").containsKey(
+          "BackupProbeScheduleAllowEventRuleSendRecProductionBackupProbe7A2D5456400AA9F3"));
+    }
+  }
+
   @Test void aNewCommitChangesNothingInThePipelinesOwnDefinition() {
     String other = Template.fromStack(PipelineFixture.pipeline(
         PipelineFixture.app("fedcba9876543210fedcba9876543210fedcba98", "sha256:" + "d".repeat(64), Map.of()),
