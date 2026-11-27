@@ -336,3 +336,21 @@ func TestAWSTranscriberLogsJobLanguage(t *testing.T) {
 		t.Errorf("job language line %q names the audio", line)
 	}
 }
+
+// Most jobs finish in 10 to 20 seconds, so a new job is checked every second
+// at first rather than at the slower steady poll.
+func TestAWSTranscriberPollsQuicklyAtFirst(t *testing.T) {
+	tr, api, _, audio := newFakeAWSTranscriber(t, transcribeFixture)
+	tr.poll = time.Hour
+	api.polls = 1
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if _, err := tr.Transcribe(ctx, audio, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("took %v for a job done at its second check", took)
+	}
+}

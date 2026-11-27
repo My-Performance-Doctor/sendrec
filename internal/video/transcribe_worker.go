@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,10 +32,27 @@ const transcriptionExtraCapSeconds = 4 * 60 * 60
 // fixed 30 minutes failed 10 minute recordings, and a failed transcript means
 // MPD never creates the patient's report. A zero duration, as for a recording
 // not yet probed, gives the base alone. The stuck-job reset in
-// processNextTranscription applies the same formula in SQL.
+// claimNextTranscription applies the same formula in SQL.
 func transcriptionTimeout(durationSeconds int) time.Duration {
 	extra := min(max(transcriptionSecondsPerSecond*durationSeconds, 0), transcriptionExtraCapSeconds)
 	return transcriptionJobTimeout + time.Duration(extra)*time.Second
+}
+
+// DefaultTranscriptionConcurrency is how many transcriptions one process runs
+// at once when MAX_CONCURRENT_TRANSCRIPTIONS is unset. A remote provider spends
+// most of a job waiting on the network, so a few at once cost the task little.
+// Local Whisper is CPU bound and always runs one at a time.
+const DefaultTranscriptionConcurrency = 3
+
+// transcriptionWake starts the worker at once instead of on its next tick. It
+// holds at most one signal: one pass claims every job that fits.
+var transcriptionWake = make(chan struct{}, 1)
+
+func wakeTranscriptionWorker() {
+	select {
+	case transcriptionWake <- struct{}{}:
+	default:
+	}
 }
 
 func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string) error {
@@ -46,20 +64,62 @@ func EnqueueTranscription(ctx context.Context, db database.DBTX, videoID string)
 		 WHERE id = $1 AND status != 'deleted'`,
 		videoID,
 	)
+	if err == nil {
+		// This task's worker claims the job now. The poll still finds it, on
+		// another task or after a failed claim.
+		wakeTranscriptionWorker()
+	}
 	return err
 }
 
 // transcriptionJob is a claimed job, as the claim returned it.
 type transcriptionJob struct {
-	videoID    string
-	generation int
+	videoID, fileKey, userID, shareToken, language string
+	version, duration, generation                  int
 }
 
-// inFlightTranscription is the job this process is running, if any.
+// inFlightJobs is the set of jobs this process is running.
+type inFlightJobs struct {
+	mu   sync.Mutex
+	jobs map[*transcriptionJob]struct{}
+}
+
+func (s *inFlightJobs) add(job *transcriptionJob) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.jobs == nil {
+		s.jobs = map[*transcriptionJob]struct{}{}
+	}
+	s.jobs[job] = struct{}{}
+}
+
+func (s *inFlightJobs) remove(job *transcriptionJob) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.jobs, job)
+}
+
+func (s *inFlightJobs) list() []*transcriptionJob {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	jobs := make([]*transcriptionJob, 0, len(s.jobs))
+	for job := range s.jobs {
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func (s *inFlightJobs) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.jobs)
+}
+
+// inFlightTranscriptions are the jobs this process is running.
 // transcriptionStopping stops the worker claiming once shutdown has begun.
 var (
-	inFlightTranscription atomic.Pointer[transcriptionJob]
-	transcriptionStopping atomic.Bool
+	inFlightTranscriptions inFlightJobs
+	transcriptionStopping  atomic.Bool
 )
 
 // transcriptionCancel stops the transcription worker's context at shutdown.
@@ -76,19 +136,19 @@ func TranscriptionContext(parent context.Context) context.Context {
 }
 
 // StopTranscription cancels the worker's context and waits up to wait for the
-// running job, if any, to return and finish its cleanup. Call it after
-// RequeueInFlightTranscription, so the job is already back in the queue and
-// any result the stopped job still writes is discarded by its generation.
+// running jobs, if any, to return and finish their cleanup. Call it after
+// RequeueInFlightTranscription, so the jobs are already back in the queue and
+// any result the stopped jobs still write is discarded by their generation.
 func StopTranscription(wait time.Duration) {
 	if cancel := transcriptionCancel.Load(); cancel != nil {
 		(*cancel)()
 	}
 	deadline := time.Now().Add(wait)
-	for inFlightTranscription.Load() != nil && time.Now().Before(deadline) {
+	for inFlightTranscriptions.count() > 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	if inFlightTranscription.Load() != nil {
-		slog.Warn("transcribe-worker: running job did not finish its cleanup before shutdown")
+	if inFlightTranscriptions.count() > 0 {
+		slog.Warn("transcribe-worker: running jobs did not finish their cleanup before shutdown")
 	}
 	// Background cleanups of abandoned remote jobs shorten their wait once the
 	// task is stopping; give them what is left.
@@ -101,17 +161,19 @@ func StopTranscription(wait time.Duration) {
 	}
 }
 
-// RequeueInFlightTranscription hands this process's running job back to the
-// queue at shutdown, as during a deploy or a scale-in. Without it the job
+// RequeueInFlightTranscription hands this process's running jobs back to the
+// queue at shutdown, as during a deploy or a scale-in. Without it a job
 // waits out its whole deadline, which grows with the recording, before
 // another task may start it. The generation bump discards any result this
 // process still writes. The worker claims nothing after this.
 func RequeueInFlightTranscription(ctx context.Context, db database.DBTX) {
 	transcriptionStopping.Store(true)
-	job := inFlightTranscription.Load()
-	if job == nil {
-		return
+	for _, job := range inFlightTranscriptions.list() {
+		requeueTranscription(ctx, db, job)
 	}
+}
+
+func requeueTranscription(ctx context.Context, db database.DBTX, job *transcriptionJob) {
 	if _, err := db.Exec(ctx,
 		`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation + 1, transcript_started_at = NULL, updated_at = now()
 		 WHERE id = $1 AND transcript_status = 'processing' AND transcript_generation = $2`,
@@ -123,9 +185,12 @@ func RequeueInFlightTranscription(ctx context.Context, db database.DBTX) {
 	slog.Info("transcribe-worker: requeued the running job at shutdown", "video_id", job.videoID)
 }
 
-func processNextTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, aiEnabled bool) {
+// claimNextTranscription requeues jobs whose worker died, then claims the
+// oldest pending job for this process and records it as running. It returns
+// nil when there is no job, or when this task should leave it to another.
+func claimNextTranscription(ctx context.Context, db database.DBTX, transcriber Transcriber) *transcriptionJob {
 	if transcriptionStopping.Load() {
-		return
+		return nil
 	}
 	// Requeue jobs whose worker died. A live job gives up at its deadline,
 	// which grows with the recording, so anything a minute past it belongs to
@@ -145,12 +210,16 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 	// the job to an idle task, or to this one on a later tick. A provider that
 	// runs off the task has nothing to wait for.
 	if _, local := transcriber.(*localWhisper); local && encoders().busy() {
-		return
+		return nil
+	}
+	// Whisper runs one job at a time. While a remote provider's job has fallen
+	// back to it, a further job here would wait for Whisper with its deadline
+	// running, so leave it pending.
+	if inFlightTranscriptions.count() > 0 && whisperInUse() {
+		return nil
 	}
 
-	// Claim the next pending job
-	var videoID, fileKey, userID, shareToken, language string
-	var version, duration, generation int
+	job := &transcriptionJob{}
 	err := db.QueryRow(ctx,
 		`UPDATE videos SET transcript_status = 'processing', transcript_started_at = now(), updated_at = now()
 		 WHERE id = (
@@ -161,32 +230,69 @@ func processNextTranscription(ctx context.Context, db database.DBTX, storage Obj
 		 )
 		 RETURNING id, file_key, media_version, duration, user_id, share_token,
 		     COALESCE(transcription_language, (SELECT transcription_language FROM users WHERE id = videos.user_id), 'auto'), transcript_generation`,
-	).Scan(&videoID, &fileKey, &version, &duration, &userID, &shareToken, &language, &generation)
+	).Scan(&job.videoID, &job.fileKey, &job.version, &job.duration, &job.userID, &job.shareToken, &job.language, &job.generation)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("transcribe-worker: failed to claim job", "error", err)
 		}
-		return
+		return nil
 	}
 
-	slog.Info("transcribe-worker: claimed video", "video_id", videoID)
-	inFlightTranscription.Store(&transcriptionJob{videoID: videoID, generation: generation})
-	defer inFlightTranscription.Store(nil)
+	slog.Info("transcribe-worker: claimed video", "video_id", job.videoID)
+	inFlightTranscriptions.add(job)
 	// Shutdown can begin during the claim, after RequeueInFlightTranscription
-	// found nothing running. Hand the job back now rather than leave it to the
-	// stuck-job reset, which waits out the whole deadline.
+	// looked at the running jobs. Hand the job back now rather than leave it
+	// to the stuck-job reset, which waits out the whole deadline.
 	if transcriptionStopping.Load() {
 		requeueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		RequeueInFlightTranscription(requeueCtx, db)
-		return
+		requeueTranscription(requeueCtx, db, job)
+		inFlightTranscriptions.remove(job)
+		return nil
 	}
-	processTranscription(ctx, db, storage, transcriber, videoID, fileKey, version, duration, userID, shareToken, language, aiEnabled, generation)
+	return job
 }
 
-func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, interval time.Duration, aiEnabled bool) {
+// runTranscription runs a claimed job and then forgets it.
+func runTranscription(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, job *transcriptionJob, aiEnabled bool) {
+	defer inFlightTranscriptions.remove(job)
+	processTranscription(ctx, db, storage, transcriber, job.videoID, job.fileKey, job.version, job.duration, job.userID, job.shareToken, job.language, aiEnabled, job.generation)
+}
+
+// claimTranscriptions claims pending jobs while a slot is free and runs each
+// in its own goroutine. A finishing job frees its slot and wakes the worker,
+// so a queued job starts without waiting for the tick.
+func claimTranscriptions(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, aiEnabled bool, slots chan struct{}) {
+	for {
+		select {
+		case slots <- struct{}{}:
+		default:
+			return
+		}
+		job := claimNextTranscription(ctx, db, transcriber)
+		if job == nil {
+			<-slots
+			return
+		}
+		go func() {
+			defer func() {
+				<-slots
+				wakeTranscriptionWorker()
+			}()
+			runTranscription(ctx, db, storage, transcriber, job, aiEnabled)
+		}()
+	}
+}
+
+// StartTranscriptionWorker runs up to concurrency jobs at once. It claims
+// when a job is enqueued in this process, when a job finishes, and every
+// interval, which finds jobs enqueued on other tasks or left by a dead one.
+// Local Whisper is CPU bound, so it always runs one job at a time.
+func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage ObjectStorage, transcriber Transcriber, interval time.Duration, concurrency int, aiEnabled bool) {
+	concurrency = transcriptionConcurrency(transcriber, concurrency)
+	slots := make(chan struct{}, concurrency)
 	go func() {
-		slog.Info("transcribe-worker: started", "provider", transcriber.Name())
+		slog.Info("transcribe-worker: started", "provider", transcriber.Name(), "concurrency", concurrency)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -195,8 +301,16 @@ func StartTranscriptionWorker(ctx context.Context, db database.DBTX, storage Obj
 				slog.Info("transcribe-worker: shutting down")
 				return
 			case <-ticker.C:
-				processNextTranscription(ctx, db, storage, transcriber, aiEnabled)
+			case <-transcriptionWake:
 			}
+			claimTranscriptions(ctx, db, storage, transcriber, aiEnabled, slots)
 		}
 	}()
+}
+
+func transcriptionConcurrency(transcriber Transcriber, limit int) int {
+	if _, local := transcriber.(*localWhisper); local || limit < 1 {
+		return 1
+	}
+	return limit
 }

@@ -8,9 +8,21 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 type localWhisper struct{}
+
+// whisperRun lets one whisper-cli run at a time in this process, so remote
+// jobs that all fall back to Whisper during an outage do not split the CPU
+// and memory between them. whisperUsers counts runs and runs waiting.
+var (
+	whisperRun   = make(chan struct{}, 1)
+	whisperUsers atomic.Int32
+)
+
+// whisperInUse reports whether Whisper is running or has a job waiting.
+func whisperInUse() bool { return whisperUsers.Load() > 0 }
 
 func newLocalWhisper() *localWhisper { return &localWhisper{} }
 
@@ -27,6 +39,15 @@ func (l *localWhisper) Available() bool {
 }
 
 func (l *localWhisper) Transcribe(ctx context.Context, audioPath, language string) ([]TranscriptSegment, error) {
+	whisperUsers.Add(1)
+	defer whisperUsers.Add(-1)
+	select {
+	case whisperRun <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-whisperRun }()
+
 	tmpOutput, err := os.CreateTemp("", "sendrec-whisper-out-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp output: %w", err)

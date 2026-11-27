@@ -293,6 +293,9 @@ func (a *awsTranscriber) wait(ctx context.Context, job string, startedAt time.Ti
 			return fmt.Errorf("%w: %s", errJobFailed, aws.ToString(got.TranscriptionJob.FailureReason))
 		default:
 			delay = a.poll
+			if time.Since(startedAt) < quickPollWindow {
+				delay = min(delay, quickPoll)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -301,6 +304,14 @@ func (a *awsTranscriber) wait(ctx context.Context, job string, startedAt time.Ti
 		}
 	}
 }
+
+// A job is checked every quickPoll for its first quickPollWindow, then every
+// poll. Most jobs finish in 10 to 20 seconds, so a 3 second poll added about
+// 1.5 seconds to each transcript.
+const (
+	quickPoll       = time.Second
+	quickPollWindow = 30 * time.Second
+)
 
 // stoppingSettle bounds a settle once the task has begun to stop. A var so
 // tests can shorten it.
