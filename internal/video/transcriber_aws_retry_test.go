@@ -261,15 +261,16 @@ func TestFallbackTranscriber(t *testing.T) {
 // At shutdown the worker's context is cancelled so the running job's provider
 // cleans up, and StopTranscription waits for it.
 func TestStopTranscriptionCancelsAndWaits(t *testing.T) {
-	t.Cleanup(func() { inFlightTranscription.Store(nil); transcriptionCancel.Store(nil) })
+	job := &transcriptionJob{videoID: "video-1", generation: 1}
+	t.Cleanup(func() { inFlightTranscriptions.remove(job); transcriptionCancel.Store(nil) })
 	ctx := TranscriptionContext(context.Background())
-	inFlightTranscription.Store(&transcriptionJob{videoID: "video-1", generation: 1})
+	inFlightTranscriptions.add(job)
 	cleaned := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		time.Sleep(20 * time.Millisecond) // the provider's cleanup
 		close(cleaned)
-		inFlightTranscription.Store(nil)
+		inFlightTranscriptions.remove(job)
 	}()
 
 	StopTranscription(5 * time.Second)

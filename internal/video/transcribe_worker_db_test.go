@@ -22,7 +22,7 @@ func TestTranscriptionResetFollowsTheRecording(t *testing.T) {
 
 	// Every slot held, so local Whisper's worker resets and claims nothing.
 	holdEncoderSlots(t, 1)
-	processNextTranscription(context.Background(), pool, &mockStorage{}, newLocalWhisper(), false)
+	claimNextTranscription(context.Background(), pool, newLocalWhisper())
 
 	for id, want := range map[string]string{longRunning: "processing", shortDead: "pending", longDead: "pending"} {
 		var got string
@@ -37,13 +37,14 @@ func TestTranscriptionResetFollowsTheRecording(t *testing.T) {
 
 func TestRequeueInFlightTranscriptionAgainstTheDatabase(t *testing.T) {
 	pool := accountDB(t)
-	t.Cleanup(func() {
-		transcriptionStopping.Store(false)
-		inFlightTranscription.Store(nil)
-	})
 	id := seedReadyVideoNamed(t, pool, "recordings/u/running.mp4", "running")
 	mustExecDB(t, pool, `UPDATE videos SET transcript_status = 'processing', transcript_generation = 3, transcript_started_at = now() WHERE id = $1`, id)
-	inFlightTranscription.Store(&transcriptionJob{videoID: id, generation: 3})
+	job := &transcriptionJob{videoID: id, generation: 3}
+	inFlightTranscriptions.add(job)
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		inFlightTranscriptions.remove(job)
+	})
 
 	RequeueInFlightTranscription(context.Background(), pool)
 

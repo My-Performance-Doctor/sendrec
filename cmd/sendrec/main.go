@@ -309,7 +309,9 @@ func main() {
 			slog.Error("transcriber configuration invalid", "error", err)
 			os.Exit(1)
 		}
-		video.StartTranscriptionWorker(video.TranscriptionContext(cleanupCtx), db.Pool, store, transcriber, 5*time.Second, aiEnabled)
+		// Transcriptions run at once in this process. Local Whisper runs one.
+		concurrency := int(getEnvInt64("MAX_CONCURRENT_TRANSCRIPTIONS", video.DefaultTranscriptionConcurrency))
+		video.StartTranscriptionWorker(video.TranscriptionContext(cleanupCtx), db.Pool, store, transcriber, 5*time.Second, concurrency, aiEnabled)
 	}
 	video.StartSummaryWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
 	video.StartDocumentWorker(cleanupCtx, db.Pool, aiClient, 10*time.Second)
@@ -356,8 +358,8 @@ func main() {
 	releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	video.ReleaseInFlightEncodes(releaseCtx, db.Pool)
 	releaseCancel()
-	// Then stop the running transcript so its provider's cleanup deletes the
-	// staged audio and job before the task goes. At most 5 + 5 + 12 s, then
+	// Then stop the running transcripts so their provider's cleanup deletes
+	// the staged audio and jobs before the task goes. At most 5 + 5 + 12 s, then
 	// the 10 s HTTP drain, inside the 60 s stop timeout.
 	video.StopTranscription(12 * time.Second)
 

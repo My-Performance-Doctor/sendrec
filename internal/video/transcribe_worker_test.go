@@ -2,10 +2,14 @@ package video
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v5"
 	"github.com/sendrec/sendrec/internal/database"
 )
@@ -59,7 +63,7 @@ func TestEnqueueTranscription_DisabledIsNoOp(t *testing.T) {
 	}
 }
 
-func TestProcessNextTranscription_NoJobs(t *testing.T) {
+func TestClaimNextTranscription_NoJobs(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -75,15 +79,14 @@ func TestProcessNextTranscription_NoJobs(t *testing.T) {
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
-	storage := &mockStorage{}
-	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
+	claimNextTranscription(context.Background(), mock, stubTranscriber{available: true})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
-func TestProcessNextTranscription_ResetsStuckJobs(t *testing.T) {
+func TestClaimNextTranscription_ResetsStuckJobs(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +102,7 @@ func TestProcessNextTranscription_ResetsStuckJobs(t *testing.T) {
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
-	storage := &mockStorage{}
-	processNextTranscription(context.Background(), mock, storage, stubTranscriber{available: true}, false)
+	claimNextTranscription(context.Background(), mock, stubTranscriber{available: true})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -144,7 +146,7 @@ func TestProcessTranscription_HungJobFailsAtItsDeadline(t *testing.T) {
 
 // The stale-job reset must not requeue a job that is still inside its
 // deadline, or a second worker would start it again.
-func TestProcessNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
+func TestClaimNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +159,7 @@ func TestProcessNextTranscription_ResetWaitsOutTheDeadline(t *testing.T) {
 	mock.ExpectQuery(`UPDATE videos SET transcript_status = 'processing'`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "file_key", "media_version", "duration", "user_id", "share_token", "language", "transcript_generation"}))
 
-	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
+	claimNextTranscription(context.Background(), mock, stubTranscriber{available: true})
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -187,7 +189,7 @@ func TestTranscriptionTimeout(t *testing.T) {
 // Local Whisper yields the CPU to encodes, so a job claimed beside one would
 // spend its deadline waiting: while this task encodes, the job stays pending
 // for an idle task. A provider that runs off the task claims it at once.
-func TestProcessNextTranscription_OnlyLocalWhisperWaitsForEncodes(t *testing.T) {
+func TestClaimNextTranscription_OnlyLocalWhisperWaitsForEncodes(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		transcriber Transcriber
@@ -213,7 +215,7 @@ func TestProcessNextTranscription_OnlyLocalWhisperWaitsForEncodes(t *testing.T) 
 			}
 			db := &countingDB{DBTX: mock}
 
-			processNextTranscription(context.Background(), db, &mockStorage{}, tc.transcriber, false)
+			claimNextTranscription(context.Background(), db, tc.transcriber)
 
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)
@@ -263,9 +265,10 @@ func holdEncoderSlots(t *testing.T, limit int) {
 // the queue instead of waiting out a deadline that grows with the recording,
 // and the stopping worker claims nothing more.
 func TestRequeueInFlightTranscription(t *testing.T) {
+	job := &transcriptionJob{videoID: "video-123", generation: 4}
 	t.Cleanup(func() {
 		transcriptionStopping.Store(false)
-		inFlightTranscription.Store(nil)
+		inFlightTranscriptions.remove(job)
 	})
 	mock, err := pgxmock.NewPool()
 	if err != nil {
@@ -273,14 +276,43 @@ func TestRequeueInFlightTranscription(t *testing.T) {
 	}
 	defer mock.Close()
 
-	inFlightTranscription.Store(&transcriptionJob{videoID: "video-123", generation: 4})
+	inFlightTranscriptions.add(job)
 	mock.ExpectExec(`UPDATE videos SET transcript_status = 'pending', transcript_generation = transcript_generation \+ 1.*transcript_status = 'processing' AND transcript_generation = \$2`).
 		WithArgs("video-123", 4).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	RequeueInFlightTranscription(context.Background(), mock)
 	// No reset and no claim once stopping.
-	processNextTranscription(context.Background(), mock, &mockStorage{}, stubTranscriber{available: true}, false)
+	claimNextTranscription(context.Background(), mock, stubTranscriber{available: true})
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// A task stopped while it runs several jobs hands every one of them back.
+func TestRequeueInFlightTranscription_EveryRunningJob(t *testing.T) {
+	jobs := []*transcriptionJob{{videoID: "video-1", generation: 2}, {videoID: "video-2", generation: 5}}
+	t.Cleanup(func() {
+		transcriptionStopping.Store(false)
+		for _, job := range jobs {
+			inFlightTranscriptions.remove(job)
+		}
+	})
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(false)
+	for _, job := range jobs {
+		inFlightTranscriptions.add(job)
+		mock.ExpectExec(`transcript_status = 'processing' AND transcript_generation = \$2`).
+			WithArgs(job.videoID, job.generation).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	}
+
+	RequeueInFlightTranscription(context.Background(), mock)
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -313,12 +345,9 @@ func (s stopDuringClaim) QueryRow(ctx context.Context, sql string, args ...any) 
 
 // A job claimed as the task begins to stop goes straight back to the queue,
 // instead of waiting out its deadline in the stuck-job reset.
-func TestProcessNextTranscription_RequeuesAJobClaimedDuringShutdown(t *testing.T) {
+func TestClaimNextTranscription_RequeuesAJobClaimedDuringShutdown(t *testing.T) {
 	holdEncoderSlots(t, 0) // a fresh, idle gate
-	t.Cleanup(func() {
-		transcriptionStopping.Store(false)
-		inFlightTranscription.Store(nil)
-	})
+	t.Cleanup(func() { transcriptionStopping.Store(false) })
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -335,12 +364,188 @@ func TestProcessNextTranscription_RequeuesAJobClaimedDuringShutdown(t *testing.T
 		WithArgs("video-123", 3).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	processNextTranscription(context.Background(), stopDuringClaim{mock}, &mockStorage{}, stubTranscriber{available: true}, false)
+	if job := claimNextTranscription(context.Background(), stopDuringClaim{mock}, stubTranscriber{available: true}); job != nil {
+		t.Error("a job claimed during shutdown was returned to run")
+	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
-	if inFlightTranscription.Load() != nil {
+	if inFlightTranscriptions.count() != 0 {
 		t.Error("the requeued job is still marked as running")
+	}
+}
+
+// queueDB hands its pending jobs to claims, one each, and accepts every write.
+type queueDB struct {
+	database.DBTX
+	mu      sync.Mutex
+	pending []string
+}
+
+func (q *queueDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.NewCommandTag("UPDATE 1"), nil
+}
+
+func (q *queueDB) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !strings.Contains(sql, "transcript_status = 'processing'") || len(q.pending) == 0 {
+		return errRow{pgx.ErrNoRows}
+	}
+	id := q.pending[0]
+	q.pending = q.pending[1:]
+	return jobRow{id}
+}
+
+type jobRow struct{ videoID string }
+
+func (r jobRow) Scan(dest ...any) error {
+	*dest[0].(*string) = r.videoID
+	*dest[1].(*string) = "recordings/u/" + r.videoID + ".mp4"
+	*dest[6].(*string) = "auto"
+	*dest[7].(*int) = 1
+	return nil
+}
+
+// gateStorage holds every job at its download until the test releases it.
+type gateStorage struct {
+	*mockStorage
+	started chan string
+	release chan struct{}
+}
+
+func (g gateStorage) DownloadToFile(ctx context.Context, key, _ string) error {
+	g.started <- key
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+	}
+	return errors.New("synthetic download failure")
+}
+
+func newGateStorage() gateStorage {
+	return gateStorage{&mockStorage{}, make(chan string, 10), make(chan struct{})}
+}
+
+func drainTranscriptionWake() {
+	select {
+	case <-transcriptionWake:
+	default:
+	}
+}
+
+func waitForStart(t *testing.T, storage gateStorage) string {
+	t.Helper()
+	select {
+	case key := <-storage.started:
+		return key
+	case <-time.After(5 * time.Second):
+		t.Fatal("no job started")
+		return ""
+	}
+}
+
+// Enqueueing a job wakes this process's worker, so the job does not wait for
+// the next tick.
+func TestEnqueueTranscriptionWakesTheWorker(t *testing.T) {
+	t.Setenv("TRANSCRIPTION_ENABLED", "true")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	drainTranscriptionWake()
+	db := &queueDB{}
+	storage := newGateStorage()
+	t.Cleanup(func() { close(storage.release) })
+
+	StartTranscriptionWorker(ctx, db, storage, stubTranscriber{available: true}, time.Hour, 1, false)
+	db.mu.Lock()
+	db.pending = []string{"video-1"}
+	db.mu.Unlock()
+	if err := EnqueueTranscription(ctx, db, "video-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if key := waitForStart(t, storage); key != "recordings/u/video-1.mp4" {
+		t.Errorf("started %q, want video-1", key)
+	}
+}
+
+// A remote provider runs up to its limit of jobs at once. Jobs beyond it stay
+// pending, and the next one starts as soon as a running job finishes.
+func TestTranscriptionsRunConcurrentlyUpToTheLimit(t *testing.T) {
+	t.Setenv("TRANSCRIPTION_ENABLED", "true")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	drainTranscriptionWake()
+	db := &queueDB{pending: []string{"video-1", "video-2", "video-3", "video-4"}}
+	storage := newGateStorage()
+
+	StartTranscriptionWorker(ctx, db, storage, stubTranscriber{available: true}, time.Hour, 3, false)
+	wakeTranscriptionWorker()
+	for range 3 {
+		waitForStart(t, storage)
+	}
+	select {
+	case key := <-storage.started:
+		t.Fatalf("started %q beyond the limit of 3", key)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	storage.release <- struct{}{} // one job finishes
+	if key := waitForStart(t, storage); key != "recordings/u/video-4.mp4" {
+		t.Errorf("started %q, want video-4", key)
+	}
+	close(storage.release)
+}
+
+func TestTranscriptionConcurrency(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		transcriber Transcriber
+		limit, want int
+	}{
+		{"remote provider", stubTranscriber{available: true}, 3, 3},
+		{"remote provider, nonsense limit", stubTranscriber{available: true}, 0, 1},
+		{"local Whisper is CPU bound", newLocalWhisper(), 3, 1},
+	} {
+		if got := transcriptionConcurrency(tc.transcriber, tc.limit); got != tc.want {
+			t.Errorf("%s: concurrency = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// While a job has fallen back to Whisper, which runs one at a time, a further
+// job would wait for it with its deadline running, so it stays pending.
+func TestNoFurtherClaimWhileWhisperIsBusy(t *testing.T) {
+	running := &transcriptionJob{videoID: "video-1", generation: 1}
+	inFlightTranscriptions.add(running)
+	whisperUsers.Add(1)
+	t.Cleanup(func() {
+		inFlightTranscriptions.remove(running)
+		whisperUsers.Add(-1)
+	})
+	db := &countingDB{DBTX: &queueDB{pending: []string{"video-2"}}}
+
+	if job := claimNextTranscription(context.Background(), db, stubTranscriber{available: true}); job != nil {
+		t.Errorf("claimed %s while Whisper was busy", job.videoID)
+	}
+	if db.queryRows != 0 {
+		t.Errorf("claims attempted = %d, want 0", db.queryRows)
+	}
+}
+
+// Whisper waits for the one running before it, and gives up with its job.
+func TestLocalWhisperWaitsForTheRunningOne(t *testing.T) {
+	whisperRun <- struct{}{}
+	t.Cleanup(func() { <-whisperRun })
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := newLocalWhisper().Transcribe(ctx, "audio.wav", "auto")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want the job's deadline", err)
+	}
+	if whisperInUse() {
+		t.Error("a Whisper run that gave up still counts as in use")
 	}
 }

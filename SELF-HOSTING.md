@@ -400,6 +400,7 @@ API keys for machine-to-machine access (used by the Nextcloud integration for vi
 | `TRANSCRIPTION_API_KEY` | API key for cloud providers | — |
 | `TRANSCRIPTION_MODEL` | Model name; defaults `whisper-1` (openai), `nova-3` (deepgram) | — |
 | `TRANSCRIPTION_TIMEOUT_SECONDS` | HTTP timeout for cloud calls (seconds) | `300` |
+| `MAX_CONCURRENT_TRANSCRIPTIONS` | Transcriptions run at once per app process with a remote provider; `local` always runs one | `3` |
 
 **Provider notes:**
 - `local` — runs `whisper-cli` on the app container; CPU-bound. Best for full privacy or offline deployments.
